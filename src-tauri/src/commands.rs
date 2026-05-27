@@ -131,9 +131,16 @@ pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
 // ---- External launch helpers ----------------------------------------------
 
 fn spawn_detached(program: &str, args: &[&str]) -> Result<(), String> {
-    std::process::Command::new(program)
-        .args(args)
-        .spawn()
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    // Don't flash a console window for the launcher itself. SSH still gets its
+    // own window because `start cmd /K ssh` spawns a separate visible console.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch {program}: {e}"))
 }
