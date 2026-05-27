@@ -1,6 +1,6 @@
 [package]
 name = "arcscan"
-version = "0.1.0"
+version = "0.1.1"
 description = "Authorized LAN discovery and client reporting for MSPs"
 authors = ["ArcScan"]
 edition = "2021"
