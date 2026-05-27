@@ -228,6 +228,10 @@ async fn icmp_ping(ip: Ipv4Addr, timeout: Duration) -> Option<u64> {
     {
         cmd = Command::new("ping");
         cmd.args(["-n", "1", "-w", &timeout_ms.to_string(), &ip_str]);
+        // Suppress the console window Windows would otherwise spawn for each
+        // child process (CREATE_NO_WINDOW) — without this a scan flashes a
+        // separate cmd window per host.
+        cmd.creation_flags(0x0800_0000);
     }
     #[cfg(target_os = "macos")]
     {
@@ -298,7 +302,14 @@ fn read_arp_table() -> HashMap<String, String> {
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        if let Ok(output) = std::process::Command::new("arp").arg("-a").output() {
+        let mut cmd = std::process::Command::new("arp");
+        cmd.arg("-a");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        if let Ok(output) = cmd.output() {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
                 if let Some((ip, mac)) = parse_arp_line(line) {
