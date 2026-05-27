@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::{self, FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
@@ -445,21 +445,45 @@ where
         }
     }
 
-    // Enrich live hosts with reverse-DNS hostnames and ARP/vendor data.
+    // ARP/vendor enrichment: one fast OS call plus O(1) in-memory lookups.
     let arp = tokio::task::spawn_blocking(read_arp_table)
         .await
         .unwrap_or_default();
-
     for host in hosts.iter_mut() {
         if let Some(mac) = arp.get(&host.ip) {
             host.vendor = oui::vendor_for_mac(mac);
             host.mac = Some(mac.clone());
         }
-        if let Ok(ip) = host.ip.parse::<Ipv4Addr>() {
-            host.hostname = tokio::task::spawn_blocking(move || reverse_dns(ip))
-                .await
-                .unwrap_or(None);
-        }
+    }
+
+    // Reverse-DNS every live host concurrently. Each lookup runs on the
+    // blocking pool with a hard timeout so a host without a PTR record can't
+    // stall the batch — turning what was N sequential resolver waits into one
+    // bounded parallel pass.
+    let dns_timeout = Duration::from_millis(1500);
+    let dns_targets: Vec<(usize, Ipv4Addr)> = hosts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| h.ip.parse::<Ipv4Addr>().ok().map(|ip| (i, ip)))
+        .collect();
+    let resolved: Vec<(usize, Option<String>)> = stream::iter(dns_targets)
+        .map(|(i, ip)| async move {
+        let name = match tokio::time::timeout(
+            dns_timeout,
+            tokio::task::spawn_blocking(move || reverse_dns(ip)),
+        )
+        .await
+        {
+            Ok(Ok(name)) => name,
+            _ => None,
+        };
+        (i, name)
+    })
+    .buffer_unordered(256)
+    .collect()
+    .await;
+    for (i, name) in resolved {
+        hosts[i].hostname = name;
     }
 
     hosts.sort_by_key(|h| h.ip.parse::<Ipv4Addr>().map(u32::from).unwrap_or(0));
