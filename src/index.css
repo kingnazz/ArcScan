@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-base-950 text-slate-200 font-sans antialiased;
+    overflow: hidden;
+    /* Prevent the native text selection / drag feel of a website. */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Allow selection inside data cells and inputs. */
+  input,
+  textarea,
+  .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-base-600 rounded-full border-2 border-transparent bg-clip-padding;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-base-500;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-base-900/80 border border-base-700/70 rounded-xl shadow-panel backdrop-blur-sm;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+      transition-colors duration-150 select-none disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-white hover:bg-accent-glow shadow-glow;
+  }
+  .btn-ghost {
+    @apply btn text-slate-300 hover:bg-base-700/70 hover:text-white;
+  }
+  .btn-outline {
+    @apply btn border border-base-600 text-slate-200 hover:bg-base-700/60 hover:border-base-500;
+  }
+
+  .icon-btn {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400
+      hover:bg-base-700 hover:text-white transition-colors duration-150
+      disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed;
+  }
+
+  .input {
+    @apply bg-base-850 border border-base-700 rounded-lg px-3 py-2 text-sm text-slate-100
+      placeholder:text-slate-500 outline-none transition-colors duration-150
+      focus:border-accent focus:ring-2 focus:ring-accent/30;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium;
+  }
+}
