@@ -153,6 +153,39 @@ npm run tauri:build -- --bundles msi      # or: nsis
 > apps because of the WebView2/MSVC toolchain. Build Windows artifacts on
 > Windows (or a Windows CI runner / VM).
 
+### Windows on ARM (ARM64 — Surface Pro X / 9, Snapdragon Surface)
+
+ARM Surfaces run Windows on ARM, so a native **ARM64 (aarch64)** MSI gives the
+best performance (an x64 MSI also installs and runs under emulation, just
+slower).
+
+**Build the ARM64 MSI directly on the ARM Surface** (simplest):
+
+```bash
+# One-time: install Node, then Rust via https://rustup.rs, plus the
+# "Desktop development with C++" workload (VS Build Tools). WebView2 ships
+# with Windows 11. Then:
+npm install
+npm run tauri:build -- --bundles msi
+# → src-tauri/target/release/bundle/msi/ArcScan_0.1.0_arm64_en-US.msi
+```
+
+**Cross-compile from an x64 Windows machine:**
+
+```bash
+rustup target add aarch64-pc-windows-msvc
+npm install
+npm run tauri:build -- --target aarch64-pc-windows-msvc --bundles msi
+# → src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+```
+
+**Via CI (no local Windows needed).** The
+[`Build Windows ARM64 MSI`](.github/workflows/windows-arm64-msi.yml) workflow
+cross-compiles the ARM64 MSI on a `windows-latest` runner and uploads it as the
+`ArcScan-windows-arm64` artifact. It runs on PRs to `main`, on `v*` tags, and
+on demand (Actions → *Build Windows ARM64 MSI* → *Run workflow*). Download the
+`.msi` from the run's **Artifacts** section.
+
 ### macOS / Linux
 
 The same `npm run tauri:build` produces `.dmg`/`.app` on macOS and
