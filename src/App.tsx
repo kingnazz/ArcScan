@@ -19,7 +19,7 @@ import { useTheme } from "./hooks/useTheme";
 import { api } from "./lib/api";
 import type { DashboardStats, ExportFormat, HostResult, ScanOptions, ScanSummary } from "./types";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 
 type Tab = "results" | "history";
 
