@@ -8,6 +8,7 @@ import type {
   LocalNetwork,
   ScanDetail,
   ScanOptions,
+  ScanProgress,
   ScanResult,
   ScanSummary,
 } from "../types";
@@ -33,9 +34,20 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 export const api = {
   native: isTauri(),
 
-  async scan(opts: ScanOptions): Promise<ScanResult> {
-    if (isTauri()) return invoke<ScanResult>("scan_network", { opts });
-    return mockScan(opts);
+  async scan(opts: ScanOptions, onProgress?: (p: ScanProgress) => void): Promise<ScanResult> {
+    if (isTauri()) {
+      let unlisten: (() => void) | undefined;
+      if (onProgress) {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<ScanProgress>("scan:progress", (e) => onProgress(e.payload));
+      }
+      try {
+        return await invoke<ScanResult>("scan_network", { opts });
+      } finally {
+        unlisten?.();
+      }
+    }
+    return mockScan(opts, onProgress);
   },
 
   async save(result: ScanResult): Promise<number> {

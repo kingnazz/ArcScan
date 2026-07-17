@@ -22,6 +22,12 @@ export interface LocalNetwork {
 
 export type ExportFormat = "csv" | "json" | "xml";
 
+export interface ScanProgress {
+  done: number;
+  total: number;
+  phase: "probing" | "resolving" | "done" | string;
+}
+
 export interface ScanResult {
   target: string;
   duration_ms: number;

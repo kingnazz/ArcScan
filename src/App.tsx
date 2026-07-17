@@ -17,7 +17,14 @@ import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
 import { useTheme } from "./hooks/useTheme";
 import { api } from "./lib/api";
-import type { DashboardStats, ExportFormat, HostResult, ScanOptions, ScanSummary } from "./types";
+import type {
+  DashboardStats,
+  ExportFormat,
+  HostResult,
+  ScanOptions,
+  ScanProgress,
+  ScanSummary,
+} from "./types";
 
 const APP_VERSION = "1.3.1";
 
@@ -32,6 +39,7 @@ export default function App() {
   const [history, setHistory] = useState<ScanSummary[]>([]);
   const [activeScanId, setActiveScanId] = useState<number | null>(null);
   const [newIps, setNewIps] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [lastMeta, setLastMeta] = useState<{ target: string; duration: number; scanned: number } | null>(null);
 
   const refreshHistory = useCallback(async () => {
@@ -51,11 +59,13 @@ export default function App() {
       setScanning(true);
       setError(null);
       setActiveScanId(null);
+      setHosts([]);
+      setProgress({ done: 0, total: 0, phase: "probing" });
       try {
         // Snapshot the previous scan's IPs before saving the new one so we can
         // flag genuinely new devices.
         const previousIps = new Set(await api.lastScanIps());
-        const result = await api.scan(opts);
+        const result = await api.scan(opts, (p) => setProgress(p));
 
         const fresh = new Set(result.hosts.map((h) => h.ip).filter((ip) => !previousIps.has(ip)));
         setNewIps(previousIps.size === 0 ? new Set() : fresh);
@@ -73,6 +83,7 @@ export default function App() {
         setError(String(e instanceof Error ? e.message : e));
       } finally {
         setScanning(false);
+        setProgress(null);
       }
     },
     [refreshHistory],
@@ -164,6 +175,8 @@ export default function App() {
       <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
         <ScanControls scanning={scanning} onScan={runScan} />
 
+        {scanning && progress && <ScanProgressBar progress={progress} />}
+
         {error && (
           <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-sm text-red-700 dark:text-red-200 animate-fade-in">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
@@ -207,6 +220,37 @@ export default function App() {
           <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
         )}
       </main>
+    </div>
+  );
+}
+
+function ScanProgressBar({ progress }: { progress: ScanProgress }) {
+  const pct = progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+  const label =
+    progress.phase === "resolving"
+      ? "Resolving names, MACs & ARP…"
+      : progress.phase === "done"
+        ? "Finishing…"
+        : "Probing hosts…";
+  const indeterminate = progress.total === 0 || progress.phase === "resolving";
+  return (
+    <div className="panel px-4 py-3 animate-fade-in">
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="font-medium text-fg">{label}</span>
+        {progress.total > 0 && progress.phase === "probing" && (
+          <span className="tabular-nums text-muted">
+            {pct}% <span className="ml-1 text-faint">({progress.done}/{progress.total})</span>
+          </span>
+        )}
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-surface2">
+        <div
+          className={`h-full rounded-full bg-brand-500 transition-[width] duration-200 ease-out ${
+            indeterminate ? "w-1/3 animate-pulse" : ""
+          }`}
+          style={indeterminate ? undefined : { width: `${pct}%` }}
+        />
+      </div>
     </div>
   );
 }
