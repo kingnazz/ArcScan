@@ -1,160 +1,163 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, Loader2, Play, Radar, Settings2, Square } from "lucide-react";
-import { parseTarget } from "../lib/ip";
-import { DEFAULT_PORTS } from "../types";
-import type { ScanOptions } from "../types";
-import type { ScanState } from "../hooks/useScan";
+import { useState } from "react";
+import { Loader2, Radar, Settings2, ShieldCheck } from "lucide-react";
+import { Toggle } from "./Toggle";
+import { DEFAULT_PORTS, type ScanOptions } from "../types";
+import { parsePorts } from "../lib/format";
 
 interface ScanControlsProps {
-  state: ScanState;
-  authorized: boolean;
-  onScan: (options: ScanOptions) => void;
-  onCancel: () => void;
+  scanning: boolean;
+  onScan: (opts: ScanOptions) => void;
+  onStop?: () => void;
 }
 
-export function ScanControls({ state, authorized, onScan, onCancel }: ScanControlsProps) {
+export function ScanControls({ scanning, onScan }: ScanControlsProps) {
   const [target, setTarget] = useState("192.168.1.0/24");
+  const [authorized, setAuthorized] = useState(false);
   const [allowPublic, setAllowPublic] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [timeoutMs, setTimeoutMs] = useState(600);
   const [concurrency, setConcurrency] = useState(128);
+  const [portsInput, setPortsInput] = useState(DEFAULT_PORTS.join(", "));
 
-  const parsed = useMemo(() => parseTarget(target), [target]);
-  const scanning = state === "scanning";
+  const canScan = authorized && target.trim().length > 0 && !scanning;
 
-  const publicBlocked = parsed.ok && !parsed.allPrivate && !allowPublic;
-  const canScan =
-    parsed.ok && authorized && !scanning && !publicBlocked;
-
-  const submit = () => {
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
     if (!canScan) return;
+    const ports = parsePorts(portsInput);
     onScan({
       target: target.trim(),
-      timeoutMs,
+      ports: ports.length ? ports : DEFAULT_PORTS,
+      timeout_ms: timeoutMs,
       concurrency,
-      ports: DEFAULT_PORTS,
-      allowPublic,
+      allow_public: allowPublic,
       authorized,
     });
-  };
+  }
 
   return (
-    <div className="panel p-4">
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1">
-          <Radar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+    <form onSubmit={submit} className="panel p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+        <div className="flex-1">
+          <label htmlFor="target" className="mb-1.5 block text-xs font-medium text-slate-400">
+            Target range
+          </label>
           <input
-            className="input w-full pl-9 font-mono"
-            placeholder="192.168.1.0/24  ·  10.0.0.1-10.0.0.50"
+            id="target"
+            className="input font-mono"
             value={target}
-            spellCheck={false}
             onChange={(e) => setTarget(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
+            placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
+            spellCheck={false}
+            autoComplete="off"
           />
         </div>
-
-        {scanning ? (
-          <button className="btn-outline" onClick={onCancel}>
-            <Square className="h-4 w-4" />
-            Stop
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className={`btn-ghost ${showAdvanced ? "border-brand-400/40 text-brand-200" : ""}`}
+            aria-expanded={showAdvanced}
+          >
+            <Settings2 className="h-4 w-4" />
+            Advanced
           </button>
-        ) : (
-          <button className="btn-primary" disabled={!canScan} onClick={submit}>
-            <Play className="h-4 w-4" />
-            Scan
-          </button>
-        )}
-
-        <button
-          className={`icon-btn ${showAdvanced ? "bg-base-700 text-white" : ""}`}
-          title="Scan options"
-          onClick={() => setShowAdvanced((s) => !s)}
-        >
-          {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Settings2 className="h-4 w-4" />}
-        </button>
-      </div>
-
-      {/* Validation + range summary line */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs min-h-[1rem]">
-        {parsed.error ? (
-          <span className="text-danger">{parsed.error}</span>
-        ) : parsed.ok ? (
-          <span className="text-slate-400">
-            <span className="text-slate-200 font-medium tabular-nums">
-              {parsed.count.toLocaleString()}
-            </span>{" "}
-            addresses · {parsed.first} → {parsed.last} ·{" "}
-            {parsed.allPrivate ? (
-              <span className="text-ok">private RFC1918</span>
+          <button type="submit" className="btn-primary min-w-[120px]" disabled={!canScan}>
+            {scanning ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Scanning…
+              </>
             ) : (
-              <span className="text-warn">public range</span>
+              <>
+                <Radar className="h-4 w-4" />
+                Scan
+              </>
             )}
-          </span>
-        ) : null}
-        {!authorized && (
-          <span className="text-warn">Acknowledge authorization to enable scanning.</span>
-        )}
+          </button>
+        </div>
       </div>
 
-      {/* Public-range guard */}
-      {parsed.ok && !parsed.allPrivate && (
-        <label className="mt-2 flex items-start gap-2 rounded-lg bg-warn/10 border border-warn/30 px-3 py-2 cursor-pointer">
-          <AlertTriangle className="h-4 w-4 text-warn mt-0.5 shrink-0" />
-          <span className="text-xs text-slate-300 flex-1">
-            This target falls outside private RFC1918 space. Scanning public addresses
-            requires extra care and explicit authorization.
-            <input
-              type="checkbox"
-              checked={allowPublic}
-              onChange={(e) => setAllowPublic(e.target.checked)}
-              className="ml-2 align-middle h-3.5 w-3.5 rounded border-base-600 bg-base-850 text-warn focus:ring-warn/40"
-            />
-            <span className="ml-1.5 align-middle text-slate-200">Allow public range</span>
+      <div className="mt-3 flex flex-col gap-3 border-t border-white/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <label
+          className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+            authorized
+              ? "border-brand-400/40 bg-brand-500/10 text-brand-100"
+              : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20"
+          }`}
+        >
+          <input
+            type="checkbox"
+            className="peer sr-only"
+            checked={authorized}
+            onChange={(e) => setAuthorized(e.target.checked)}
+          />
+          <span
+            className={`flex h-4 w-4 items-center justify-center rounded border ${
+              authorized ? "border-brand-400 bg-brand-500" : "border-slate-500"
+            }`}
+          >
+            {authorized && <ShieldCheck className="h-3 w-3 text-white" />}
           </span>
+          I am authorized to scan this network
         </label>
-      )}
+
+        <Toggle
+          checked={allowPublic}
+          onChange={setAllowPublic}
+          tone="warning"
+          label="Allow public range"
+          description="Off = private RFC1918 only (recommended)"
+        />
+      </div>
 
       {showAdvanced && (
-        <div className="mt-3 grid grid-cols-2 gap-4 border-t border-base-700/70 pt-3 animate-fade-in">
-          <label className="block">
-            <span className="text-xs text-slate-400">Per-host timeout</span>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="range"
-                min={150}
-                max={2000}
-                step={50}
-                value={timeoutMs}
-                onChange={(e) => setTimeoutMs(Number(e.target.value))}
-                className="flex-1 accent-accent"
-              />
-              <span className="text-xs tabular-nums text-slate-300 w-16 text-right">
-                {timeoutMs} ms
-              </span>
-            </div>
-          </label>
-          <label className="block">
-            <span className="text-xs text-slate-400">Max concurrency</span>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="range"
-                min={16}
-                max={512}
-                step={16}
-                value={concurrency}
-                onChange={(e) => setConcurrency(Number(e.target.value))}
-                className="flex-1 accent-accent"
-              />
-              <span className="text-xs tabular-nums text-slate-300 w-16 text-right">
-                {concurrency}
-              </span>
-            </div>
-          </label>
-          <div className="col-span-2 text-xs text-slate-500">
-            TCP service probe ports: {DEFAULT_PORTS.join(", ")}
+        <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg border border-white/5 bg-arc-900/40 p-3 sm:grid-cols-3 animate-fade-in">
+          <div>
+            <label htmlFor="timeout" className="mb-1 block text-xs font-medium text-slate-400">
+              Per-host timeout: <span className="text-brand-200">{timeoutMs} ms</span>
+            </label>
+            <input
+              id="timeout"
+              type="range"
+              min={100}
+              max={3000}
+              step={50}
+              value={timeoutMs}
+              onChange={(e) => setTimeoutMs(Number(e.target.value))}
+              className="w-full accent-brand-400"
+            />
+          </div>
+          <div>
+            <label htmlFor="concurrency" className="mb-1 block text-xs font-medium text-slate-400">
+              Max concurrency: <span className="text-brand-200">{concurrency}</span>
+            </label>
+            <input
+              id="concurrency"
+              type="range"
+              min={8}
+              max={1024}
+              step={8}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Number(e.target.value))}
+              className="w-full accent-brand-400"
+            />
+          </div>
+          <div>
+            <label htmlFor="ports" className="mb-1 block text-xs font-medium text-slate-400">
+              TCP ports
+            </label>
+            <input
+              id="ports"
+              className="input font-mono text-xs"
+              value={portsInput}
+              onChange={(e) => setPortsInput(e.target.value)}
+              placeholder="22, 80, 443, 445, 3389, 8080"
+              spellCheck={false}
+            />
           </div>
         </div>
       )}
-    </div>
+    </form>
   );
 }

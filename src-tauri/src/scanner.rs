@@ -1,481 +1,415 @@
-//! Network discovery engine.
-//!
-//! ArcScan performs **read-only** host discovery only. For each target address
-//! it issues an ICMP echo (via the OS `ping` utility, so no elevated raw-socket
-//! privileges are required) and, in parallel, attempts TCP connections to a
-//! small set of well-known service ports. A host is considered "up" if it
-//! answers ICMP, accepts a TCP connection, or actively refuses one (RST) — all
-//! of which prove the host is online. No payloads, credentials, or exploit
-//! traffic are ever sent.
+//! The network scanner: liveness detection, port probing, MAC/vendor and
+//! hostname resolution. Everything here is read-only discovery — no exploit,
+//! brute-force, or credential logic exists or belongs in this module.
 
-use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 
+use crate::ipparse;
 use crate::oui;
 
+/// Default TCP ports probed for the fallback liveness / service check.
+pub const DEFAULT_PORTS: [u16; 6] = [22, 80, 443, 445, 3389, 8080];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PortResult {
-    pub port: u16,
-    pub service: String,
+pub struct ScanOptions {
+    pub target: String,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
+    #[serde(default)]
+    pub allow_public: bool,
+    #[serde(default)]
+    pub authorized: bool,
+}
+
+fn default_timeout() -> u64 {
+    600
+}
+fn default_concurrency() -> usize {
+    128
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Host {
+pub struct HostResult {
     pub ip: String,
     pub hostname: Option<String>,
     pub mac: Option<String>,
     pub vendor: Option<String>,
-    pub open_ports: Vec<PortResult>,
+    pub open_ports: Vec<u16>,
     pub response_ms: Option<u64>,
-    pub status: String,
     pub last_seen: String,
-    pub is_new: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScanOptions {
-    pub target: String,
-    pub timeout_ms: u64,
-    pub concurrency: usize,
-    pub ports: Vec<u16>,
-    pub allow_public: bool,
-    pub authorized: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScanProgress {
-    pub scanned: usize,
-    pub total: usize,
-    pub found: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
-    pub scan_id: Option<i64>,
     pub target: String,
-    pub started_at: String,
-    pub finished_at: String,
-    pub hosts: Vec<Host>,
-    pub total_scanned: usize,
+    pub duration_ms: u64,
+    pub scanned: usize,
+    pub hosts: Vec<HostResult>,
 }
 
-pub fn service_name(port: u16) -> &'static str {
-    match port {
-        22 => "SSH",
-        80 => "HTTP",
-        443 => "HTTPS",
-        445 => "SMB",
-        3389 => "RDP",
-        8080 => "HTTP-Alt",
-        8443 => "HTTPS-Alt",
-        21 => "FTP",
-        23 => "Telnet",
-        25 => "SMTP",
-        53 => "DNS",
-        3306 => "MySQL",
-        5432 => "PostgreSQL",
-        _ => "TCP",
+/// Build a `tokio::process::Command` that never pops a console window on
+/// Windows. ArcScan is a GUI app, so any child process (`ping`, `arp`, the
+/// launch helpers) must be spawned with CREATE_NO_WINDOW or a `/24` scan would
+/// flash hundreds of `cmd` windows.
+pub fn quiet_command(program: &str) -> tokio::process::Command {
+    let std_cmd = std::process::Command::new(program);
+    #[allow(unused_mut)]
+    let mut std_cmd = std_cmd;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std_cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    tokio::process::Command::from(std_cmd)
 }
 
-pub fn is_private(ip: Ipv4Addr) -> bool {
-    ip.is_private()
-}
-
-/// Expand a CIDR block, dashed range, or single address into a list of IPv4
-/// addresses. Mirrors the parsing in the frontend's `src/lib/ip.ts`.
-pub fn parse_target(input: &str) -> Result<Vec<Ipv4Addr>, String> {
-    let target = input.trim();
-    if target.is_empty() {
-        return Err("Enter an IP range or CIDR.".into());
+/// Validate scan options against the safety policy, independently of the UI.
+/// Returns the concrete host list on success.
+pub fn validate(opts: &ScanOptions) -> Result<Vec<Ipv4Addr>, String> {
+    if !opts.authorized {
+        return Err(
+            "Authorization not acknowledged. You must confirm you are authorized to scan this network."
+                .into(),
+        );
     }
-
-    const MAX_HOSTS: u64 = 65_536;
-
-    let (lo, hi): (u32, u32) = if let Some((addr, prefix_str)) = target.split_once('/') {
-        let base: Ipv4Addr = addr
-            .trim()
-            .parse()
-            .map_err(|_| "Invalid CIDR address.".to_string())?;
-        let prefix: u32 = prefix_str
-            .trim()
-            .parse()
-            .map_err(|_| "Invalid CIDR prefix.".to_string())?;
-        if prefix > 32 {
-            return Err("CIDR prefix must be between 0 and 32.".into());
+    let hosts = ipparse::parse_target(&opts.target)?;
+    if !opts.allow_public {
+        if let Some(pub_ip) = hosts.iter().find(|ip| !ipparse::is_private(ip)) {
+            return Err(format!(
+                "`{pub_ip}` is a public address. ArcScan only scans private RFC1918 ranges unless the \"allow public range\" option is explicitly enabled."
+            ));
         }
-        let base = u32::from(base);
-        let mask: u32 = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
-        (base & mask, (base & mask) | !mask)
-    } else if let Some((start_str, end_str)) = target.split_once('-') {
-        let start: Ipv4Addr = start_str
-            .trim()
-            .parse()
-            .map_err(|_| "Invalid start address.".to_string())?;
-        let start = u32::from(start);
-        let end: u32 = {
-            let e = end_str.trim();
-            if e.contains('.') {
-                u32::from(
-                    e.parse::<Ipv4Addr>()
-                        .map_err(|_| "Invalid end address.".to_string())?,
-                )
-            } else {
-                let last: u32 = e.parse().map_err(|_| "Invalid end octet.".to_string())?;
-                if last > 255 {
-                    return Err("End octet must be 0-255.".into());
-                }
-                (start & 0xffff_ff00) | last
-            }
-        };
-        (start.min(end), start.max(end))
-    } else {
-        let single: Ipv4Addr = target
-            .parse()
-            .map_err(|_| "Invalid IP address.".to_string())?;
-        let v = u32::from(single);
-        (v, v)
-    };
-
-    let count = (hi as u64) - (lo as u64) + 1;
-    if count > MAX_HOSTS {
-        return Err(format!(
-            "Range too large ({count} hosts). Limit is {MAX_HOSTS}."
-        ));
     }
-
-    Ok((lo..=hi).map(Ipv4Addr::from).collect())
+    Ok(hosts)
 }
 
-struct ProbeOutcome {
-    alive: bool,
-    open_ports: Vec<PortResult>,
+/// Run a full scan. Applies safety validation first.
+pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
+    let hosts = validate(&opts)?;
+
+    let ports: Vec<u16> = if opts.ports.is_empty() {
+        DEFAULT_PORTS.to_vec()
+    } else {
+        opts.ports.clone()
+    };
+    let timeout_ms = opts.timeout_ms.clamp(50, 10_000);
+    let concurrency = opts.concurrency.clamp(1, 4096);
+    let per_probe = Duration::from_millis(timeout_ms);
+
+    let started = Instant::now();
+
+    // Read the ARP cache once up front — a single OS call, not per host.
+    let arp = read_arp_cache().await;
+
+    // Probe liveness + ports concurrently, bounded by the semaphore.
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let ports = Arc::new(ports);
+    let scanned = hosts.len();
+
+    let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts.into_iter())
+        .map(|ip| {
+            let sem = sem.clone();
+            let ports = ports.clone();
+            async move {
+                let _permit = sem.acquire().await.unwrap();
+                let probe = probe_host(ip, &ports, per_probe).await;
+                (ip, probe)
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+
+    // Keep only live hosts.
+    probe_results.retain(|(_, p)| p.up);
+    probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
+
+    // Resolve hostnames for the live hosts concurrently (bounded, short
+    // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
+    let live_ips: Vec<Ipv4Addr> = probe_results.iter().map(|(ip, _)| *ip).collect();
+    let dns_sem = Arc::new(Semaphore::new(256));
+    let hostnames: HashMap<Ipv4Addr, String> = stream::iter(live_ips.into_iter())
+        .map(|ip| {
+            let dns_sem = dns_sem.clone();
+            async move {
+                let _permit = dns_sem.acquire().await.unwrap();
+                let name = resolve_hostname(ip).await;
+                (ip, name)
+            }
+        })
+        .buffer_unordered(256)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|(ip, name)| name.map(|n| (ip, n)))
+        .collect();
+
+    let now = chrono::Local::now().to_rfc3339();
+    let hosts_out: Vec<HostResult> = probe_results
+        .into_iter()
+        .map(|(ip, probe)| {
+            let mac = arp.get(&ip).cloned();
+            let vendor = mac.as_deref().and_then(oui::lookup);
+            HostResult {
+                ip: ip.to_string(),
+                hostname: hostnames.get(&ip).cloned(),
+                mac,
+                vendor,
+                open_ports: probe.open_ports,
+                response_ms: probe.response_ms,
+                last_seen: now.clone(),
+            }
+        })
+        .collect();
+
+    Ok(ScanResult {
+        target: opts.target,
+        duration_ms: started.elapsed().as_millis() as u64,
+        scanned,
+        hosts: hosts_out,
+    })
+}
+
+struct Probe {
+    up: bool,
+    open_ports: Vec<u16>,
     response_ms: Option<u64>,
 }
 
-/// Probe a single host: ICMP echo plus parallel TCP connects to `ports`.
-async fn probe_host(ip: Ipv4Addr, ports: &[u16], timeout: Duration) -> ProbeOutcome {
-    // ICMP echo via the OS ping utility (no raw socket privileges needed).
-    let icmp_rtt = icmp_ping(ip, timeout).await;
+async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
+    // Fire ICMP ping and all TCP probes concurrently.
+    let ping_fut = icmp_ping(ip, per_probe);
+    let tcp_fut = async {
+        stream::iter(ports.iter().copied())
+            .map(|port| async move { (port, tcp_probe(ip, port, per_probe).await) })
+            .buffer_unordered(ports.len().max(1))
+            .collect::<Vec<_>>()
+            .await
+    };
 
-    // TCP connects, all ports in parallel.
-    let mut tasks = FuturesUnordered::new();
-    for &port in ports {
-        tasks.push(async move {
-            let addr = SocketAddr::new(IpAddr::V4(ip), port);
-            let start = Instant::now();
-            match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
-                Ok(Ok(_stream)) => (port, true, true, Some(start.elapsed())),
-                Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => {
-                    // Refused proves the host is online even though the port is closed.
-                    (port, false, true, Some(start.elapsed()))
-                }
-                _ => (port, false, false, None),
-            }
-        });
-    }
+    let (ping_rtt, tcp_results) = futures::join!(ping_fut, tcp_fut);
 
     let mut open_ports = Vec::new();
-    let mut tcp_alive = false;
-    let mut tcp_rtt: Option<Duration> = None;
-    while let Some((port, is_open, responded, rtt)) = tasks.next().await {
-        if responded {
-            tcp_alive = true;
-            if let Some(r) = rtt {
-                tcp_rtt = Some(tcp_rtt.map_or(r, |cur| cur.min(r)));
+    let mut best: Option<u64> = None;
+    let mut alive_via_tcp = false;
+
+    if let Some(rtt) = ping_rtt {
+        best = Some(rtt.as_millis() as u64);
+    }
+
+    for (port, state) in tcp_results {
+        match state {
+            PortState::Open(d) => {
+                open_ports.push(port);
+                alive_via_tcp = true;
+                let ms = d.as_millis() as u64;
+                best = Some(best.map_or(ms, |b| b.min(ms)));
             }
-        }
-        if is_open {
-            open_ports.push(PortResult {
-                port,
-                service: service_name(port).to_string(),
-            });
+            // A refused connection (RST) still proves the host is alive.
+            PortState::Refused(d) => {
+                alive_via_tcp = true;
+                let ms = d.as_millis() as u64;
+                best = Some(best.map_or(ms, |b| b.min(ms)));
+            }
+            PortState::NoReply => {}
         }
     }
-    open_ports.sort_by_key(|p| p.port);
 
-    let response_ms = icmp_rtt.or_else(|| tcp_rtt.map(|d| d.as_millis() as u64));
-    ProbeOutcome {
-        alive: icmp_rtt.is_some() || tcp_alive,
+    open_ports.sort_unstable();
+    Probe {
+        up: ping_rtt.is_some() || alive_via_tcp,
         open_ports,
-        response_ms,
+        response_ms: best,
     }
 }
 
-/// Issue one ICMP echo via the platform `ping` binary; returns RTT in ms.
-async fn icmp_ping(ip: Ipv4Addr, timeout: Duration) -> Option<u64> {
-    use tokio::process::Command;
+enum PortState {
+    Open(Duration),
+    Refused(Duration),
+    NoReply,
+}
 
-    let ip_str = ip.to_string();
-    let timeout_ms = timeout.as_millis().max(1) as u64;
+async fn tcp_probe(ip: Ipv4Addr, port: u16, per_probe: Duration) -> PortState {
+    let addr = SocketAddr::new(IpAddr::V4(ip), port);
+    let start = Instant::now();
+    match timeout(per_probe, tokio::net::TcpStream::connect(addr)).await {
+        Ok(Ok(_stream)) => PortState::Open(start.elapsed()),
+        Ok(Err(e)) => match e.kind() {
+            // Actively refused == host is up but port closed.
+            std::io::ErrorKind::ConnectionRefused => PortState::Refused(start.elapsed()),
+            _ => PortState::NoReply,
+        },
+        Err(_) => PortState::NoReply, // timed out
+    }
+}
 
-    let mut cmd;
-    #[cfg(target_os = "windows")]
+/// ICMP echo via the OS `ping` binary — deliberately avoids raw sockets so the
+/// app never needs administrator/root privileges.
+async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<Duration> {
+    let ms = per_probe.as_millis().max(1);
+    let ip_s = ip.to_string();
+    let start = Instant::now();
+
+    let mut cmd = quiet_command("ping");
+    #[cfg(windows)]
     {
-        cmd = Command::new("ping");
-        cmd.args(["-n", "1", "-w", &timeout_ms.to_string(), &ip_str]);
+        // -n 1 : one echo, -w <ms> : timeout in milliseconds
+        cmd.args(["-n", "1", "-w", &ms.to_string(), &ip_s]);
     }
     #[cfg(target_os = "macos")]
     {
-        cmd = Command::new("ping");
-        // macOS expects -W in milliseconds and -t (TTL) is unrelated; use -W.
-        cmd.args(["-c", "1", "-W", &timeout_ms.to_string(), &ip_str]);
+        // macOS: -c 1 count, -t <sec> total timeout (min 1s)
+        let secs = ms.div_ceil(1000).max(1);
+        cmd.args(["-c", "1", "-t", &secs.to_string(), &ip_s]);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let timeout_secs = ((timeout_ms as f64) / 1000.0).ceil().max(1.0) as u64;
-        cmd = Command::new("ping");
-        cmd.args(["-c", "1", "-W", &timeout_secs.to_string(), &ip_str]);
+        // Linux/BSD: -c 1 count, -W <sec> reply timeout, -n numeric
+        let secs = ms.div_ceil(1000).max(1);
+        cmd.args(["-c", "1", "-n", "-W", &secs.to_string(), &ip_s]);
     }
 
-    cmd.kill_on_drop(true);
-    let output = cmd.output().await.ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    parse_ping_rtt(&text)
-}
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null());
 
-/// Extract round-trip time (ms) from `ping` stdout across platforms.
-fn parse_ping_rtt(text: &str) -> Option<u64> {
-    // Look for "time=1.23 ms", "time=1ms", or "time<1ms".
-    let lower = text.to_lowercase();
-    if let Some(idx) = lower.find("time=") {
-        let rest = &lower[idx + 5..];
-        let num: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        return num.parse::<f64>().ok().map(|v| v.round() as u64);
-    }
-    if lower.contains("time<") {
-        return Some(0);
-    }
-    // Host answered but no parsable time; report 0 rather than nothing.
-    if lower.contains("ttl=") || lower.contains("bytes from") {
-        Some(0)
-    } else {
-        None
-    }
-}
-
-/// Read the OS ARP cache into an `ip -> mac` map (colon-separated, lower-case).
-/// MAC addresses are only available for hosts on the same L2 segment.
-fn read_arp_table() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/net/arp") {
-            for line in content.lines().skip(1) {
-                let cols: Vec<&str> = line.split_whitespace().collect();
-                // IP HW-type Flags HW-address Mask Device
-                if cols.len() >= 4 {
-                    let ip = cols[0].to_string();
-                    let mac = cols[3].to_lowercase();
-                    if mac != "00:00:00:00:00:00" && mac.contains(':') {
-                        map.insert(ip, mac);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    {
-        if let Ok(output) = std::process::Command::new("arp").arg("-a").output() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                if let Some((ip, mac)) = parse_arp_line(line) {
-                    map.insert(ip, mac);
-                }
-            }
-        }
-    }
-
-    map
-}
-
-/// Parse a single `arp -a` line (Windows / macOS formats) into (ip, mac).
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn parse_arp_line(line: &str) -> Option<(String, String)> {
-    let mut ip: Option<String> = None;
-    let mut mac: Option<String> = None;
-    for token in line.split_whitespace() {
-        let t = token.trim_matches(|c| c == '(' || c == ')');
-        if t.parse::<std::net::Ipv4Addr>().is_ok() {
-            ip = Some(t.to_string());
-        } else {
-            let normalized = t.replace('-', ":").to_lowercase();
-            let parts: Vec<&str> = normalized.split(':').collect();
-            if parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok()) {
-                mac = Some(normalized);
-            }
-        }
-    }
-    match (ip, mac) {
-        (Some(ip), Some(mac)) if mac != "ff:ff:ff:ff:ff:ff" => Some((ip, mac)),
+    // Guard against a hung ping with a slightly larger outer timeout.
+    let outer = per_probe + Duration::from_millis(500);
+    match timeout(outer, cmd.status()).await {
+        Ok(Ok(status)) if status.success() => Some(start.elapsed()),
         _ => None,
     }
 }
 
-/// Reverse-DNS a single address (blocking call, run off the async runtime).
-fn reverse_dns(ip: Ipv4Addr) -> Option<String> {
-    dns_lookup::lookup_addr(&IpAddr::V4(ip))
-        .ok()
-        .filter(|name| !name.is_empty() && name.parse::<Ipv4Addr>().is_err())
+/// Reverse-DNS a single address with a short timeout, run on a blocking thread
+/// because `dns_lookup` is synchronous.
+async fn resolve_hostname(ip: Ipv4Addr) -> Option<String> {
+    let fut = tokio::task::spawn_blocking(move || dns_lookup::lookup_addr(&IpAddr::V4(ip)).ok());
+    match timeout(Duration::from_millis(1500), fut).await {
+        Ok(Ok(Some(name))) => {
+            let name = name.trim().trim_end_matches('.').to_string();
+            // Ignore results that just echo the IP back.
+            if name.is_empty() || name == ip.to_string() {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        _ => None,
+    }
 }
 
-/// Run a full scan, invoking `on_event` for each progress tick and discovered
-/// host. `cancel` is polled to allow cooperative cancellation. `previous_ips`
-/// is the set of hosts seen in the prior saved scan, used to flag new devices.
-pub async fn run_scan<F>(
-    options: &ScanOptions,
-    previous_ips: &HashSet<String>,
-    cancel: Arc<std::sync::atomic::AtomicBool>,
-    on_event: F,
-) -> Result<ScanResult, String>
-where
-    F: Fn(ScanEvent) + Send + Sync + 'static,
-{
-    if !options.authorized {
-        return Err("Scan blocked: authorization was not acknowledged.".into());
-    }
-
-    let addrs = parse_target(&options.target)?;
-
-    if !options.allow_public {
-        if let Some(public) = addrs.iter().find(|ip| !is_private(**ip)) {
-            return Err(format!(
-                "Refusing to scan public address {public}. Enable 'Allow public range' to override (authorized use only)."
-            ));
-        }
-    }
-
-    let ports: Vec<u16> = if options.ports.is_empty() {
-        vec![22, 80, 443, 445, 3389, 8080]
-    } else {
-        options.ports.clone()
+/// Read the system ARP cache in a single OS call and map IPv4 -> normalized MAC.
+async fn read_arp_cache() -> HashMap<Ipv4Addr, String> {
+    let mut cmd = quiet_command("arp");
+    cmd.arg("-a");
+    cmd.stdin(std::process::Stdio::null());
+    let output = match timeout(Duration::from_secs(5), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        _ => return HashMap::new(),
     };
-    let timeout = Duration::from_millis(options.timeout_ms.clamp(50, 10_000));
-    let concurrency = options.concurrency.clamp(1, 1024);
-
-    let started_at = Utc::now().to_rfc3339();
-    let total = addrs.len();
-    let scanned = Arc::new(AtomicUsize::new(0));
-    let found = Arc::new(AtomicUsize::new(0));
-    let on_event = Arc::new(on_event);
-
-    let ports = Arc::new(ports);
-    let mut in_flight = FuturesUnordered::new();
-    let mut iter = addrs.into_iter();
-    let mut hosts: Vec<Host> = Vec::new();
-
-    // Seed the pipeline up to the concurrency limit.
-    for _ in 0..concurrency {
-        match iter.next() {
-            Some(ip) => in_flight.push(spawn_probe(ip, ports.clone(), timeout)),
-            None => break,
-        }
-    }
-
-    while let Some((ip, outcome)) = in_flight.next().await {
-        let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
-
-        if outcome.alive {
-            let found_n = found.fetch_add(1, Ordering::Relaxed) + 1;
-            let host = Host {
-                ip: ip.to_string(),
-                hostname: None,
-                mac: None,
-                vendor: None,
-                open_ports: outcome.open_ports,
-                response_ms: outcome.response_ms,
-                status: "up".into(),
-                last_seen: Utc::now().to_rfc3339(),
-                is_new: !previous_ips.contains(&ip.to_string()),
-            };
-            (on_event)(ScanEvent::Host(host.clone()));
-            (on_event)(ScanEvent::Progress(ScanProgress {
-                scanned: done,
-                total,
-                found: found_n,
-            }));
-            hosts.push(host);
-        } else {
-            (on_event)(ScanEvent::Progress(ScanProgress {
-                scanned: done,
-                total,
-                found: found.load(Ordering::Relaxed),
-            }));
-        }
-
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-
-        if let Some(ip) = iter.next() {
-            in_flight.push(spawn_probe(ip, ports.clone(), timeout));
-        }
-    }
-
-    // Enrich live hosts with reverse-DNS hostnames and ARP/vendor data.
-    let arp = tokio::task::spawn_blocking(read_arp_table)
-        .await
-        .unwrap_or_default();
-
-    for host in hosts.iter_mut() {
-        if let Some(mac) = arp.get(&host.ip) {
-            host.vendor = oui::vendor_for_mac(mac);
-            host.mac = Some(mac.clone());
-        }
-        if let Ok(ip) = host.ip.parse::<Ipv4Addr>() {
-            host.hostname = tokio::task::spawn_blocking(move || reverse_dns(ip))
-                .await
-                .unwrap_or(None);
-        }
-    }
-
-    hosts.sort_by_key(|h| h.ip.parse::<Ipv4Addr>().map(u32::from).unwrap_or(0));
-
-    Ok(ScanResult {
-        scan_id: None,
-        target: options.target.clone(),
-        started_at,
-        finished_at: Utc::now().to_rfc3339(),
-        total_scanned: scanned.load(Ordering::Relaxed),
-        hosts,
-    })
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_arp(&text)
 }
 
-fn spawn_probe(
-    ip: Ipv4Addr,
-    ports: Arc<Vec<u16>>,
-    timeout: Duration,
-) -> impl std::future::Future<Output = (Ipv4Addr, ProbeOutcome)> {
-    async move {
-        let outcome = probe_host(ip, &ports, timeout).await;
-        (ip, outcome)
+/// Parse `arp -a` output across platforms. Windows uses `-` separators and a
+/// column layout; unix uses `host (ip) at mac`. We just scan each line for an
+/// IPv4 token and a MAC-looking token, which handles both.
+fn parse_arp(text: &str) -> HashMap<Ipv4Addr, String> {
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        let mut ip: Option<Ipv4Addr> = None;
+        let mut mac: Option<String> = None;
+        for raw in line.split(|c: char| c.is_whitespace() || c == '(' || c == ')') {
+            let tok = raw.trim();
+            if tok.is_empty() {
+                continue;
+            }
+            if ip.is_none() {
+                if let Ok(parsed) = tok.parse::<Ipv4Addr>() {
+                    ip = Some(parsed);
+                    continue;
+                }
+            }
+            if mac.is_none() {
+                if let Some(normalized) = normalize_mac(tok) {
+                    mac = Some(normalized);
+                }
+            }
+        }
+        if let (Some(ip), Some(mac)) = (ip, mac) {
+            map.insert(ip, mac);
+        }
     }
+    map
 }
 
-/// Events streamed to the frontend during a scan.
-pub enum ScanEvent {
-    Progress(ScanProgress),
-    Host(Host),
+/// Normalize a MAC token (`00-11-22-33-44-55` or `00:11:22:...`) into an
+/// uppercase colon-separated form. Returns None for non-MAC tokens (e.g. the
+/// literal `ff-ff-ff-ff-ff-ff` broadcast or incomplete/incorrect tokens).
+fn normalize_mac(tok: &str) -> Option<String> {
+    let sep = if tok.contains('-') {
+        '-'
+    } else if tok.contains(':') {
+        ':'
+    } else {
+        return None;
+    };
+    let parts: Vec<&str> = tok.split(sep).collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let mut octets = Vec::with_capacity(6);
+    for p in parts {
+        if p.len() != 2 || !p.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        octets.push(p.to_ascii_uppercase());
+    }
+    let mac = octets.join(":");
+    if mac == "FF:FF:FF:FF:FF:FF" || mac == "00:00:00:00:00:00" {
+        return None;
+    }
+    Some(mac)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_windows_arp() {
+        let sample = "\nInterface: 192.168.1.10 --- 0x5\n  Internet Address      Physical Address      Type\n  192.168.1.1           a0-11-22-33-44-55     dynamic\n  192.168.1.255         ff-ff-ff-ff-ff-ff     static\n";
+        let map = parse_arp(sample);
+        assert_eq!(
+            map.get(&"192.168.1.1".parse().unwrap()).map(String::as_str),
+            Some("A0:11:22:33:44:55")
+        );
+        // broadcast MAC is ignored
+        assert!(!map.contains_key(&"192.168.1.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn parses_unix_arp() {
+        let sample = "router.lan (192.168.0.1) at 3c:37:86:aa:bb:cc [ether] on eth0\n? (192.168.0.44) at 00:1a:2b:3c:4d:5e [ether] on eth0\n";
+        let map = parse_arp(sample);
+        assert_eq!(
+            map.get(&"192.168.0.1".parse().unwrap()).map(String::as_str),
+            Some("3C:37:86:AA:BB:CC")
+        );
+        assert_eq!(map.len(), 2);
+    }
 }

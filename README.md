@@ -1,219 +1,175 @@
+<div align="center">
+
 # ArcScan
 
-**Authorized LAN discovery and client reporting for MSPs.**
+**Authorized LAN discovery & client reporting for MSPs**
 
-ArcScan is a polished Windows-first desktop app for safe, read-only network
-inventory — conceptually similar to Advanced IP Scanner, but focused on
-authorized assessment and clean client reporting. It discovers live hosts,
-identifies services, and keeps a searchable scan history.
+A polished, safe, read-only network inventory tool — conceptually similar to
+Advanced IP Scanner, but built for managed service providers who need fast,
+authorized discovery and clean client reporting.
 
-> ⚠️ **Authorized use only.** Only scan networks you own or have explicit
-> written authorization to assess. Unauthorized network scanning may be
-> illegal in your jurisdiction. ArcScan performs **read-only host discovery**
-> only — it never attempts credential, brute-force, vulnerability, or
-> exploitation activity. By default it refuses to scan anything outside the
-> private RFC1918 ranges (`10/8`, `172.16/12`, `192.168/16`).
+Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
+
+</div>
 
 ---
+
+> ⚠️ **Authorized use only.** ArcScan performs read-only discovery. Only scan
+> networks you own or have **explicit written authorization** to assess.
+> Unauthorized network scanning may be illegal in your jurisdiction. ArcScan
+> contains no exploit, brute-force, credential-attack, or vulnerability-
+> exploitation code, and never will.
 
 ## Features
 
 - **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
-  (`10.0.0.1-10.0.0.50` or `10.0.0.1-50`), or a single address.
-- **Hybrid discovery** — ICMP echo (via the OS `ping`, so no elevated
-  raw-socket privileges are needed) with a parallel TCP probe of common
-  service ports (`22, 80, 443, 445, 3389, 8080`). A host counts as *up* if it
-  answers ICMP, accepts a TCP connection, or actively refuses one.
-- **Rich host table** — IP, hostname (reverse DNS), MAC + vendor (from the OS
-  ARP cache, same-subnet only), open ports, response time, and last-seen, with
-  live filtering and column sorting.
-- **One-click actions** — copy IP, open the web interface, launch RDP
-  (`mstsc`), or open an SSH session.
-- **Dashboard** — devices found, unknown devices, open RDP, open SMB, and new
-  devices since the last scan.
-- **Scan history** — every scan is saved to SQLite and can be reopened or
-  deleted from the sidebar.
-- **CSV export** — export the current result set for client reporting.
-- **Premium dark UI** — built with Tailwind, no toy/template look.
+  (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
+- **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
+  raw-socket/administrator privileges required), with a TCP fallback on ports
+  22, 80, 443, 445, 3389, and 8080. A host counts as **up** if it answers
+  ICMP, accepts a TCP connection, *or* actively refuses one (RST) — all three
+  prove liveness.
+- **Fast, modern results table** — IP, hostname, MAC, vendor, open ports,
+  response time, and last-seen, with column sorting and instant
+  filtering/search.
+- **Per-host actions** — copy IP, open web interface, open RDP, open SSH, and
+  export the whole result set to CSV via a native save dialog.
+- **Scan history** — every scan is saved to a local SQLite database and is
+  browsable, re-openable, and deletable.
+- **Dashboard** — total devices, unknown devices, open RDP count, open SMB
+  count, and **new devices since the last scan**.
+- **Full IEEE OUI vendor registry** — ~39,000 MA-L prefixes embedded for real
+  vendor identification, loaded once into an in-memory map for O(1) lookups.
+- **Tunable performance** — per-host timeout and max concurrency are exposed as
+  advanced options (defaults: 128 concurrent probes, 600 ms timeout).
 
----
+## Safety & scope (non-negotiable)
 
-## Tech stack
+These constraints are enforced in the Rust backend, **independently of the UI**
+(the frontend cannot bypass them):
 
-| Layer      | Choice                                   |
-| ---------- | ---------------------------------------- |
-| Shell      | [Tauri 2](https://tauri.app)             |
-| Frontend   | React 18 + TypeScript + Vite             |
-| Styling    | Tailwind CSS 3                           |
-| Backend    | Rust (async via Tokio)                   |
-| Storage    | SQLite (via `rusqlite`, bundled)         |
+1. **Private ranges only by default.** Only RFC1918 ranges (`10.0.0.0/8`,
+   `172.16.0.0/12`, `192.168.0.0/16`) are scanned unless the operator
+   explicitly enables the **Allow public range** toggle. The backend
+   re-validates every target address regardless of what the UI sends.
+2. **Explicit authorization required.** Every scan requires the *"I am
+   authorized to scan this network"* acknowledgement, and a persistent warning
+   is always visible.
+3. **Read-only discovery only.** No exploit, brute-force, credential, or
+   vulnerability-exploitation logic exists in the codebase.
+4. **Injection-safe launches.** Before shelling out to launch RDP/SSH/a
+   browser, the backend accepts only a well-formed bare IPv4 address, so no
+   argument injection is possible.
 
-### Project layout
+## Architecture
 
 ```
 ArcScan/
-├── src/                     # React + TypeScript frontend
-│   ├── components/          # Dashboard, ScanControls, ResultsTable, …
-│   ├── hooks/useScan.ts     # Scan lifecycle + event buffering
-│   ├── lib/                 # api (Tauri bridge), ip parsing, csv, mock
-│   └── types.ts             # Shared types mirroring the Rust structs
-├── src-tauri/               # Rust backend
+├── src/                      React + TypeScript frontend
+│   ├── lib/
+│   │   ├── api.ts            Single API surface — detects Tauri, falls back to mock
+│   │   ├── mock.ts           Pure-TS mock scanner (runs in a plain browser)
+│   │   └── format.ts         Formatting + service helpers
+│   ├── components/           Dashboard, ScanControls, HostsTable, ScanHistory, …
+│   ├── types.ts              Types mirrored from the Rust serde structs
+│   └── App.tsx               Orchestration + dashboard stats
+├── src-tauri/                Rust backend
 │   └── src/
-│       ├── scanner.rs       # Discovery engine (ICMP + TCP, ARP, rDNS)
-│       ├── db.rs            # SQLite schema + persistence
-│       ├── oui.rs           # Embedded MAC vendor lookup
-│       ├── commands.rs      # Tauri command handlers + launch actions
-│       └── lib.rs / main.rs # App wiring
-└── src-tauri/tauri.conf.json
+│       ├── ipparse.rs        Target parsing + RFC1918 validation (+ unit tests)
+│       ├── scanner.rs        Ping / TCP probes, ARP, concurrent DNS (+ tests)
+│       ├── oui.rs            Embedded IEEE OUI vendor lookup
+│       ├── db.rs             SQLite persistence (bundled rusqlite)
+│       ├── commands.rs       Tauri command surface + CSV + launch helpers
+│       └── oui_data.tsv      Compact embedded vendor table (generated)
+├── scripts/
+│   ├── generate_icon.py      Pure-stdlib PNG/ICO icon generator
+│   └── generate_oui.py       Compresses the IEEE OUI CSV into oui_data.tsv
+└── .github/workflows/        CI (checks) + Windows x64/ARM64 installer builds
 ```
 
-### Backend command surface
-
-| Command           | Purpose                                          |
-| ----------------- | ------------------------------------------------ |
-| `scan_network`    | Run a scan; streams `scan://progress` / `scan://host` events |
-| `cancel_scan`     | Cooperatively stop the running scan              |
-| `list_scans`      | Saved scan summaries (newest first)              |
-| `get_scan_hosts`  | Hosts for a saved scan                           |
-| `delete_scan`     | Remove a saved scan                              |
-| `launch_action`   | Open web / RDP / SSH for a host                  |
-| `write_text_file` | Persist exported CSV to a chosen path            |
-
-The scan-history database lives in the OS app-data directory, e.g. on Windows:
-`%APPDATA%\com.arcscan.app\arcscan.db`.
-
----
+The frontend talks to exactly one module (`src/lib/api.ts`). When running
+inside Tauri it calls the native Rust commands; in a plain browser it
+transparently falls back to `src/lib/mock.ts`, so the entire UI can be
+developed and demoed with **no native backend**.
 
 ## Development
 
 ### Prerequisites
 
-- **Node.js** 18+ and **npm**
-- **Rust** (stable) via [rustup](https://rustup.rs)
-- Platform toolchain for Tauri 2 — see the
-  [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/):
-  - **Windows:** Microsoft C++ Build Tools + the WebView2 runtime (preinstalled
-    on Windows 11; the installer bundles it otherwise).
-  - **Linux (dev/build host):** `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`,
-    `libgtk-3-dev`, `librsvg2-dev`, plus the usual `build-essential` tooling.
-  - **macOS:** Xcode command-line tools.
+- **Node.js** 20+
+- **Rust** (stable) + the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+  for your platform. On Windows that means the MSVC build tools and WebView2
+  (preinstalled on Windows 11).
 
-### Browser preview (mock data — no Rust needed)
-
-The UI runs fully in a browser against a built-in mock scanner, which is handy
-for frontend work:
+### Frontend-only (browser, mock data)
 
 ```bash
 npm install
-npm run dev          # http://localhost:1420
+npm run dev        # http://localhost:1420 — full UI with the mock scanner
 ```
 
-### Desktop app (real scanning)
+### Full desktop app (native scanning)
 
 ```bash
 npm install
-npm run tauri:dev    # builds the Rust backend and opens the desktop window
+npm run tauri:dev  # launches the native window with the real Rust backend
 ```
 
-### Useful scripts
+### Useful commands
 
 ```bash
-npm run typecheck    # tsc --noEmit
-npm run build        # type-check + production frontend bundle
-cargo check --manifest-path src-tauri/Cargo.toml
+npm run typecheck              # TypeScript
+npm run build                  # frontend production build
+cd src-tauri && cargo test     # Rust unit tests (IP parsing, ARP, OUI)
+cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
-
----
 
 ## Packaging
 
-ArcScan uses Tauri's bundler. Production builds run `npm run build` for the
-frontend automatically (configured via `beforeBuildCommand`).
-
-### Windows (primary target)
+Build native installers locally:
 
 ```bash
-npm install
-npm run tauri:build
+npm run tauri:build            # MSI + NSIS for the host architecture
 ```
 
-Artifacts are written to `src-tauri/target/release/bundle/`:
+Artifacts land in `src-tauri/target/<target>/release/bundle/` (`msi/*.msi` and
+`nsis/*-setup.exe`).
 
-- `msi/ArcScan_0.1.0_x64_en-US.msi` — WiX MSI installer
-- `nsis/ArcScan_0.1.0_x64-setup.exe` — NSIS setup executable
-- `src-tauri/target/release/arcscan.exe` — the raw executable
+### CI / releases
 
-To produce only one installer type:
+`.github/workflows/build.yml` builds a matrix of both Windows CPU
+architectures on `windows-latest` — the hosted runner ships the MSVC ARM64
+cross-compile tools, so no dedicated ARM runner is needed:
+
+| Target | Artifact |
+| --- | --- |
+| `x86_64-pc-windows-msvc` | `ArcScan-windows-x64` (MSI + NSIS `.exe`) |
+| `aarch64-pc-windows-msvc` | `ArcScan-windows-arm64` (MSI + NSIS `.exe`) |
+
+Each is uploaded as a separate downloadable artifact. Pushing a `v*` tag also
+drafts a GitHub Release with all four installers attached.
+
+> **Version bumps matter.** Windows Installer treats installing the *same*
+> version as a no-op and will **not** replace an installed binary. Any change
+> meant to reach an already-installed machine must bump the version in all
+> three of `package.json`, `src-tauri/Cargo.toml`, and
+> `src-tauri/tauri.conf.json` (keep them in sync).
+
+## Regenerating assets
+
+Both are one-time generation steps; the outputs are committed to the repo so
+builds are reproducible offline.
 
 ```bash
-npm run tauri:build -- --bundles msi      # or: nsis
+# App icon set (PNG sizes + Windows .ico) — pure Python standard library
+python3 scripts/generate_icon.py
+
+# Vendor table from the live IEEE MA-L registry (downloads ~4 MB CSV)
+python3 scripts/generate_oui.py
+# or, from a local copy:
+python3 scripts/generate_oui.py path/to/oui.csv
 ```
 
-> **Cross-compiling for Windows from Linux/macOS is not recommended** for Tauri
-> apps because of the WebView2/MSVC toolchain. Build Windows artifacts on
-> Windows (or a Windows CI runner / VM).
+## License
 
-### Windows on ARM (ARM64 — Surface Pro X / 9, Snapdragon Surface)
-
-ARM Surfaces run Windows on ARM, so a native **ARM64 (aarch64)** MSI gives the
-best performance (an x64 MSI also installs and runs under emulation, just
-slower).
-
-**Build the ARM64 MSI directly on the ARM Surface** (simplest):
-
-```bash
-# One-time: install Node, then Rust via https://rustup.rs, plus the
-# "Desktop development with C++" workload (VS Build Tools). WebView2 ships
-# with Windows 11. Then:
-npm install
-npm run tauri:build -- --bundles msi
-# → src-tauri/target/release/bundle/msi/ArcScan_0.1.0_arm64_en-US.msi
-```
-
-**Cross-compile from an x64 Windows machine:**
-
-```bash
-rustup target add aarch64-pc-windows-msvc
-npm install
-npm run tauri:build -- --target aarch64-pc-windows-msvc --bundles msi
-# → src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
-```
-
-**Via CI (no local Windows needed).** The
-[`Build Windows ARM64 MSI`](.github/workflows/windows-arm64-msi.yml) workflow
-cross-compiles the ARM64 MSI on a `windows-latest` runner and uploads it as the
-`ArcScan-windows-arm64` artifact. It runs on PRs to `main`, on `v*` tags, and
-on demand (Actions → *Build Windows ARM64 MSI* → *Run workflow*). Download the
-`.msi` from the run's **Artifacts** section.
-
-### macOS / Linux
-
-The same `npm run tauri:build` produces `.dmg`/`.app` on macOS and
-`.deb`/`.AppImage`/`.rpm` on Linux. RDP launching on non-Windows hosts uses
-FreeRDP (`xfreerdp`) if it is installed.
-
-### App icons
-
-Icons are generated programmatically (no external assets) — regenerate with:
-
-```bash
-python3 src-tauri/icons/generate_icons.py
-```
-
-This writes `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.png`, the
-Windows Store logos, and a multi-resolution `icon.ico`.
-
----
-
-## Security & scope
-
-- **RFC1918 guard.** Public targets are rejected unless the operator explicitly
-  enables *Allow public range*; the backend re-validates this independently of
-  the UI.
-- **Authorization acknowledgement** is required before any scan can start.
-- **Read-only by design.** No exploit code, brute forcing, credential attacks,
-  or vulnerability exploitation — discovery and service detection only.
-- **No privilege escalation.** ICMP is performed via the OS `ping` utility, so
-  ArcScan does not need raw-socket / administrator rights to function.
-- **Input is validated** on both sides; launch actions only accept bare IPv4
-  addresses to avoid argument injection.
+MIT

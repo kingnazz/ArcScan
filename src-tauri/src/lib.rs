@@ -1,30 +1,39 @@
 mod commands;
 mod db;
+mod ipparse;
 mod oui;
 mod scanner;
 
-use commands::AppState;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let handle = app.handle().clone();
-            let path = commands::db_path(&handle).expect("resolve ArcScan data directory");
-            let conn = db::open(&path).expect("open ArcScan scan-history database");
-            app.manage(AppState::new(conn));
+            // Open the scan-history database under the app data directory.
+            let dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("no app data dir: {e}"))?;
+            let db_path = dir.join("arcscan.db");
+            let database = db::Db::open(&db_path).map_err(|e| format!("db open failed: {e}"))?;
+            app.manage(database);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::scan_network,
-            commands::cancel_scan,
+            commands::save_scan,
             commands::list_scans,
-            commands::get_scan_hosts,
+            commands::get_scan,
             commands::delete_scan,
-            commands::launch_action,
-            commands::write_text_file,
+            commands::last_scan_ips,
+            commands::build_csv,
+            commands::export_csv,
+            commands::open_web,
+            commands::open_rdp,
+            commands::open_ssh,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ArcScan");
