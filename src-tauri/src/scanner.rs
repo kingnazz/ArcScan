@@ -119,7 +119,7 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
     let ports = Arc::new(ports);
     let scanned = hosts.len();
 
-    let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts.into_iter())
+    let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts)
         .map(|ip| {
             let sem = sem.clone();
             let ports = ports.clone();
@@ -141,7 +141,7 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
     // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
     let live_ips: Vec<Ipv4Addr> = probe_results.iter().map(|(ip, _)| *ip).collect();
     let dns_sem = Arc::new(Semaphore::new(256));
-    let hostnames: HashMap<Ipv4Addr, String> = stream::iter(live_ips.into_iter())
+    let hostnames: HashMap<Ipv4Addr, String> = stream::iter(live_ips)
         .map(|ip| {
             let dns_sem = dns_sem.clone();
             async move {
