@@ -1,211 +1,216 @@
-//! Tauri command handlers exposed to the frontend.
+//! Tauri command surface exposed to the frontend.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::net::Ipv4Addr;
 
-use rusqlite::Connection;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::State;
 
-use crate::db;
-use crate::scanner::{self, Host, ScanEvent, ScanOptions, ScanResult};
+use crate::db::{Db, ScanDetail, ScanSummary};
+use crate::netinfo::{self, LocalNetwork};
+use crate::scanner::{self, ScanOptions, ScanResult};
 
-pub struct AppState {
-    pub db: Mutex<Connection>,
-    pub cancel: Arc<AtomicBool>,
-    pub scanning: AtomicBool,
-}
-
-impl AppState {
-    pub fn new(conn: Connection) -> Self {
-        Self {
-            db: Mutex::new(conn),
-            cancel: Arc::new(AtomicBool::new(false)),
-            scanning: AtomicBool::new(false),
-        }
-    }
+/// Reject anything that is not a bare, well-formed IPv4 address before it is
+/// ever handed to a shell/launcher, to avoid argument injection.
+fn validated_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
+    let ip = ip.trim();
+    ip.parse::<Ipv4Addr>()
+        .map_err(|_| format!("`{ip}` is not a valid IPv4 address."))
 }
 
 #[tauri::command]
-pub async fn scan_network(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    options: ScanOptions,
-) -> Result<ScanResult, String> {
-    if state.scanning.swap(true, Ordering::SeqCst) {
-        return Err("A scan is already in progress.".into());
+pub async fn scan_network(opts: ScanOptions) -> Result<ScanResult, String> {
+    scanner::run(opts).await
+}
+
+#[tauri::command]
+pub fn save_scan(db: State<'_, Db>, result: ScanResult) -> Result<i64, String> {
+    db.save_scan(&result)
+}
+
+#[tauri::command]
+pub fn list_scans(db: State<'_, Db>) -> Result<Vec<ScanSummary>, String> {
+    db.list_scans()
+}
+
+#[tauri::command]
+pub fn get_scan(db: State<'_, Db>, id: i64) -> Result<ScanDetail, String> {
+    db.get_scan(id)
+}
+
+#[tauri::command]
+pub fn delete_scan(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    db.delete_scan(id)
+}
+
+#[tauri::command]
+pub fn last_scan_ips(db: State<'_, Db>) -> Result<Vec<String>, String> {
+    db.last_scan_ips()
+}
+
+/// Detect the machine's own IPv4 networks so the UI can auto-fill the target
+/// with the local subnet.
+#[tauri::command]
+pub fn detect_networks() -> Vec<LocalNetwork> {
+    netinfo::detect()
+}
+
+/// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to
+/// an operator-chosen path from the native save dialog.
+#[tauri::command]
+pub fn save_text(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Failed to write {path}: {e}"))
+}
+
+/// Send a Wake-on-LAN magic packet to the given MAC address (broadcast UDP).
+#[tauri::command]
+pub fn wake_on_lan(mac: String) -> Result<(), String> {
+    let bytes = parse_mac(&mac)?;
+    // Magic packet: 6 x 0xFF followed by the MAC repeated 16 times.
+    let mut packet = vec![0xFFu8; 6];
+    for _ in 0..16 {
+        packet.extend_from_slice(&bytes);
     }
-    state.cancel.store(false, Ordering::SeqCst);
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Failed to open socket: {e}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|e| format!("Failed to enable broadcast: {e}"))?;
+    socket
+        .send_to(&packet, "255.255.255.255:9")
+        .map_err(|e| format!("Failed to send magic packet: {e}"))?;
+    Ok(())
+}
 
-    // Snapshot the previous scan's hosts to flag new devices. The lock is
-    // released before any `.await` so the future stays `Send`.
-    let previous_ips = {
-        let conn = state.db.lock().map_err(|_| "Database lock poisoned.")?;
-        db::last_scan_ips(&conn).unwrap_or_default()
-    };
+/// Parse a MAC address in any common separator style into 6 bytes.
+fn parse_mac(mac: &str) -> Result<[u8; 6], String> {
+    let hex: String = mac.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 {
+        return Err(format!("`{mac}` is not a valid MAC address."));
+    }
+    let mut out = [0u8; 6];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| format!("`{mac}` is not a valid MAC address."))?;
+    }
+    Ok(out)
+}
 
-    let cancel = state.cancel.clone();
-    let emit_app = app.clone();
-    let on_event = move |event: ScanEvent| match event {
-        ScanEvent::Progress(p) => {
-            let _ = emit_app.emit("scan://progress", p);
-        }
-        ScanEvent::Host(h) => {
-            let _ = emit_app.emit("scan://host", h);
-        }
-    };
-
-    let scan_outcome = scanner::run_scan(&options, &previous_ips, cancel, on_event).await;
-
-    state.scanning.store(false, Ordering::SeqCst);
-    let mut result = scan_outcome?;
-
-    // Persist the finished scan.
+/// Open the host's SMB/Windows file shares in the system file browser.
+#[tauri::command]
+pub async fn open_smb(app: tauri::AppHandle, ip: String) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    #[cfg(windows)]
     {
-        let mut conn = state.db.lock().map_err(|_| "Database lock poisoned.")?;
-        match db::save_scan(&mut conn, &result) {
-            Ok(id) => result.scan_id = Some(id),
-            Err(e) => eprintln!("ArcScan: failed to persist scan: {e}"),
-        }
+        let _ = &app;
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(format!("\\\\{ip}"));
+        cmd.spawn()
+            .map_err(|e| format!("Failed to open shares: {e}"))?;
+        Ok(())
     }
-
-    Ok(result)
-}
-
-#[tauri::command]
-pub fn cancel_scan(state: State<'_, AppState>) {
-    state.cancel.store(true, Ordering::SeqCst);
-}
-
-#[tauri::command]
-pub fn list_scans(state: State<'_, AppState>) -> Result<Vec<db::ScanSummary>, String> {
-    let conn = state.db.lock().map_err(|_| "Database lock poisoned.")?;
-    db::list_scans(&conn)
-}
-
-#[tauri::command]
-pub fn get_scan_hosts(state: State<'_, AppState>, scan_id: i64) -> Result<Vec<Host>, String> {
-    let conn = state.db.lock().map_err(|_| "Database lock poisoned.")?;
-    db::get_scan_hosts(&conn, scan_id)
-}
-
-#[tauri::command]
-pub fn delete_scan(state: State<'_, AppState>, scan_id: i64) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|_| "Database lock poisoned.")?;
-    db::delete_scan(&conn, scan_id)
-}
-
-/// Launch an external client for a discovered host. Read-only convenience —
-/// it never sends credentials; it simply opens the appropriate local tool.
-#[tauri::command]
-pub fn launch_action(kind: String, ip: String, port: Option<u16>) -> Result<(), String> {
-    // Reject anything that isn't a bare IPv4 address to avoid argument injection.
-    let addr: std::net::Ipv4Addr = ip
-        .parse()
-        .map_err(|_| "Invalid IP address.".to_string())?;
-    let ip = addr.to_string();
-
-    match kind.as_str() {
-        "web" => {
-            let p = port.unwrap_or(80);
-            let scheme = if p == 443 || p == 8443 { "https" } else { "http" };
-            let url = if p == 80 || p == 443 {
-                format!("{scheme}://{ip}")
-            } else {
-                format!("{scheme}://{ip}:{p}")
-            };
-            open_url(&url)
-        }
-        "rdp" => open_rdp(&ip, port.unwrap_or(3389)),
-        "ssh" => open_ssh(&ip, port.unwrap_or(22)),
-        other => Err(format!("Unknown action: {other}")),
-    }
-}
-
-#[tauri::command]
-pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
-    let path = PathBuf::from(path);
-    std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {e}"))
-}
-
-// ---- External launch helpers ----------------------------------------------
-
-fn spawn_detached(program: &str, args: &[&str]) -> Result<(), String> {
-    std::process::Command::new(program)
-        .args(args)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to launch {program}: {e}"))
-}
-
-fn open_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
+    #[cfg(not(windows))]
     {
-        // `start` is a cmd builtin; the empty title arg avoids quoting issues.
-        return spawn_detached("cmd", &["/C", "start", "", url]);
+        // macOS Finder and Linux file managers understand smb:// URLs.
+        open_external(&app, &format!("smb://{ip}"))
+    }
+}
+
+#[tauri::command]
+pub async fn open_web(app: tauri::AppHandle, ip: String, port: Option<u16>) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    let scheme = match port {
+        Some(443) | Some(8443) => "https",
+        _ => "http",
+    };
+    let url = match port {
+        Some(p) if p != 80 && p != 443 => format!("{scheme}://{ip}:{p}"),
+        _ => format!("{scheme}://{ip}"),
+    };
+    open_external(&app, &url)
+}
+
+#[tauri::command]
+pub async fn open_rdp(ip: String) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    #[cfg(windows)]
+    {
+        // mstsc /v:<ip> — spawned without a console window.
+        let mut cmd = scanner::quiet_command("mstsc");
+        cmd.arg(format!("/v:{ip}"));
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch RDP client: {e}"))?;
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
-        return spawn_detached("open", &[url]);
+        // Microsoft Remote Desktop / Windows App registers the rdp:// scheme.
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(format!("rdp://full%20address=s:{ip}"));
+        cmd.spawn().map_err(|e| {
+            format!("Failed to launch RDP client (is Windows App / Microsoft Remote Desktop installed?): {e}")
+        })?;
+        Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return spawn_detached("xdg-open", &[url]);
-    }
-    #[allow(unreachable_code)]
-    Err("Opening URLs is not supported on this platform.".into())
-}
-
-fn open_rdp(ip: &str, port: u16) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let target = format!("/v:{ip}:{port}");
-        return spawn_detached("mstsc", &[&target]);
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Try FreeRDP if it is installed; otherwise report gracefully.
-        let target = format!("/v:{ip}:{port}");
-        spawn_detached("xfreerdp", &[&target]).map_err(|_| {
-            "No RDP client found. Install FreeRDP (xfreerdp) or use the Windows build.".to_string()
-        })
-    }
-}
-
-fn open_ssh(ip: &str, port: u16) -> Result<(), String> {
-    let port_s = port.to_string();
-    #[cfg(target_os = "windows")]
-    {
-        // Open ssh inside a new console window.
-        return spawn_detached(
-            "cmd",
-            &["/C", "start", "cmd", "/K", "ssh", "-p", &port_s, ip],
-        );
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!("tell app \"Terminal\" to do script \"ssh -p {port_s} {ip}\"");
-        return spawn_detached("osascript", &["-e", &script]);
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // Best-effort terminal launch; falls back to the generic alias.
-        for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
-            if spawn_detached(term, &["-e", &format!("ssh -p {port_s} {ip}")]).is_ok() {
+        // Best-effort on Linux: try common RDP clients.
+        for (client, args) in [
+            ("xfreerdp", vec![format!("/v:{ip}")]),
+            ("remmina", vec!["-c".into(), format!("rdp://{ip}")]),
+        ] {
+            let mut cmd = std::process::Command::new(client);
+            cmd.args(&args);
+            if cmd.spawn().is_ok() {
                 return Ok(());
             }
         }
-        return Err("No terminal emulator found to launch SSH.".into());
+        Err(format!("No RDP client found to connect to {ip}."))
     }
-    #[allow(unreachable_code)]
-    Err("SSH launch is not supported on this platform.".into())
 }
 
-/// Resolve the on-disk path for the scan-history database.
-pub fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    Ok(dir.join("arcscan.db"))
+#[tauri::command]
+pub async fn open_ssh(ip: String) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    // SSH is the intentional exception: it should open a visible terminal for
+    // the operator to interact with, so we do NOT suppress the window.
+    #[cfg(windows)]
+    {
+        // Launch an interactive ssh session in a new console window.
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "start", "ssh", &ip.to_string()]);
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch SSH: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Open Terminal and run an interactive ssh session. `ip` is a validated
+        // bare IPv4 (digits and dots only), so interpolating it into the
+        // AppleScript string cannot inject additional commands.
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script \"ssh {ip}\"\nend tell"
+        );
+        let mut cmd = std::process::Command::new("osascript");
+        cmd.args(["-e", &script]);
+        cmd.spawn().map_err(|e| format!("Failed to launch SSH: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Best-effort on Linux: try a few common terminal emulators.
+        for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
+            let mut cmd = std::process::Command::new(term);
+            cmd.args(["-e", "ssh", &ip.to_string()]);
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("No terminal emulator found to launch SSH.".into())
+    }
+}
+
+fn open_external(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("Failed to open {url}: {e}"))
 }

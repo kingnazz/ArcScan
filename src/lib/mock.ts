@@ -1,112 +1,183 @@
-// Mock scanner used when ArcScan runs outside the Tauri runtime (e.g. plain
-// `vite dev` in a browser). It lets the UI be developed and demoed without the
-// Rust backend, and is never bundled into the desktop build path.
+// Pure-TypeScript mock scanner. Runs entirely in the browser with no Rust
+// backend so the UI is fully developable and demoable. The API layer falls
+// back to this automatically when the app is not running inside Tauri.
 
-import type { Host, ScanOptions, ScanProgress, ScanResult } from "../types";
-import { PORT_SERVICES } from "../types";
-import { intToIp, parseTarget } from "./ip";
+import type { HostResult, LocalNetwork, ScanOptions, ScanResult } from "../types";
 
-const VENDORS = [
-  ["Ubiquiti Inc", "fc:ec:da"],
-  ["Apple, Inc.", "a4:83:e7"],
-  ["Dell Inc.", "00:14:22"],
-  ["Hewlett Packard", "00:1b:78"],
-  ["Cisco Systems", "00:1a:a1"],
-  ["Synology", "00:11:32"],
-  ["Raspberry Pi", "dc:a6:32"],
-  ["Intel Corporate", "94:c6:91"],
-] as const;
+// A small in-memory "history" so the mock supports save/list/get/delete too.
+interface MockScan extends ScanResult {
+  id: number;
+  created_at: string;
+}
+
+const store: MockScan[] = [];
+let nextId = 1;
+
+const VENDORS: Array<[string, string]> = [
+  ["Ubiquiti Inc", "80:2A:A8"],
+  ["Apple, Inc.", "F0:18:98"],
+  ["Dell Inc.", "18:66:DA"],
+  ["Hewlett Packard", "3C:D9:2B"],
+  ["Cisco Systems, Inc", "00:1B:D4"],
+  ["TP-LINK TECHNOLOGIES CO.,LTD.", "50:C7:BF"],
+  ["Intel Corporate", "94:C6:91"],
+  ["Samsung Electronics", "8C:77:12"],
+  ["Raspberry Pi Foundation", "B8:27:EB"],
+  ["Synology Incorporated", "00:11:32"],
+  ["Microsoft Corporation", "00:15:5D"],
+  ["Amazon Technologies", "FC:65:DE"],
+];
 
 const HOSTNAMES = [
-  "fileserver-01",
-  "dc-primary",
-  "reception-pc",
-  "nas-backup",
-  "printer-hp-2nd",
-  "ap-lobby",
-  "switch-core",
+  "gateway",
+  "nas01",
+  "ws-reception",
   "ws-accounting",
+  "printer-hp",
+  "ap-lobby",
+  "srv-dc01",
+  "cam-frontdoor",
+  "tv-conference",
+  "voip-desk-12",
   null,
   null,
 ];
 
-function pick<T>(arr: readonly T[], seed: number): T {
-  return arr[seed % arr.length];
+const PORT_PROFILES: number[][] = [
+  [80, 443],
+  [22],
+  [445, 3389],
+  [80, 8080],
+  [443, 445],
+  [3389, 5900],
+  [22, 80, 443],
+  [21, 23],
+  [53, 80],
+  [143, 110],
+  [],
+  [445],
+];
+
+function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
-function randomMac(prefix: string, seed: number): string {
-  const tail = [(seed * 7) % 256, (seed * 13) % 256, (seed * 29) % 256]
-    .map((n) => n.toString(16).padStart(2, "0"))
-    .join(":");
-  return `${prefix}:${tail}`;
+function firstUsableBase(target: string): string {
+  // Best-effort: pull an IPv4 prefix out of the target for realistic IPs.
+  const m = target.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\./);
+  if (m) return `${m[1]}.${m[2]}.${m[3]}`;
+  return "192.168.1";
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
-export async function mockScan(
-  options: ScanOptions,
-  onProgress: (p: ScanProgress) => void,
-  onHost: (h: Host) => void
-): Promise<ScanResult> {
-  const parsed = parseTarget(options.target);
-  const startedAt = new Date().toISOString();
-  const total = parsed.ok ? Math.min(parsed.count, 256) : 0;
+export async function mockScan(opts: ScanOptions): Promise<ScanResult> {
+  const base = firstUsableBase(opts.target);
+  const seed = hashString(opts.target);
+  // Deterministic-ish count so re-scanning the same target is stable.
+  const count = 6 + (seed % 12);
+  const hosts: HostResult[] = [];
+  const now = new Date().toISOString();
 
-  if (!parsed.first) {
-    return {
-      scanId: null,
-      target: options.target,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      hosts: [],
-      totalScanned: 0,
-    };
+  for (let i = 0; i < count; i++) {
+    const octet = 1 + (((seed >>> (i % 5)) + i * 17) % 253);
+    const rng = hashString(`${base}.${octet}.${i}`);
+    const knownVendor = rng % 10 !== 0; // ~10% unknown
+    const [vendor, ouiPrefix] = VENDORS[rng % VENDORS.length];
+    const macTail = [(rng >> 4) & 0xff, (rng >> 12) & 0xff, (rng >> 20) & 0xff]
+      .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
+      .join(":");
+    const ports = PORT_PROFILES[rng % PORT_PROFILES.length];
+    // Plausible TTL / OS mix: Linux (64), Windows (128), network gear (255).
+    const ttlChoice = [64, 128, 255, 64, 128][rng % 5];
+    const osGuess =
+      ttlChoice <= 64 ? "Linux/Unix/macOS" : ttlChoice <= 128 ? "Windows" : "Network device";
+
+    hosts.push({
+      ip: `${base}.${octet}`,
+      hostname: HOSTNAMES[rng % HOSTNAMES.length],
+      mac: rng % 7 === 0 ? null : `${ouiPrefix}:${macTail}`,
+      vendor: knownVendor && rng % 7 !== 0 ? vendor : null,
+      open_ports: ports,
+      response_ms: 1 + (rng % 40),
+      ttl: ttlChoice,
+      os_guess: osGuess,
+      last_seen: now,
+    });
   }
 
-  const baseInt =
-    (parseInt(parsed.first.split(".").map((o) => Number(o).toString(16).padStart(2, "0")).join(""), 16)) >>> 0;
+  // De-duplicate by IP and sort numerically.
+  const byIp = new Map<string, HostResult>();
+  for (const h of hosts) byIp.set(h.ip, h);
+  const unique = [...byIp.values()].sort((a, b) => ipToNum(a.ip) - ipToNum(b.ip));
 
-  const hosts: Host[] = [];
-  let found = 0;
-
-  for (let i = 0; i < total; i++) {
-    await sleep(8);
-    const ip = intToIp((baseInt + i) >>> 0);
-    onProgress({ scanned: i + 1, total, found });
-
-    // ~30% of addresses are "alive" in the mock.
-    const alive = (i * 2654435761) % 10 < 3;
-    if (!alive) continue;
-
-    const [vendor, prefix] = pick(VENDORS, i);
-    const openPorts = Object.keys(PORT_SERVICES)
-      .map(Number)
-      .filter((p) => (i + p) % 3 === 0)
-      .map((port) => ({ port, service: PORT_SERVICES[port] }));
-
-    const host: Host = {
-      ip,
-      hostname: pick(HOSTNAMES, i) ?? null,
-      mac: randomMac(prefix, i),
-      vendor,
-      openPorts,
-      responseMs: Math.round((((i * 9301 + 49297) % 233280) / 233280) * 40 + 1),
-      status: "up",
-      lastSeen: new Date().toISOString(),
-      isNew: i % 5 === 0,
-    };
-    found++;
-    hosts.push(host);
-    onHost(host);
-    onProgress({ scanned: i + 1, total, found });
-  }
+  // Simulate scan time, capped so the demo stays snappy.
+  await delay(Math.min(1400, 400 + unique.length * 40));
 
   return {
-    scanId: Math.floor(Math.random() * 1000),
-    target: options.target,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    hosts,
-    totalScanned: total,
+    target: opts.target,
+    duration_ms: 400 + unique.length * 38,
+    scanned: 254,
+    hosts: unique,
   };
+}
+
+function ipToNum(ip: string): number {
+  return ip.split(".").reduce((acc, o) => acc * 256 + parseInt(o, 10), 0);
+}
+
+export function mockSave(result: ScanResult): number {
+  const id = nextId++;
+  store.unshift({ ...result, id, created_at: new Date().toISOString() });
+  return id;
+}
+
+export function mockList() {
+  return store.map((s) => ({
+    id: s.id,
+    target: s.target,
+    created_at: s.created_at,
+    duration_ms: s.duration_ms,
+    scanned: s.scanned,
+    host_count: s.hosts.length,
+  }));
+}
+
+export function mockGet(id: number) {
+  const s = store.find((x) => x.id === id);
+  if (!s) throw new Error(`Scan ${id} not found`);
+  return {
+    id: s.id,
+    target: s.target,
+    created_at: s.created_at,
+    duration_ms: s.duration_ms,
+    scanned: s.scanned,
+    host_count: s.hosts.length,
+    hosts: s.hosts,
+  };
+}
+
+export function mockDelete(id: number) {
+  const idx = store.findIndex((x) => x.id === id);
+  if (idx >= 0) store.splice(idx, 1);
+}
+
+export function mockLastIps(): string[] {
+  if (store.length === 0) return [];
+  return store[0].hosts.map((h) => h.ip);
+}
+
+export function mockDetectNetworks(): LocalNetwork[] {
+  // The browser can't read real interfaces; return a plausible LAN so the
+  // "Detect" button and auto-fill are demoable.
+  return [
+    { interface: "en0", ip: "192.168.1.42", prefix: 24, cidr: "192.168.1.0/24", is_private: true },
+  ];
 }

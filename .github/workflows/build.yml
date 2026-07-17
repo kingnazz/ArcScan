@@ -1,0 +1,104 @@
+name: Build Installers
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-latest ships the MSVC ARM64 cross tools, so both Windows
+          # targets build on the same hosted runner — no dedicated ARM runner.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            bundles: msi nsis
+            label: ArcScan-windows-x64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            rust_targets: aarch64-pc-windows-msvc
+            bundles: msi nsis
+            label: ArcScan-windows-arm64
+          # One universal Apple binary covers both Apple Silicon (arm64) and
+          # Intel (x86_64) Macs.
+          - os: macos-latest
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: dmg
+            label: ArcScan-macos-universal
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build installers
+        run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          base="src-tauri/target/${{ matrix.target }}/release/bundle"
+          for pattern in '*.msi' '*-setup.exe' '*.dmg'; do
+            find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
+          done
+          ls -la artifacts
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: Attach installers to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-artifacts/**/*
+          draft: true
+          generate_release_notes: true
