@@ -2,11 +2,11 @@
 
 # ArcScan
 
-**Authorized LAN discovery & client reporting for MSPs**
+**A fast, lightweight network & port scanner**
 
-A polished, safe, read-only network inventory tool — conceptually similar to
-Advanced IP Scanner, but built for managed service providers who need fast,
-authorized discovery and clean client reporting.
+A polished, read-only network scanner in the spirit of Angry IP Scanner,
+Advanced IP Scanner, and Advanced Port Scanner — discover live hosts, identify
+vendors and open services, and export the results. Light and dark themes.
 
 Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 
@@ -14,21 +14,17 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 
 ---
 
-> ⚠️ **Authorized use only.** ArcScan performs read-only discovery. Only scan
-> networks you own or have **explicit written authorization** to assess.
-> Unauthorized network scanning may be illegal in your jurisdiction. ArcScan
-> contains no exploit, brute-force, credential-attack, or vulnerability-
-> exploitation code, and never will.
-
 ## Features
 
 - **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
   (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
 - **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
-  raw-socket/administrator privileges required), with a TCP fallback on ports
-  22, 80, 443, 445, 3389, and 8080. A host counts as **up** if it answers
-  ICMP, accepts a TCP connection, *or* actively refuses one (RST) — all three
-  prove liveness.
+  raw-socket/administrator privileges required), with a TCP fallback across a
+  curated set of common ports (FTP, SSH, Telnet, DNS, HTTP/S, SMB, RDP, VNC,
+  and more). A host counts as **up** if it answers ICMP, accepts a TCP
+  connection, *or* actively refuses one (RST) — all three prove liveness.
+- **Port & service detection** — the default port set fingerprints most hosts
+  at a glance; edit it freely in the advanced options.
 - **Fast, modern results table** — IP, hostname, MAC, vendor, open ports,
   response time, and last-seen, with column sorting and instant
   filtering/search.
@@ -38,28 +34,23 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
   browsable, re-openable, and deletable.
 - **Dashboard** — total devices, unknown devices, open RDP count, open SMB
   count, and **new devices since the last scan**.
+- **Light & dark themes** — a clean modern light theme by default, with a
+  one-click dark mode.
 - **Full IEEE OUI vendor registry** — ~39,000 MA-L prefixes embedded for real
   vendor identification, loaded once into an in-memory map for O(1) lookups.
 - **Tunable performance** — per-host timeout and max concurrency are exposed as
   advanced options (defaults: 128 concurrent probes, 600 ms timeout).
 
-## Safety & scope (non-negotiable)
+## How it works
 
-These constraints are enforced in the Rust backend, **independently of the UI**
-(the frontend cannot bypass them):
+ArcScan is **read-only discovery only** — it sends ICMP pings and attempts TCP
+connections to detect live hosts and open ports. There is no exploit,
+brute-force, credential, or vulnerability-exploitation logic in the codebase.
+When launching RDP/SSH/a browser for a host, the backend accepts only a
+well-formed bare IPv4 address, so there's no room for argument injection.
 
-1. **Private ranges only by default.** Only RFC1918 ranges (`10.0.0.0/8`,
-   `172.16.0.0/12`, `192.168.0.0/16`) are scanned unless the operator
-   explicitly enables the **Allow public range** toggle. The backend
-   re-validates every target address regardless of what the UI sends.
-2. **Explicit authorization required.** Every scan requires the *"I am
-   authorized to scan this network"* acknowledgement, and a persistent warning
-   is always visible.
-3. **Read-only discovery only.** No exploit, brute-force, credential, or
-   vulnerability-exploitation logic exists in the codebase.
-4. **Injection-safe launches.** Before shelling out to launch RDP/SSH/a
-   browser, the backend accepts only a well-formed bare IPv4 address, so no
-   argument injection is possible.
+As with any network scanner (nmap, Angry IP Scanner, …), only scan networks you
+own or have permission to scan.
 
 ## Architecture
 
@@ -75,7 +66,7 @@ ArcScan/
 │   └── App.tsx               Orchestration + dashboard stats
 ├── src-tauri/                Rust backend
 │   └── src/
-│       ├── ipparse.rs        Target parsing + RFC1918 validation (+ unit tests)
+│       ├── ipparse.rs        Target parsing + host-count guard (+ unit tests)
 │       ├── scanner.rs        Ping / TCP probes, ARP, concurrent DNS (+ tests)
 │       ├── oui.rs            Embedded IEEE OUI vendor lookup
 │       ├── db.rs             SQLite persistence (bundled rusqlite)

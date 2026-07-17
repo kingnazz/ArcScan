@@ -24,11 +24,11 @@ interface HostsTableProps {
   onExport: () => void;
 }
 
-const RISKY_PORTS = new Set([3389, 445]);
+const RISKY_PORTS = new Set([23, 445, 3389, 5900]);
 
 function PortBadges({ ports }: { ports: number[] }) {
   if (ports.length === 0) {
-    return <span className="text-xs text-slate-600">—</span>;
+    return <span className="text-xs text-faint">—</span>;
   }
   return (
     <div className="flex flex-wrap gap-1">
@@ -39,8 +39,8 @@ function PortBadges({ ports }: { ports: number[] }) {
             key={p}
             className={`chip ${
               risky
-                ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-                : "border-brand-400/25 bg-brand-500/10 text-brand-200"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                : "border-brand-500/30 bg-brand-500/10 text-brand-700 dark:text-brand-300"
             }`}
             title={`${p} · ${serviceLabel(p)}`}
           >
@@ -65,26 +65,30 @@ function RowActions({ host }: { host: HostResult }) {
   }
 
   return (
-    <div className="flex items-center justify-end gap-0.5 opacity-70 transition-opacity group-hover:opacity-100">
+    <div className="flex items-center justify-end gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
       <button className="btn-icon" title="Copy IP" onClick={copy}>
-        {copied ? <Check className="h-4 w-4 text-brand-300" /> : <Copy className="h-4 w-4" />}
+        {copied ? (
+          <Check className="h-4 w-4 text-brand-600 dark:text-brand-300" />
+        ) : (
+          <Copy className="h-4 w-4" />
+        )}
       </button>
       <button
-        className={`btn-icon ${web ? "text-brand-300" : ""}`}
+        className={`btn-icon ${web ? "text-brand-600 dark:text-brand-300" : ""}`}
         title={web ? `Open web interface (:${web})` : "Open web interface"}
         onClick={() => api.openWeb(host.ip, web ?? undefined)}
       >
         <Globe className="h-4 w-4" />
       </button>
       <button
-        className={`btn-icon ${rdp ? "text-amber-300" : ""}`}
+        className={`btn-icon ${rdp ? "text-amber-500 dark:text-amber-300" : ""}`}
         title="Open RDP"
         onClick={() => api.openRdp(host.ip)}
       >
         <Monitor className="h-4 w-4" />
       </button>
       <button
-        className={`btn-icon ${ssh ? "text-brand-300" : ""}`}
+        className={`btn-icon ${ssh ? "text-brand-600 dark:text-brand-300" : ""}`}
         title="Open SSH"
         onClick={() => api.openSsh(host.ip)}
       >
@@ -168,9 +172,9 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
 
   return (
     <div className="panel flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-3 border-b border-white/5 p-3">
+      <div className="flex items-center gap-3 border-b border-line p-3">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
           <input
             className="input pl-9"
             placeholder="Filter by IP, hostname, MAC, vendor, or service…"
@@ -179,7 +183,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
             spellCheck={false}
           />
         </div>
-        <div className="hidden text-xs text-slate-500 sm:block">
+        <div className="hidden text-xs text-muted sm:block">
           {filtered.length} of {hosts.length}
         </div>
         <button className="btn-ghost" onClick={onExport} disabled={hosts.length === 0}>
@@ -190,12 +194,12 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
 
       <div className="min-h-0 flex-1 overflow-auto">
         <table className="w-full border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-arc-850/95 backdrop-blur">
-            <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+          <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur">
+            <tr className="text-left text-xs uppercase tracking-wide text-faint">
               {columns.map((c) => (
                 <th
                   key={c.key}
-                  className={`cursor-pointer select-none whitespace-nowrap px-3 py-2.5 font-medium hover:text-slate-300 ${c.className ?? ""}`}
+                  className={`cursor-pointer select-none whitespace-nowrap px-3 py-2.5 font-medium hover:text-fg ${c.className ?? ""}`}
                   onClick={() => toggleSort(c.key)}
                 >
                   <span className={`inline-flex items-center gap-1 ${c.className === "text-right" ? "flex-row-reverse" : ""}`}>
@@ -207,33 +211,35 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
               <th className="px-3 py-2.5 text-right font-medium">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
+          <tbody className="divide-y divide-line">
             {filtered.map((h) => (
-              <tr key={h.ip} className="group transition-colors hover:bg-white/[0.03]">
-                <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-100">
+              <tr key={h.ip} className="group transition-colors hover:bg-surface2">
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-fg">
                   <span className="inline-flex items-center gap-2">
                     {h.ip}
                     {newIps.has(h.ip) && (
-                      <span className="chip border-brand-400/40 bg-brand-500/15 text-brand-200">new</span>
+                      <span className="chip border-brand-500/40 bg-brand-500/15 text-brand-700 dark:text-brand-300">
+                        new
+                      </span>
                     )}
                   </span>
                 </td>
-                <td className="max-w-[200px] truncate px-3 py-2 text-slate-300" title={h.hostname ?? ""}>
-                  {h.hostname ?? <span className="text-slate-600">—</span>}
+                <td className="max-w-[200px] truncate px-3 py-2 text-muted" title={h.hostname ?? ""}>
+                  {h.hostname ?? <span className="text-faint">—</span>}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-slate-400">
-                  {h.mac ?? <span className="text-slate-600">—</span>}
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted">
+                  {h.mac ?? <span className="text-faint">—</span>}
                 </td>
-                <td className="max-w-[220px] truncate px-3 py-2 text-slate-300" title={h.vendor ?? ""}>
-                  {h.vendor ?? <span className="text-slate-600">Unknown</span>}
+                <td className="max-w-[220px] truncate px-3 py-2 text-muted" title={h.vendor ?? ""}>
+                  {h.vendor ?? <span className="text-faint">Unknown</span>}
                 </td>
                 <td className="px-3 py-2">
                   <PortBadges ports={h.open_ports} />
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs text-slate-400">
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs text-muted">
                   {h.response_ms != null ? `${h.response_ms} ms` : "—"}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right text-xs text-slate-500">
+                <td className="whitespace-nowrap px-3 py-2 text-right text-xs text-faint">
                   {formatRelative(h.last_seen)}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2">
@@ -245,9 +251,9 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
         </table>
 
         {filtered.length === 0 && (
-          <div className="flex flex-col items-center justify-center gap-1 py-16 text-center text-slate-500">
+          <div className="flex flex-col items-center justify-center gap-1 py-16 text-center text-muted">
             <p className="text-sm">{hosts.length === 0 ? "No hosts yet." : "No matches for your filter."}</p>
-            <p className="text-xs">
+            <p className="text-xs text-faint">
               {hosts.length === 0 ? "Run a scan to discover live devices." : "Try a different search term."}
             </p>
           </div>
@@ -258,10 +264,10 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
 }
 
 function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
-  if (!active) return <ArrowUpDown className="h-3 w-3 text-slate-600" />;
+  if (!active) return <ArrowUpDown className="h-3 w-3 text-faint" />;
   return dir === "asc" ? (
-    <ArrowUp className="h-3 w-3 text-brand-300" />
+    <ArrowUp className="h-3 w-3 text-brand-600 dark:text-brand-300" />
   ) : (
-    <ArrowDown className="h-3 w-3 text-brand-300" />
+    <ArrowDown className="h-3 w-3 text-brand-600 dark:text-brand-300" />
   );
 }

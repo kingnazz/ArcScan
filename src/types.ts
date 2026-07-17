@@ -22,8 +22,6 @@ export interface ScanOptions {
   ports: number[];
   timeout_ms: number;
   concurrency: number;
-  allow_public: boolean;
-  authorized: boolean;
 }
 
 export interface ScanSummary {
@@ -39,7 +37,9 @@ export interface ScanDetail extends ScanSummary {
   hosts: HostResult[];
 }
 
-export const DEFAULT_PORTS = [22, 80, 443, 445, 3389, 8080];
+export const DEFAULT_PORTS = [
+  21, 22, 23, 53, 80, 110, 139, 143, 443, 445, 3389, 5900, 8080, 8443,
+];
 
 export interface DashboardStats {
   total: number;

@@ -1,8 +1,8 @@
-//! IP target parsing and RFC1918 validation.
+//! IP target parsing.
 //!
 //! Accepts CIDR (`192.168.1.0/24`), dashed ranges (`10.0.0.1-10.0.0.50` or the
 //! short form `10.0.0.1-50`), and single IPs. All parsing is done here so the
-//! backend can validate targets independently of the frontend.
+//! backend validates targets independently of the frontend.
 
 use std::net::Ipv4Addr;
 
@@ -10,11 +10,6 @@ use std::net::Ipv4Addr;
 /// practical ceiling for a LAN sweep; anything larger is almost certainly a
 /// mistake and would exhaust memory/time.
 pub const MAX_HOSTS: usize = 65_536;
-
-/// Returns true if the address is in an RFC1918 private range.
-pub fn is_private(ip: &Ipv4Addr) -> bool {
-    ip.is_private()
-}
 
 /// Parse a target string into the concrete list of addresses to probe.
 ///
@@ -153,11 +148,8 @@ mod tests {
     }
 
     #[test]
-    fn private_detection() {
-        assert!(is_private(&"192.168.1.1".parse().unwrap()));
-        assert!(is_private(&"10.1.2.3".parse().unwrap()));
-        assert!(is_private(&"172.16.5.5".parse().unwrap()));
-        assert!(!is_private(&"8.8.8.8".parse().unwrap()));
-        assert!(!is_private(&"172.32.0.1".parse().unwrap()));
+    fn accepts_public_target() {
+        // ArcScan scans whatever range you enter — public addresses included.
+        assert_eq!(parse_target("8.8.8.8").unwrap().len(), 1);
     }
 }

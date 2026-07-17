@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ArcScan",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "identifier": "com.arcscan.app",
   "build": {
     "frontendDist": "../dist",
@@ -39,8 +39,8 @@
     ],
     "publisher": "ArcScan",
     "category": "Utility",
-    "shortDescription": "Authorized LAN discovery for MSPs",
-    "longDescription": "ArcScan is a safe, read-only local network discovery and client reporting tool for managed service providers. Scan authorized private networks, inventory live hosts, and export results.",
+    "shortDescription": "Fast, lightweight network & port scanner",
+    "longDescription": "ArcScan is a fast, lightweight network and port scanner. Discover live hosts, identify vendors and open services, browse scan history, and export results.",
     "windows": {
       "wix": {
         "language": ["en-US"]

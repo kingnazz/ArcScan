@@ -15,8 +15,12 @@ use tokio::time::timeout;
 use crate::ipparse;
 use crate::oui;
 
-/// Default TCP ports probed for the fallback liveness / service check.
-pub const DEFAULT_PORTS: [u16; 6] = [22, 80, 443, 445, 3389, 8080];
+/// Default TCP ports probed for liveness and quick service detection. A curated
+/// spread of the ports that matter most on a typical LAN — kept small enough to
+/// stay fast, wide enough to fingerprint most hosts.
+pub const DEFAULT_PORTS: [u16; 14] = [
+    21, 22, 23, 53, 80, 110, 139, 143, 443, 445, 3389, 5900, 8080, 8443,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
@@ -27,10 +31,6 @@ pub struct ScanOptions {
     pub timeout_ms: u64,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
-    #[serde(default)]
-    pub allow_public: bool,
-    #[serde(default)]
-    pub authorized: bool,
 }
 
 fn default_timeout() -> u64 {
@@ -76,27 +76,13 @@ pub fn quiet_command(program: &str) -> tokio::process::Command {
     tokio::process::Command::from(std_cmd)
 }
 
-/// Validate scan options against the safety policy, independently of the UI.
-/// Returns the concrete host list on success.
+/// Parse and validate the scan target into a concrete host list. Rejects
+/// malformed input and oversized ranges (see `ipparse::MAX_HOSTS`).
 pub fn validate(opts: &ScanOptions) -> Result<Vec<Ipv4Addr>, String> {
-    if !opts.authorized {
-        return Err(
-            "Authorization not acknowledged. You must confirm you are authorized to scan this network."
-                .into(),
-        );
-    }
-    let hosts = ipparse::parse_target(&opts.target)?;
-    if !opts.allow_public {
-        if let Some(pub_ip) = hosts.iter().find(|ip| !ipparse::is_private(ip)) {
-            return Err(format!(
-                "`{pub_ip}` is a public address. ArcScan only scans private RFC1918 ranges unless the \"allow public range\" option is explicitly enabled."
-            ));
-        }
-    }
-    Ok(hosts)
+    ipparse::parse_target(&opts.target)
 }
 
-/// Run a full scan. Applies safety validation first.
+/// Run a full scan.
 pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
     let hosts = validate(&opts)?;
 

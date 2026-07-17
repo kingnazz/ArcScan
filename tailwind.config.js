@@ -5,18 +5,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Deep neutral canvas
-        arc: {
-          950: "#080b12",
-          900: "#0b0f17",
-          850: "#0f141f",
-          800: "#141b28",
-          700: "#1c2536",
-          600: "#273349",
-          500: "#3a4a67",
-          400: "#5a6d8f",
-        },
-        // Brand accent — cyan/teal arc
+        // Semantic tokens backed by CSS variables (see index.css). These flip
+        // automatically between the light (default) and dark themes.
+        bg: "var(--bg)",
+        surface: "var(--surface)",
+        surface2: "var(--surface-2)",
+        line: "var(--line)",
+        fg: "var(--fg)",
+        muted: "var(--muted)",
+        faint: "var(--faint)",
+        // Brand accent — cyan/teal arc. Static so opacity modifiers work.
         brand: {
           50: "#e6fbff",
           100: "#b8f3ff",
@@ -51,8 +49,9 @@ export default {
         ],
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(56,212,240,0.15), 0 8px 30px -8px rgba(8,152,184,0.35)",
-        panel: "0 1px 0 0 rgba(255,255,255,0.03) inset, 0 12px 40px -18px rgba(0,0,0,0.8)",
+        glow: "0 0 0 1px rgba(8,152,184,0.15), 0 8px 30px -8px rgba(8,152,184,0.35)",
+        panel: "var(--shadow-panel)",
+        soft: "var(--shadow-soft)",
       },
       keyframes: {
         "fade-in": {
