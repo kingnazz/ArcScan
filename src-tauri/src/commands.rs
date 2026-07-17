@@ -17,8 +17,17 @@ fn validated_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
 }
 
 #[tauri::command]
-pub async fn scan_network(opts: ScanOptions) -> Result<ScanResult, String> {
-    scanner::run(opts).await
+pub async fn scan_network(window: tauri::Window, opts: ScanOptions) -> Result<ScanResult, String> {
+    use tauri::Emitter;
+    // Forward streamed scan progress to the UI as `scan:progress` events.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let win = window.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            let _ = win.emit("scan:progress", progress);
+        }
+    });
+    scanner::run(opts, Some(tx)).await
 }
 
 #[tauri::command]

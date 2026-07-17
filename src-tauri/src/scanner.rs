@@ -4,16 +4,27 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::ipparse;
 use crate::oui;
+
+/// Progress update streamed to the UI while a scan runs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanProgress {
+    pub done: usize,
+    pub total: usize,
+    /// "probing" while hosts are being checked, then "resolving", then "done".
+    pub phase: String,
+}
 
 /// Default TCP ports probed for liveness and quick service detection. A curated
 /// spread of the ports that matter most on a typical LAN — kept small enough to
@@ -86,8 +97,12 @@ pub fn validate(opts: &ScanOptions) -> Result<Vec<Ipv4Addr>, String> {
     ipparse::parse_target(&opts.target)
 }
 
-/// Run a full scan.
-pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
+/// Run a full scan. `progress`, when provided, receives streamed progress
+/// updates the command layer forwards to the UI as events.
+pub async fn run(
+    opts: ScanOptions,
+    progress: Option<UnboundedSender<ScanProgress>>,
+) -> Result<ScanResult, String> {
     let hosts = validate(&opts)?;
 
     let ports: Vec<u16> = if opts.ports.is_empty() {
@@ -106,19 +121,54 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
     let ports = Arc::new(ports);
     let scanned = hosts.len();
 
+    // Progress: count completed probes and stream throttled updates to the UI.
+    let done = Arc::new(AtomicUsize::new(0));
+    let step = (scanned / 100).max(1);
+    let emit = |p: ScanProgress| {
+        if let Some(tx) = &progress {
+            let _ = tx.send(p);
+        }
+    };
+    emit(ScanProgress {
+        done: 0,
+        total: scanned,
+        phase: "probing".into(),
+    });
+
     let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts)
         .map(|ip| {
             let sem = sem.clone();
             let ports = ports.clone();
+            let done = done.clone();
+            let progress = progress.clone();
             async move {
                 let _permit = sem.acquire().await.unwrap();
                 let probe = probe_host(ip, &ports, per_probe).await;
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(tx) = &progress {
+                    if d == scanned || d % step == 0 {
+                        let _ = tx.send(ScanProgress {
+                            done: d,
+                            total: scanned,
+                            phase: "probing".into(),
+                        });
+                    }
+                }
                 (ip, probe)
             }
         })
         .buffer_unordered(concurrency)
         .collect()
         .await;
+
+    // Let late ARP replies from slow devices settle before we read the cache, so
+    // a single scan captures them instead of trickling across repeated scans.
+    emit(ScanProgress {
+        done: scanned,
+        total: scanned,
+        phase: "resolving".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
 
     // Read the ARP cache *after* probing: every probe (ping or TCP SYN) forces
     // the OS to ARP-resolve its target, so the cache is now primed. On the local
@@ -171,6 +221,12 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
             }
         })
         .collect();
+
+    emit(ScanProgress {
+        done: scanned,
+        total: scanned,
+        phase: "done".into(),
+    });
 
     Ok(ScanResult {
         target: opts.target,
