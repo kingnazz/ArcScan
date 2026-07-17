@@ -17,9 +17,9 @@ import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
 import { useTheme } from "./hooks/useTheme";
 import { api } from "./lib/api";
-import type { DashboardStats, HostResult, ScanOptions, ScanSummary } from "./types";
+import type { DashboardStats, ExportFormat, HostResult, ScanOptions, ScanSummary } from "./types";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 
 type Tab = "results" | "history";
 
@@ -104,15 +104,18 @@ export default function App() {
     [activeScanId, refreshHistory],
   );
 
-  const exportCsv = useCallback(async () => {
-    if (hosts.length === 0) return;
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    try {
-      await api.exportCsv(hosts, `arcscan-${stamp}.csv`);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    }
-  }, [hosts]);
+  const exportHosts = useCallback(
+    async (format: ExportFormat) => {
+      if (hosts.length === 0) return;
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      try {
+        await api.exportHosts(hosts, format, `arcscan-${stamp}.${format}`);
+      } catch (e) {
+        setError(String(e instanceof Error ? e.message : e));
+      }
+    },
+    [hosts],
+  );
 
   const stats: DashboardStats = useMemo(() => {
     return {
@@ -199,7 +202,7 @@ export default function App() {
         </div>
 
         {tab === "results" ? (
-          <HostsTable hosts={hosts} newIps={newIps} onExport={exportCsv} />
+          <HostsTable hosts={hosts} newIps={newIps} onExport={exportHosts} />
         ) : (
           <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
         )}

@@ -3,7 +3,9 @@
 // back to the pure-TypeScript mock so the whole UI is developable in a browser.
 
 import type {
+  ExportFormat,
   HostResult,
+  LocalNetwork,
   ScanDetail,
   ScanOptions,
   ScanResult,
@@ -11,6 +13,7 @@ import type {
 } from "../types";
 import {
   mockDelete,
+  mockDetectNetworks,
   mockGet,
   mockLastIps,
   mockList,
@@ -60,6 +63,21 @@ export const api = {
     return mockLastIps();
   },
 
+  async detectNetworks(): Promise<LocalNetwork[]> {
+    if (isTauri()) return invoke<LocalNetwork[]>("detect_networks");
+    return mockDetectNetworks();
+  },
+
+  async wakeOnLan(mac: string): Promise<void> {
+    if (isTauri()) return invoke<void>("wake_on_lan", { mac });
+    alert(`Wake-on-LAN magic packet to ${mac} (available in the desktop app).`);
+  },
+
+  async openSmb(ip: string): Promise<void> {
+    if (isTauri()) return invoke<void>("open_smb", { ip });
+    alert(`Open shared folders on ${ip} (available in the desktop app).`);
+  },
+
   async openWeb(ip: string, port?: number): Promise<void> {
     if (isTauri()) return invoke<void>("open_web", { ip, port: port ?? null });
     window.open(port && port !== 80 && port !== 443 ? `http://${ip}:${port}` : `http://${ip}`, "_blank");
@@ -79,21 +97,27 @@ export const api = {
     await navigator.clipboard.writeText(ip);
   },
 
-  // Export the given hosts to CSV. In Tauri this uses the native save dialog
-  // and writes via the backend; in the browser it triggers a file download.
-  async exportCsv(hosts: HostResult[], suggestedName: string): Promise<boolean> {
+  // Export the given hosts in the chosen format. In Tauri this uses the native
+  // save dialog and writes via the backend; in the browser it downloads a file.
+  async exportHosts(
+    hosts: HostResult[],
+    format: ExportFormat,
+    suggestedName: string,
+  ): Promise<boolean> {
+    const contents = buildExport(hosts, format);
     if (isTauri()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({
         defaultPath: suggestedName,
-        filters: [{ name: "CSV", extensions: ["csv"] }],
+        filters: [{ name: format.toUpperCase(), extensions: [format] }],
       });
       if (!path) return false;
-      await invoke<void>("export_csv", { path, hosts });
+      await invoke<void>("save_text", { path, contents });
       return true;
     }
-    const csv = buildCsv(hosts);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const mime =
+      format === "json" ? "application/json" : format === "xml" ? "application/xml" : "text/csv";
+    const blob = new Blob([contents], { type: `${mime};charset=utf-8` });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -111,18 +135,51 @@ function csvField(s: string): string {
   return s;
 }
 
-export function buildCsv(hosts: HostResult[]): string {
-  const header = "IP,Hostname,MAC,Vendor,Open Ports,Response (ms),Last Seen\n";
-  const rows = hosts.map((h) =>
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export function buildExport(hosts: HostResult[], format: ExportFormat): string {
+  if (format === "json") {
+    return JSON.stringify(hosts, null, 2);
+  }
+  if (format === "xml") {
+    const rows = hosts
+      .map((h) => {
+        const fields = [
+          `    <ip>${xmlEscape(h.ip)}</ip>`,
+          `    <hostname>${xmlEscape(h.hostname ?? "")}</hostname>`,
+          `    <mac>${xmlEscape(h.mac ?? "")}</mac>`,
+          `    <vendor>${xmlEscape(h.vendor ?? "")}</vendor>`,
+          `    <os>${xmlEscape(h.os_guess ?? "")}</os>`,
+          `    <ttl>${h.ttl ?? ""}</ttl>`,
+          `    <open_ports>${xmlEscape(h.open_ports.join(" "))}</open_ports>`,
+          `    <response_ms>${h.response_ms ?? ""}</response_ms>`,
+          `    <last_seen>${xmlEscape(h.last_seen)}</last_seen>`,
+        ].join("\n");
+        return `  <host>\n${fields}\n  </host>`;
+      })
+      .join("\n");
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<hosts>\n${rows}\n</hosts>\n`;
+  }
+  // CSV
+  const header = "IP,Hostname,MAC,Vendor,OS,TTL,Open Ports,Response (ms),Last Seen\n";
+  const lines = hosts.map((h) =>
     [
       csvField(h.ip),
       csvField(h.hostname ?? ""),
       csvField(h.mac ?? ""),
       csvField(h.vendor ?? ""),
+      csvField(h.os_guess ?? ""),
+      csvField(h.ttl != null ? String(h.ttl) : ""),
       csvField(h.open_ports.join(" ")),
       csvField(h.response_ms != null ? String(h.response_ms) : ""),
       csvField(h.last_seen),
     ].join(","),
   );
-  return header + rows.join("\n") + (rows.length ? "\n" : "");
+  return header + lines.join("\n") + (lines.length ? "\n" : "");
 }

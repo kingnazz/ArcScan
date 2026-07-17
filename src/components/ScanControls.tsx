@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { Loader2, Radar, Settings2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2, Locate, Radar, Settings2 } from "lucide-react";
 import { DEFAULT_PORTS, type ScanOptions } from "../types";
+import { api } from "../lib/api";
 import { parsePorts } from "../lib/format";
 
 interface ScanControlsProps {
@@ -14,6 +15,34 @@ export function ScanControls({ scanning, onScan }: ScanControlsProps) {
   const [timeoutMs, setTimeoutMs] = useState(600);
   const [concurrency, setConcurrency] = useState(128);
   const [portsInput, setPortsInput] = useState(DEFAULT_PORTS.join(", "));
+  const [localIp, setLocalIp] = useState<string | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const userEditedTarget = useRef(false);
+
+  // Fill in the local subnet as a helpful default when it can be detected.
+  async function detect(applyTarget: boolean) {
+    setDetecting(true);
+    try {
+      const nets = await api.detectNetworks();
+      if (nets.length > 0) {
+        setLocalIp(nets[0].ip);
+        if (applyTarget) {
+          setTarget(nets[0].cidr);
+          userEditedTarget.current = false;
+        }
+      }
+    } catch (e) {
+      console.error("network detection failed", e);
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  // Auto-detect on first mount, but never clobber a target the user has typed.
+  useEffect(() => {
+    detect(!userEditedTarget.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canScan = target.trim().length > 0 && !scanning;
 
@@ -33,18 +62,38 @@ export function ScanControls({ scanning, onScan }: ScanControlsProps) {
     <form onSubmit={submit} className="panel p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
         <div className="flex-1">
-          <label htmlFor="target" className="mb-1.5 block text-xs font-medium text-muted">
+          <label htmlFor="target" className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted">
             Target — IP, range, or CIDR
+            {localIp && (
+              <span className="text-faint">
+                · this device: <span className="font-mono text-brand-600 dark:text-brand-300">{localIp}</span>
+              </span>
+            )}
           </label>
-          <input
-            id="target"
-            className="input font-mono"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
-            spellCheck={false}
-            autoComplete="off"
-          />
+          <div className="flex gap-2">
+            <input
+              id="target"
+              className="input font-mono"
+              value={target}
+              onChange={(e) => {
+                userEditedTarget.current = true;
+                setTarget(e.target.value);
+              }}
+              placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              onClick={() => detect(true)}
+              className="btn-ghost shrink-0"
+              title="Auto-detect this device's local network"
+              disabled={detecting}
+            >
+              {detecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Locate className="h-4 w-4" />}
+              Detect
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -106,14 +155,14 @@ export function ScanControls({ scanning, onScan }: ScanControlsProps) {
           </div>
           <div>
             <label htmlFor="ports" className="mb-1 block text-xs font-medium text-muted">
-              TCP ports
+              TCP ports <span className="text-faint">— lists &amp; ranges, e.g. 1-1024</span>
             </label>
             <input
               id="ports"
               className="input font-mono text-xs"
               value={portsInput}
               onChange={(e) => setPortsInput(e.target.value)}
-              placeholder="22, 80, 443, 445, 3389, 8080"
+              placeholder="22, 80, 443, 3389, 8000-8100"
               spellCheck={false}
             />
           </div>

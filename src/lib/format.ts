@@ -69,9 +69,27 @@ export function hasWeb(ports: number[]): number | null {
   return null;
 }
 
-export function parsePorts(input: string): number[] {
-  return input
-    .split(/[,\s]+/)
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => Number.isInteger(n) && n > 0 && n <= 65535);
+// Parse a port spec supporting single ports and ranges, e.g.
+// "22, 80, 443" or "1-1024" or "80,443,8000-8100". De-duplicated, sorted,
+// and capped so a huge range can't lock up the scan.
+export function parsePorts(input: string, cap = 2048): number[] {
+  const valid = (n: number) => Number.isInteger(n) && n > 0 && n <= 65535;
+  const set = new Set<number>();
+  for (const tokenRaw of input.split(/[,\s]+/)) {
+    const token = tokenRaw.trim();
+    if (!token) continue;
+    const range = token.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      let a = parseInt(range[1], 10);
+      let b = parseInt(range[2], 10);
+      if (a > b) [a, b] = [b, a];
+      if (!valid(a) || !valid(b)) continue;
+      for (let p = a; p <= b && set.size < cap; p++) set.add(p);
+    } else {
+      const n = parseInt(token, 10);
+      if (valid(n)) set.add(n);
+    }
+    if (set.size >= cap) break;
+  }
+  return [...set].sort((a, b) => a - b);
 }

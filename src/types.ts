@@ -7,8 +7,20 @@ export interface HostResult {
   vendor: string | null;
   open_ports: number[];
   response_ms: number | null;
+  ttl: number | null;
+  os_guess: string | null;
   last_seen: string;
 }
+
+export interface LocalNetwork {
+  interface: string;
+  ip: string;
+  prefix: number;
+  cidr: string;
+  is_private: boolean;
+}
+
+export type ExportFormat = "csv" | "json" | "xml";
 
 export interface ScanResult {
   target: string;

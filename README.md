@@ -16,6 +16,8 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 
 ## Features
 
+- **Auto-detects your network** — on launch ArcScan fills the target with your
+  own subnet (and shows this device's IP); a **Detect** button re-runs it.
 - **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
   (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
 - **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
@@ -24,12 +26,17 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
   and more). A host counts as **up** if it answers ICMP, accepts a TCP
   connection, *or* actively refuses one (RST) — all three prove liveness.
 - **Port & service detection** — the default port set fingerprints most hosts
-  at a glance; edit it freely in the advanced options.
-- **Fast, modern results table** — IP, hostname, MAC, vendor, open ports,
+  at a glance; enter single ports **and ranges** (`1-1024`, `80,443,8000-8100`)
+  in the advanced options.
+- **OS guess** — an Angry-IP-style TTL fetcher labels each host
+  Windows / Linux-Unix-macOS / network device.
+- **Fast, modern results table** — IP, hostname, MAC, vendor, OS, open ports,
   response time, and last-seen, with column sorting and instant
   filtering/search.
-- **Per-host actions** — copy IP, open web interface, open RDP, open SSH, and
-  export the whole result set to CSV via a native save dialog.
+- **Per-host actions** — copy IP, open web interface, open shared folders
+  (SMB), open RDP, open SSH, and send a **Wake-on-LAN** magic packet.
+- **Multi-format export** — export the whole result set to **CSV, JSON, or
+  XML** via a native save dialog.
 - **Scan history** — every scan is saved to a local SQLite database and is
   browsable, re-openable, and deletable.
 - **Dashboard** — total devices, unknown devices, open RDP count, open SMB
@@ -67,7 +74,8 @@ ArcScan/
 ├── src-tauri/                Rust backend
 │   └── src/
 │       ├── ipparse.rs        Target parsing + host-count guard (+ unit tests)
-│       ├── scanner.rs        Ping / TCP probes, ARP, concurrent DNS (+ tests)
+│       ├── netinfo.rs        Local interface/subnet detection (auto-fill)
+│       ├── scanner.rs        Ping / TCP probes, TTL/OS, ARP, DNS (+ tests)
 │       ├── oui.rs            Embedded IEEE OUI vendor lookup
 │       ├── db.rs             SQLite persistence (bundled rusqlite)
 │       ├── commands.rs       Tauri command surface + CSV + launch helpers

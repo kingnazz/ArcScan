@@ -2,7 +2,7 @@
 // backend so the UI is fully developable and demoable. The API layer falls
 // back to this automatically when the app is not running inside Tauri.
 
-import type { HostResult, ScanOptions, ScanResult } from "../types";
+import type { HostResult, LocalNetwork, ScanOptions, ScanResult } from "../types";
 
 // A small in-memory "history" so the mock supports save/list/get/delete too.
 interface MockScan extends ScanResult {
@@ -95,6 +95,10 @@ export async function mockScan(opts: ScanOptions): Promise<ScanResult> {
       .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
       .join(":");
     const ports = PORT_PROFILES[rng % PORT_PROFILES.length];
+    // Plausible TTL / OS mix: Linux (64), Windows (128), network gear (255).
+    const ttlChoice = [64, 128, 255, 64, 128][rng % 5];
+    const osGuess =
+      ttlChoice <= 64 ? "Linux/Unix/macOS" : ttlChoice <= 128 ? "Windows" : "Network device";
 
     hosts.push({
       ip: `${base}.${octet}`,
@@ -103,6 +107,8 @@ export async function mockScan(opts: ScanOptions): Promise<ScanResult> {
       vendor: knownVendor && rng % 7 !== 0 ? vendor : null,
       open_ports: ports,
       response_ms: 1 + (rng % 40),
+      ttl: ttlChoice,
+      os_guess: osGuess,
       last_seen: now,
     });
   }
@@ -166,4 +172,12 @@ export function mockDelete(id: number) {
 export function mockLastIps(): string[] {
   if (store.length === 0) return [];
   return store[0].hosts.map((h) => h.ip);
+}
+
+export function mockDetectNetworks(): LocalNetwork[] {
+  // The browser can't read real interfaces; return a plausible LAN so the
+  // "Detect" button and auto-fill are demoable.
+  return [
+    { interface: "en0", ip: "192.168.1.42", prefix: 24, cidr: "192.168.1.0/24", is_private: true },
+  ];
 }

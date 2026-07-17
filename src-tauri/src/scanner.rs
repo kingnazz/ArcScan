@@ -48,6 +48,10 @@ pub struct HostResult {
     pub vendor: Option<String>,
     pub open_ports: Vec<u16>,
     pub response_ms: Option<u64>,
+    /// TTL from the ICMP echo reply, when a ping succeeded.
+    pub ttl: Option<u8>,
+    /// Coarse OS guess derived from the TTL (Angry-IP-style fetcher).
+    pub os_guess: Option<String>,
     pub last_seen: String,
 }
 
@@ -149,6 +153,7 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
         .map(|(ip, probe)| {
             let mac = arp.get(&ip).cloned();
             let vendor = mac.as_deref().and_then(oui::lookup);
+            let os_guess = probe.ttl.and_then(os_from_ttl);
             HostResult {
                 ip: ip.to_string(),
                 hostname: hostnames.get(&ip).cloned(),
@@ -156,6 +161,8 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
                 vendor,
                 open_ports: probe.open_ports,
                 response_ms: probe.response_ms,
+                ttl: probe.ttl,
+                os_guess,
                 last_seen: now.clone(),
             }
         })
@@ -173,6 +180,7 @@ struct Probe {
     up: bool,
     open_ports: Vec<u16>,
     response_ms: Option<u64>,
+    ttl: Option<u8>,
 }
 
 async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
@@ -186,14 +194,14 @@ async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
             .await
     };
 
-    let (ping_rtt, tcp_results) = futures::join!(ping_fut, tcp_fut);
+    let (ping_reply, tcp_results) = futures::join!(ping_fut, tcp_fut);
 
     let mut open_ports = Vec::new();
     let mut best: Option<u64> = None;
     let mut alive_via_tcp = false;
 
-    if let Some(rtt) = ping_rtt {
-        best = Some(rtt.as_millis() as u64);
+    if let Some(reply) = &ping_reply {
+        best = Some(reply.rtt.as_millis() as u64);
     }
 
     for (port, state) in tcp_results {
@@ -216,16 +224,47 @@ async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
 
     open_ports.sort_unstable();
     Probe {
-        up: ping_rtt.is_some() || alive_via_tcp,
+        up: ping_reply.is_some() || alive_via_tcp,
         open_ports,
         response_ms: best,
+        ttl: ping_reply.and_then(|r| r.ttl),
     }
+}
+
+struct PingReply {
+    rtt: Duration,
+    ttl: Option<u8>,
 }
 
 enum PortState {
     Open(Duration),
     Refused(Duration),
     NoReply,
+}
+
+/// Map an observed TTL to a coarse OS family. On a LAN the reply TTL is the
+/// sender's initial TTL minus a hop or two: ~64 = Linux/Unix/macOS, ~128 =
+/// Windows, ~255 = network gear (routers, printers, switches).
+fn os_from_ttl(ttl: u8) -> Option<String> {
+    let label = if (33..=64).contains(&ttl) {
+        "Linux/Unix/macOS"
+    } else if (65..=128).contains(&ttl) {
+        "Windows"
+    } else if ttl > 128 {
+        "Network device"
+    } else {
+        return None;
+    };
+    Some(label.to_string())
+}
+
+/// Parse the TTL value out of a `ping` reply line (case-insensitive `ttl=NN`).
+fn parse_ttl(output: &str) -> Option<u8> {
+    let lower = output.to_ascii_lowercase();
+    let idx = lower.find("ttl=")?;
+    let rest = &lower[idx + 4..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 async fn tcp_probe(ip: Ipv4Addr, port: u16, per_probe: Duration) -> PortState {
@@ -243,8 +282,10 @@ async fn tcp_probe(ip: Ipv4Addr, port: u16, per_probe: Duration) -> PortState {
 }
 
 /// ICMP echo via the OS `ping` binary — deliberately avoids raw sockets so the
-/// app never needs administrator/root privileges.
-async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<Duration> {
+/// app never needs administrator/root privileges. Captures the reply so the TTL
+/// can be parsed; requiring a `ttl=` marker also filters out the Windows quirk
+/// where `ping` exits 0 on a "Destination host unreachable" response.
+async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<PingReply> {
     let ms = per_probe.as_millis().max(1);
     let ip_s = ip.to_string();
     let start = Instant::now();
@@ -268,14 +309,24 @@ async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<Duration> {
         cmd.args(["-c", "1", "-n", "-W", &secs.to_string(), &ip_s]);
     }
 
-    cmd.stdout(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::null());
     cmd.stdin(std::process::Stdio::null());
 
     // Guard against a hung ping with a slightly larger outer timeout.
     let outer = per_probe + Duration::from_millis(500);
-    match timeout(outer, cmd.status()).await {
-        Ok(Ok(status)) if status.success() => Some(start.elapsed()),
+    match timeout(outer, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // A genuine echo reply always reports a TTL; require it.
+            if !text.to_ascii_lowercase().contains("ttl=") {
+                return None;
+            }
+            Some(PingReply {
+                rtt: start.elapsed(),
+                ttl: parse_ttl(&text),
+            })
+        }
         _ => None,
     }
 }
@@ -387,6 +438,21 @@ mod tests {
         );
         // broadcast MAC is ignored
         assert!(!map.contains_key(&"192.168.1.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn parses_ttl_from_ping_output() {
+        assert_eq!(parse_ttl("Reply from 1.2.3.4: bytes=32 time=1ms TTL=128"), Some(128));
+        assert_eq!(parse_ttl("64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=0.4 ms"), Some(64));
+        assert_eq!(parse_ttl("no ttl here"), None);
+    }
+
+    #[test]
+    fn os_guess_from_ttl() {
+        assert_eq!(os_from_ttl(64).as_deref(), Some("Linux/Unix/macOS"));
+        assert_eq!(os_from_ttl(128).as_deref(), Some("Windows"));
+        assert_eq!(os_from_ttl(255).as_deref(), Some("Network device"));
+        assert_eq!(os_from_ttl(10), None);
     }
 
     #[test]
