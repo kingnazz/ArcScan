@@ -21,10 +21,13 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 - **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
   (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
 - **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
-  raw-socket/administrator privileges required), with a TCP fallback across a
+  raw-socket/administrator privileges required), plus a TCP fallback across a
   curated set of common ports (FTP, SSH, Telnet, DNS, HTTP/S, SMB, RDP, VNC,
   and more). A host counts as **up** if it answers ICMP, accepts a TCP
-  connection, *or* actively refuses one (RST) — all three prove liveness.
+  connection, actively refuses one (RST), **or appears in the ARP cache** — so
+  devices that silently drop pings/probes (phones, IoT, printers, firewalled
+  hosts) are still found on the local segment, the way Advanced IP / Angry IP
+  do it.
 - **Port & service detection** — the default port set fingerprints most hosts
   at a glance; enter single ports **and ranges** (`1-1024`, `80,443,8000-8100`)
   in the advanced options.

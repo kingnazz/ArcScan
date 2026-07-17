@@ -101,9 +101,6 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
 
     let started = Instant::now();
 
-    // Read the ARP cache once up front — a single OS call, not per host.
-    let arp = read_arp_cache().await;
-
     // Probe liveness + ports concurrently, bounded by the semaphore.
     let sem = Arc::new(Semaphore::new(concurrency));
     let ports = Arc::new(ports);
@@ -123,8 +120,15 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
         .collect()
         .await;
 
-    // Keep only live hosts.
-    probe_results.retain(|(_, p)| p.up);
+    // Read the ARP cache *after* probing: every probe (ping or TCP SYN) forces
+    // the OS to ARP-resolve its target, so the cache is now primed. On the local
+    // segment ARP is authoritative — a device with a resolved MAC is definitely
+    // up, even if it silently dropped our ICMP/TCP probes (phones, IoT, printers,
+    // firewalled hosts). This is how a LAN scanner actually finds everything.
+    let arp = read_arp_cache().await;
+
+    // A host is live if a probe proved it, OR it has a real MAC in the ARP cache.
+    probe_results.retain(|(ip, p)| p.up || arp.contains_key(ip));
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
     // Resolve hostnames for the live hosts concurrently (bounded, short
