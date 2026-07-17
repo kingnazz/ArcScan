@@ -138,6 +138,11 @@ The scanner adapts its `ping`/`arp` invocations per OS, suppresses child console
 windows on Windows (`CREATE_NO_WINDOW`), and adapts the RDP/SSH launch helpers
 (e.g. macOS RDP via the `rdp://` scheme, SSH via a Terminal session).
 
+The Windows installers embed the WebView2 runtime
+(`webviewInstallMode: offlineInstaller`), so they install with no internet
+connection and never fail on locked-down machines that can't reach Microsoft's
+download servers.
+
 ## Packaging
 
 Build native installers locally:
