@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -6,22 +6,24 @@ import {
   Check,
   Copy,
   Download,
+  FolderOpen,
   Globe,
   Monitor,
+  Power,
   Search,
   TerminalSquare,
 } from "lucide-react";
-import type { HostResult } from "../types";
+import type { ExportFormat, HostResult } from "../types";
 import { api } from "../lib/api";
 import { hasWeb, ipToNum, formatRelative, serviceLabel } from "../lib/format";
 
-type SortKey = "ip" | "hostname" | "mac" | "vendor" | "ports" | "response" | "last_seen";
+type SortKey = "ip" | "hostname" | "mac" | "vendor" | "os" | "ports" | "response" | "last_seen";
 type SortDir = "asc" | "desc";
 
 interface HostsTableProps {
   hosts: HostResult[];
   newIps: Set<string>;
-  onExport: () => void;
+  onExport: (format: ExportFormat) => void;
 }
 
 const RISKY_PORTS = new Set([23, 445, 3389, 5900]);
@@ -57,6 +59,7 @@ function RowActions({ host }: { host: HostResult }) {
   const web = hasWeb(host.open_ports);
   const rdp = host.open_ports.includes(3389);
   const ssh = host.open_ports.includes(22);
+  const smb = host.open_ports.includes(445);
 
   async function copy() {
     await api.copyIp(host.ip);
@@ -81,6 +84,13 @@ function RowActions({ host }: { host: HostResult }) {
         <Globe className="h-4 w-4" />
       </button>
       <button
+        className={`btn-icon ${smb ? "text-brand-600 dark:text-brand-300" : ""}`}
+        title="Open shared folders (SMB)"
+        onClick={() => api.openSmb(host.ip)}
+      >
+        <FolderOpen className="h-4 w-4" />
+      </button>
+      <button
         className={`btn-icon ${rdp ? "text-amber-500 dark:text-amber-300" : ""}`}
         title="Open RDP"
         onClick={() => api.openRdp(host.ip)}
@@ -93,6 +103,14 @@ function RowActions({ host }: { host: HostResult }) {
         onClick={() => api.openSsh(host.ip)}
       >
         <TerminalSquare className="h-4 w-4" />
+      </button>
+      <button
+        className="btn-icon disabled:opacity-30"
+        title={host.mac ? "Wake-on-LAN (send magic packet)" : "Wake-on-LAN needs a known MAC"}
+        onClick={() => host.mac && api.wakeOnLan(host.mac)}
+        disabled={!host.mac}
+      >
+        <Power className="h-4 w-4" />
       </button>
     </div>
   );
@@ -112,6 +130,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
             h.hostname ?? "",
             h.mac ?? "",
             h.vendor ?? "",
+            h.os_guess ?? "",
             h.open_ports.join(" "),
             h.open_ports.map(serviceLabel).join(" "),
           ]
@@ -135,6 +154,9 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
           break;
         case "vendor":
           cmp = (a.vendor ?? "").localeCompare(b.vendor ?? "");
+          break;
+        case "os":
+          cmp = (a.os_guess ?? "").localeCompare(b.os_guess ?? "");
           break;
         case "ports":
           cmp = a.open_ports.length - b.open_ports.length;
@@ -165,6 +187,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
     { key: "hostname", label: "Hostname" },
     { key: "mac", label: "MAC" },
     { key: "vendor", label: "Vendor" },
+    { key: "os", label: "OS" },
     { key: "ports", label: "Open ports" },
     { key: "response", label: "Resp", className: "text-right" },
     { key: "last_seen", label: "Last seen", className: "text-right" },
@@ -186,10 +209,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
         <div className="hidden text-xs text-muted sm:block">
           {filtered.length} of {hosts.length}
         </div>
-        <button className="btn-ghost" onClick={onExport} disabled={hosts.length === 0}>
-          <Download className="h-4 w-4" />
-          Export CSV
-        </button>
+        <ExportMenu onExport={onExport} disabled={hosts.length === 0} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -233,6 +253,12 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
                 <td className="max-w-[220px] truncate px-3 py-2 text-muted" title={h.vendor ?? ""}>
                   {h.vendor ?? <span className="text-faint">Unknown</span>}
                 </td>
+                <td
+                  className="whitespace-nowrap px-3 py-2 text-muted"
+                  title={h.ttl != null ? `TTL ${h.ttl}` : ""}
+                >
+                  {h.os_guess ?? <span className="text-faint">—</span>}
+                </td>
                 <td className="px-3 py-2">
                   <PortBadges ports={h.open_ports} />
                 </td>
@@ -269,5 +295,56 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
     <ArrowUp className="h-3 w-3 text-brand-600 dark:text-brand-300" />
   ) : (
     <ArrowDown className="h-3 w-3 text-brand-600 dark:text-brand-300" />
+  );
+}
+
+function ExportMenu({
+  onExport,
+  disabled,
+}: {
+  onExport: (format: ExportFormat) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const formats: Array<{ key: ExportFormat; label: string }> = [
+    { key: "csv", label: "CSV (.csv)" },
+    { key: "json", label: "JSON (.json)" },
+    { key: "xml", label: "XML (.xml)" },
+  ];
+
+  return (
+    <div className="relative" ref={ref}>
+      <button className="btn-ghost" onClick={() => setOpen((v) => !v)} disabled={disabled}>
+        <Download className="h-4 w-4" />
+        Export
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-lg border border-line bg-surface shadow-panel animate-fade-in">
+          {formats.map((f) => (
+            <button
+              key={f.key}
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-fg hover:bg-surface2"
+              onClick={() => {
+                setOpen(false);
+                onExport(f.key);
+              }}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

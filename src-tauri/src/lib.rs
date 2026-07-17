@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod ipparse;
+mod netinfo;
 mod oui;
 mod scanner;
 
@@ -29,8 +30,10 @@ pub fn run() {
             commands::get_scan,
             commands::delete_scan,
             commands::last_scan_ips,
-            commands::build_csv,
-            commands::export_csv,
+            commands::detect_networks,
+            commands::save_text,
+            commands::wake_on_lan,
+            commands::open_smb,
             commands::open_web,
             commands::open_rdp,
             commands::open_ssh,

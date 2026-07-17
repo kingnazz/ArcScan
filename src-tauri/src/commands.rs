@@ -5,7 +5,8 @@ use std::net::Ipv4Addr;
 use tauri::State;
 
 use crate::db::{Db, ScanDetail, ScanSummary};
-use crate::scanner::{self, HostResult, ScanOptions, ScanResult};
+use crate::netinfo::{self, LocalNetwork};
+use crate::scanner::{self, ScanOptions, ScanResult};
 
 /// Reject anything that is not a bare, well-formed IPv4 address before it is
 /// ever handed to a shell/launcher, to avoid argument injection.
@@ -45,54 +46,72 @@ pub fn last_scan_ips(db: State<'_, Db>) -> Result<Vec<String>, String> {
     db.last_scan_ips()
 }
 
-/// Build the CSV text for a result set. Kept in Rust so exported files are
-/// byte-identical regardless of how the export is triggered.
+/// Detect the machine's own IPv4 networks so the UI can auto-fill the target
+/// with the local subnet.
 #[tauri::command]
-pub fn build_csv(hosts: Vec<HostResult>) -> String {
-    csv_for(&hosts)
+pub fn detect_networks() -> Vec<LocalNetwork> {
+    netinfo::detect()
 }
 
-/// Write CSV to an operator-chosen path (obtained via the native save dialog on
-/// the frontend). Only used inside Tauri.
+/// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to
+/// an operator-chosen path from the native save dialog.
 #[tauri::command]
-pub fn export_csv(path: String, hosts: Vec<HostResult>) -> Result<(), String> {
-    let csv = csv_for(&hosts);
-    std::fs::write(&path, csv).map_err(|e| format!("Failed to write {path}: {e}"))
+pub fn save_text(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Failed to write {path}: {e}"))
 }
 
-fn csv_field(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
+/// Send a Wake-on-LAN magic packet to the given MAC address (broadcast UDP).
+#[tauri::command]
+pub fn wake_on_lan(mac: String) -> Result<(), String> {
+    let bytes = parse_mac(&mac)?;
+    // Magic packet: 6 x 0xFF followed by the MAC repeated 16 times.
+    let mut packet = vec![0xFFu8; 6];
+    for _ in 0..16 {
+        packet.extend_from_slice(&bytes);
     }
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Failed to open socket: {e}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|e| format!("Failed to enable broadcast: {e}"))?;
+    socket
+        .send_to(&packet, "255.255.255.255:9")
+        .map_err(|e| format!("Failed to send magic packet: {e}"))?;
+    Ok(())
 }
 
-fn csv_for(hosts: &[HostResult]) -> String {
-    let mut out = String::from(
-        "IP,Hostname,MAC,Vendor,Open Ports,Response (ms),Last Seen\n",
-    );
-    for h in hosts {
-        let ports = h
-            .open_ports
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let row = [
-            csv_field(&h.ip),
-            csv_field(h.hostname.as_deref().unwrap_or("")),
-            csv_field(h.mac.as_deref().unwrap_or("")),
-            csv_field(h.vendor.as_deref().unwrap_or("")),
-            csv_field(&ports),
-            csv_field(&h.response_ms.map(|v| v.to_string()).unwrap_or_default()),
-            csv_field(&h.last_seen),
-        ]
-        .join(",");
-        out.push_str(&row);
-        out.push('\n');
+/// Parse a MAC address in any common separator style into 6 bytes.
+fn parse_mac(mac: &str) -> Result<[u8; 6], String> {
+    let hex: String = mac.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 {
+        return Err(format!("`{mac}` is not a valid MAC address."));
     }
-    out
+    let mut out = [0u8; 6];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| format!("`{mac}` is not a valid MAC address."))?;
+    }
+    Ok(out)
+}
+
+/// Open the host's SMB/Windows file shares in the system file browser.
+#[tauri::command]
+pub async fn open_smb(app: tauri::AppHandle, ip: String) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    #[cfg(windows)]
+    {
+        let _ = &app;
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(format!("\\\\{ip}"));
+        cmd.spawn()
+            .map_err(|e| format!("Failed to open shares: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        // macOS Finder and Linux file managers understand smb:// URLs.
+        open_external(&app, &format!("smb://{ip}"))
+    }
 }
 
 #[tauri::command]

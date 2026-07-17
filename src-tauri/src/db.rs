@@ -55,12 +55,25 @@ impl Db {
                 vendor      TEXT,
                 open_ports  TEXT NOT NULL,
                 response_ms INTEGER,
+                ttl         INTEGER,
+                os_guess    TEXT,
                 last_seen   TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_hosts_scan ON hosts(scan_id);
             "#,
         )
         .map_err(|e| e.to_string())?;
+
+        // Idempotent migrations for databases created by earlier versions that
+        // predate the ttl/os_guess columns. SQLite has no "ADD COLUMN IF NOT
+        // EXISTS", so we run them and ignore the "duplicate column" error.
+        for stmt in [
+            "ALTER TABLE hosts ADD COLUMN ttl INTEGER",
+            "ALTER TABLE hosts ADD COLUMN os_guess TEXT",
+        ] {
+            let _ = conn.execute(stmt, []);
+        }
+
         Ok(Db {
             conn: Mutex::new(conn),
         })
@@ -89,8 +102,8 @@ impl Db {
                 .collect::<Vec<_>>()
                 .join(",");
             tx.execute(
-                "INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports, response_ms, last_seen)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports, response_ms, ttl, os_guess, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     scan_id,
                     h.ip,
@@ -99,6 +112,8 @@ impl Db {
                     h.vendor,
                     ports,
                     h.response_ms.map(|v| v as i64),
+                    h.ttl.map(|v| v as i64),
+                    h.os_guess,
                     h.last_seen,
                 ],
             )
@@ -155,7 +170,7 @@ impl Db {
 
         let mut stmt = conn
             .prepare(
-                "SELECT ip, hostname, mac, vendor, open_ports, response_ms, last_seen
+                "SELECT ip, hostname, mac, vendor, open_ports, response_ms, ttl, os_guess, last_seen
                  FROM hosts WHERE scan_id = ?1 ORDER BY id ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -174,7 +189,9 @@ impl Db {
                     vendor: row.get(3)?,
                     open_ports,
                     response_ms: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
-                    last_seen: row.get(6)?,
+                    ttl: row.get::<_, Option<i64>>(6)?.map(|v| v as u8),
+                    os_guess: row.get(7)?,
+                    last_seen: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?
