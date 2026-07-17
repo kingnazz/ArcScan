@@ -9,7 +9,7 @@ import { ScanHistory } from "./components/ScanHistory";
 import { api } from "./lib/api";
 import type { DashboardStats, HostResult, ScanOptions, ScanSummary } from "./types";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 
 type Tab = "results" | "history";
 

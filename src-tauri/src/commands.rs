@@ -121,11 +121,30 @@ pub async fn open_rdp(ip: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to launch RDP client: {e}"))?;
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        Err(format!(
-            "RDP launch is only supported on Windows (target {ip})."
-        ))
+        // Microsoft Remote Desktop / Windows App registers the rdp:// scheme.
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(format!("rdp://full%20address=s:{ip}"));
+        cmd.spawn().map_err(|e| {
+            format!("Failed to launch RDP client (is Windows App / Microsoft Remote Desktop installed?): {e}")
+        })?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Best-effort on Linux: try common RDP clients.
+        for (client, args) in [
+            ("xfreerdp", vec![format!("/v:{ip}")]),
+            ("remmina", vec!["-c".into(), format!("rdp://{ip}")]),
+        ] {
+            let mut cmd = std::process::Command::new(client);
+            cmd.args(&args);
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!("No RDP client found to connect to {ip}."))
     }
 }
 
@@ -145,8 +164,14 @@ pub async fn open_ssh(ip: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = std::process::Command::new("open");
-        cmd.args(["-a", "Terminal", &format!("ssh://{ip}")]);
+        // Open Terminal and run an interactive ssh session. `ip` is a validated
+        // bare IPv4 (digits and dots only), so interpolating it into the
+        // AppleScript string cannot inject additional commands.
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script \"ssh {ip}\"\nend tell"
+        );
+        let mut cmd = std::process::Command::new("osascript");
+        cmd.args(["-e", &script]);
         cmd.spawn().map_err(|e| format!("Failed to launch SSH: {e}"))?;
         Ok(())
     }

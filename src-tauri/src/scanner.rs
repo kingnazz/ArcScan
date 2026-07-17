@@ -358,8 +358,9 @@ fn parse_arp(text: &str) -> HashMap<Ipv4Addr, String> {
 }
 
 /// Normalize a MAC token (`00-11-22-33-44-55` or `00:11:22:...`) into an
-/// uppercase colon-separated form. Returns None for non-MAC tokens (e.g. the
-/// literal `ff-ff-ff-ff-ff-ff` broadcast or incomplete/incorrect tokens).
+/// uppercase colon-separated form. macOS `arp -a` prints unpadded octets
+/// (`a0:ce:c8:d:cf:d1`), so 1-digit groups are zero-padded. Returns None for
+/// non-MAC tokens (e.g. the `ff-ff-ff-ff-ff-ff` broadcast or malformed input).
 fn normalize_mac(tok: &str) -> Option<String> {
     let sep = if tok.contains('-') {
         '-'
@@ -374,10 +375,10 @@ fn normalize_mac(tok: &str) -> Option<String> {
     }
     let mut octets = Vec::with_capacity(6);
     for p in parts {
-        if p.len() != 2 || !p.chars().all(|c| c.is_ascii_hexdigit()) {
+        if p.is_empty() || p.len() > 2 || !p.chars().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
-        octets.push(p.to_ascii_uppercase());
+        octets.push(format!("{:0>2}", p.to_ascii_uppercase()));
     }
     let mac = octets.join(":");
     if mac == "FF:FF:FF:FF:FF:FF" || mac == "00:00:00:00:00:00" {
@@ -400,6 +401,17 @@ mod tests {
         );
         // broadcast MAC is ignored
         assert!(!map.contains_key(&"192.168.1.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn parses_macos_unpadded_mac() {
+        // macOS `arp -a` prints unpadded octets.
+        let sample = "gateway.lan (10.0.1.1) at a0:ce:c8:d:cf:d1 on en0 ifscope [ethernet]\n";
+        let map = parse_arp(sample);
+        assert_eq!(
+            map.get(&"10.0.1.1".parse().unwrap()).map(String::as_str),
+            Some("A0:CE:C8:0D:CF:D1")
+        );
     }
 
     #[test]

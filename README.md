@@ -124,30 +124,45 @@ cd src-tauri && cargo test     # Rust unit tests (IP parsing, ARP, OUI)
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 
+## Platform support
+
+ArcScan is Windows-first but fully cross-platform. It runs on:
+
+- **Windows** — Intel/AMD (x64) **and** Windows-on-ARM (ARM64) devices
+- **macOS** — Apple Silicon (arm64) **and** Intel (x86_64), shipped as a single
+  universal binary
+
+The scanner adapts its `ping`/`arp` invocations per OS, suppresses child console
+windows on Windows (`CREATE_NO_WINDOW`), and adapts the RDP/SSH launch helpers
+(e.g. macOS RDP via the `rdp://` scheme, SSH via a Terminal session).
+
 ## Packaging
 
 Build native installers locally:
 
 ```bash
-npm run tauri:build            # MSI + NSIS for the host architecture
+npm run tauri:build                                  # host-arch installer(s)
+npm run tauri:build -- --target universal-apple-darwin --bundles dmg   # macOS universal DMG
 ```
 
-Artifacts land in `src-tauri/target/<target>/release/bundle/` (`msi/*.msi` and
-`nsis/*-setup.exe`).
+Artifacts land in `src-tauri/target/<target>/release/bundle/` — `msi/*.msi` and
+`nsis/*-setup.exe` on Windows, `dmg/*.dmg` on macOS.
 
 ### CI / releases
 
-`.github/workflows/build.yml` builds a matrix of both Windows CPU
-architectures on `windows-latest` — the hosted runner ships the MSVC ARM64
-cross-compile tools, so no dedicated ARM runner is needed:
+`.github/workflows/build.yml` builds all supported platforms in one matrix.
+`windows-latest` ships the MSVC ARM64 cross tools (so no dedicated ARM runner is
+needed), and `macos-latest` produces a single universal binary covering both Mac
+architectures:
 
-| Target | Artifact |
-| --- | --- |
-| `x86_64-pc-windows-msvc` | `ArcScan-windows-x64` (MSI + NSIS `.exe`) |
-| `aarch64-pc-windows-msvc` | `ArcScan-windows-arm64` (MSI + NSIS `.exe`) |
+| Runner | Target | Artifact |
+| --- | --- | --- |
+| `windows-latest` | `x86_64-pc-windows-msvc` | `ArcScan-windows-x64` (MSI + NSIS `.exe`) |
+| `windows-latest` | `aarch64-pc-windows-msvc` | `ArcScan-windows-arm64` (MSI + NSIS `.exe`) |
+| `macos-latest` | `universal-apple-darwin` | `ArcScan-macos-universal` (`.dmg`) |
 
 Each is uploaded as a separate downloadable artifact. Pushing a `v*` tag also
-drafts a GitHub Release with all four installers attached.
+drafts a GitHub Release with every installer attached.
 
 > **Version bumps matter.** Windows Installer treats installing the *same*
 > version as a no-op and will **not** replace an installed binary. Any change
@@ -161,7 +176,7 @@ Both are one-time generation steps; the outputs are committed to the repo so
 builds are reproducible offline.
 
 ```bash
-# App icon set (PNG sizes + Windows .ico) — pure Python standard library
+# App icon set (PNG sizes + Windows .ico + macOS .icns) — pure Python stdlib
 python3 scripts/generate_icon.py
 
 # Vendor table from the live IEEE MA-L registry (downloads ~4 MB CSV)

@@ -1,4 +1,4 @@
-name: Build Windows Installers
+name: Build Installers
 
 on:
   push:
@@ -15,15 +15,30 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.label }}
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-pc-windows-msvc
+          # windows-latest ships the MSVC ARM64 cross tools, so both Windows
+          # targets build on the same hosted runner — no dedicated ARM runner.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            bundles: msi nsis
             label: ArcScan-windows-x64
-          - target: aarch64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            rust_targets: aarch64-pc-windows-msvc
+            bundles: msi nsis
             label: ArcScan-windows-arm64
+          # One universal Apple binary covers both Apple Silicon (arm64) and
+          # Intel (x86_64) Macs.
+          - os: macos-latest
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: dmg
+            label: ArcScan-macos-universal
 
     steps:
       - name: Checkout
@@ -38,9 +53,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # windows-latest ships the MSVC ARM64 cross tools, so both targets
-          # build on the same hosted runner — no dedicated ARM runner needed.
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
@@ -51,16 +64,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build installers (MSI + NSIS)
-        run: npm run tauri:build -- --target ${{ matrix.target }} --bundles msi nsis
+      - name: Build installers
+        run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: Collect installers
         shell: bash
         run: |
           mkdir -p artifacts
           base="src-tauri/target/${{ matrix.target }}/release/bundle"
-          find "$base/msi" -name '*.msi' -exec cp {} artifacts/ \; 2>/dev/null || true
-          find "$base/nsis" -name '*-setup.exe' -exec cp {} artifacts/ \; 2>/dev/null || true
+          for pattern in '*.msi' '*-setup.exe' '*.dmg'; do
+            find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
+          done
           ls -la artifacts
 
       - name: Upload installers
