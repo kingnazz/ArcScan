@@ -1,9 +1,11 @@
 {
   "name": "arcscan",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "ArcScan - authorized LAN discovery and client reporting for MSPs",
+  "author": "ArcScan",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

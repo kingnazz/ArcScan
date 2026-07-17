@@ -1,57 +1,68 @@
-import { Clock, History, Trash2 } from "lucide-react";
+import { Clock, FolderOpen, Trash2 } from "lucide-react";
 import type { ScanSummary } from "../types";
-import { formatTime } from "../lib/format";
+import { formatDateTime, formatDuration } from "../lib/format";
 
 interface ScanHistoryProps {
   scans: ScanSummary[];
   activeId: number | null;
-  onSelect: (scan: ScanSummary) => void;
+  onOpen: (id: number) => void;
   onDelete: (id: number) => void;
 }
 
-export function ScanHistory({ scans, activeId, onSelect, onDelete }: ScanHistoryProps) {
+export function ScanHistory({ scans, activeId, onOpen, onDelete }: ScanHistoryProps) {
   return (
-    <div className="flex flex-col min-h-0 flex-1">
-      <div className="flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-        <History className="h-3.5 w-3.5" />
-        Scan History
+    <div className="panel flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 border-b border-white/5 px-4 py-3 text-sm font-medium text-slate-300">
+        <Clock className="h-4 w-4 text-brand-300" />
+        Scan history
+        <span className="ml-auto text-xs text-slate-500">{scans.length} saved</span>
       </div>
-      <div className="overflow-auto flex-1 px-2 space-y-1">
-        {scans.length === 0 && (
-          <p className="px-2 py-6 text-xs text-slate-600 text-center">
-            No saved scans yet. Run a scan to build history.
-          </p>
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        {scans.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-1 py-16 text-center text-slate-500">
+            <p className="text-sm">No saved scans yet.</p>
+            <p className="text-xs">Completed scans are saved here automatically.</p>
+          </div>
+        ) : (
+          <ul className="space-y-1.5">
+            {scans.map((s) => (
+              <li key={s.id}>
+                <div
+                  className={`group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
+                    activeId === s.id
+                      ? "border-brand-400/40 bg-brand-500/10"
+                      : "border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpen(s.id)}>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-sm text-slate-100">{s.target}</div>
+                      <div className="mt-0.5 text-xs text-slate-500">{formatDateTime(s.created_at)}</div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-sm font-semibold tabular-nums text-brand-200">{s.host_count}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {s.host_count === 1 ? "host" : "hosts"} · {formatDuration(s.duration_ms)}
+                      </div>
+                    </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button className="btn-icon" title="Open scan" onClick={() => onOpen(s.id)}>
+                      <FolderOpen className="h-4 w-4" />
+                    </button>
+                    <button
+                      className="btn-icon hover:text-red-300"
+                      title="Delete scan"
+                      onClick={() => onDelete(s.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
-        {scans.map((scan) => (
-          <button
-            key={scan.id}
-            onClick={() => onSelect(scan)}
-            className={`group w-full text-left rounded-lg px-2.5 py-2 transition-colors ${
-              activeId === scan.id ? "bg-accent/15 ring-1 ring-accent/40" : "hover:bg-base-700/60"
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs text-slate-200 truncate">{scan.target}</span>
-              <span
-                role="button"
-                tabIndex={0}
-                title="Delete scan"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(scan.id);
-                }}
-                className="icon-btn h-6 w-6 opacity-0 group-hover:opacity-100"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </span>
-            </div>
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
-              <Clock className="h-3 w-3" />
-              {formatTime(scan.finishedAt)}
-              <span className="text-ok tabular-nums ml-auto">{scan.hostsUp} up</span>
-            </div>
-          </button>
-        ))}
       </div>
     </div>
   );
