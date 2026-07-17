@@ -184,6 +184,28 @@ def png_bytes(size, rgba):
     return data
 
 
+def write_icns(path, entries):
+    """entries: list of (size, png_bytes). Writes a modern PNG-based .icns.
+
+    Maps rendered sizes onto the icns element types macOS expects, including
+    the @2x retina variants that share pixel data with the larger base sizes.
+    """
+    type_for_size = {
+        16: [b"icp4"],
+        32: [b"icp5", b"ic11"],   # 32 base + 16@2x
+        64: [b"icp6", b"ic12"],   # 64 base + 32@2x
+        128: [b"ic07"],
+        256: [b"ic08", b"ic13"],  # 256 base + 128@2x
+        512: [b"ic09", b"ic14"],  # 512 base + 256@2x
+    }
+    body = b""
+    for size, data in entries:
+        for typ in type_for_size.get(size, []):
+            body += typ + struct.pack(">I", 8 + len(data)) + data
+    with open(path, "wb") as f:
+        f.write(b"icns" + struct.pack(">I", 8 + len(body)) + body)
+
+
 def write_ico(path, entries):
     """entries: list of (size, png_bytes). Stored as PNG-in-ICO (Vista+)."""
     count = len(entries)
@@ -227,7 +249,11 @@ def main():
     ico_entries = [(s, png_bytes(s, rendered[s])) for s in [16, 24, 32, 48, 64, 128, 256]]
     write_ico(os.path.join(OUT_DIR, "icon.ico"), ico_entries)
 
-    print("done -> src-tauri/icons/{32x32,128x128,128x128@2x,icon}.png, icon.ico")
+    # macOS ICNS (PNG-based, with retina variants)
+    icns_entries = [(s, png_bytes(s, rendered[s])) for s in [16, 32, 64, 128, 256, 512]]
+    write_icns(os.path.join(OUT_DIR, "icon.icns"), icns_entries)
+
+    print("done -> src-tauri/icons/{32x32,128x128,128x128@2x,icon}.png, icon.ico, icon.icns")
 
 
 if __name__ == "__main__":
