@@ -177,8 +177,34 @@ pub async fn run(
     // firewalled hosts). This is how a LAN scanner actually finds everything.
     let arp = read_arp_cache().await;
 
-    // A host is live if a probe proved it, OR it has a real MAC in the ARP cache.
-    probe_results.retain(|(ip, p)| p.up || arp.contains_key(ip));
+    // Guard against proxy-ARP: some routers/APs (and client-isolated Wi-Fi)
+    // answer ARP for *every* address in the subnet with their own MAC, which
+    // would make the entire scanned range look "up". Any MAC that covers a large
+    // share of the range is such a proxy, not a real device — ignore it for
+    // ARP-based liveness and for MAC/vendor labelling.
+    let mut mac_freq: HashMap<&str, usize> = HashMap::new();
+    for (ip, _) in &probe_results {
+        if let Some(mac) = arp.get(ip) {
+            *mac_freq.entry(mac.as_str()).or_default() += 1;
+        }
+    }
+    let proxy_threshold = (scanned / 16).max(8);
+    let is_proxy = |mac: &str| mac_freq.get(mac).copied().unwrap_or(0) > proxy_threshold;
+
+    // A host is live if a probe proved it (ICMP reply / TCP accept / RST), OR it
+    // has a *unique* (non-proxy) MAC in the ARP cache.
+    probe_results.retain(|(ip, p)| p.up || arp.get(ip).is_some_and(|m| !is_proxy(m)));
+
+    // Safety net: if an implausible share of the range still looks "up", the
+    // network is answering for absent hosts (spoofed ICMP/RST from a firewall or
+    // captive appliance). Fall back to the signals a middlebox can't fake — a
+    // genuinely open TCP port or a real, unique ARP MAC.
+    if scanned >= 32 && probe_results.len() * 10 > scanned * 7 {
+        probe_results.retain(|(ip, p)| {
+            !p.open_ports.is_empty() || arp.get(ip).is_some_and(|m| !is_proxy(m))
+        });
+    }
+
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
     // Resolve hostnames for the live hosts concurrently (bounded, short
@@ -205,7 +231,9 @@ pub async fn run(
     let hosts_out: Vec<HostResult> = probe_results
         .into_iter()
         .map(|(ip, probe)| {
-            let mac = arp.get(&ip).cloned();
+            // Don't label a host with a proxy MAC — it's the router's, not the
+            // device's, and would be misleading.
+            let mac = arp.get(&ip).filter(|m| !is_proxy(m)).cloned();
             let vendor = mac.as_deref().and_then(oui::lookup);
             let os_guess = probe.ttl.and_then(os_from_ttl);
             HostResult {
