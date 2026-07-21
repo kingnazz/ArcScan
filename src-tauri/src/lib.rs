@@ -31,6 +31,7 @@ pub fn run() {
             commands::delete_scan,
             commands::last_scan_ips,
             commands::detect_networks,
+            commands::open_releases,
             commands::save_text,
             commands::wake_on_lan,
             commands::open_smb,

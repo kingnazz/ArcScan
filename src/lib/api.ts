@@ -80,6 +80,12 @@ export const api = {
     return mockDetectNetworks();
   },
 
+  async checkForUpdates(): Promise<void> {
+    const url = "https://github.com/kingnazz/ArcScan/releases";
+    if (isTauri()) return invoke<void>("open_releases");
+    window.open(url, "_blank");
+  },
+
   async wakeOnLan(mac: string): Promise<void> {
     if (isTauri()) return invoke<void>("wake_on_lan", { mac });
     alert(`Wake-on-LAN magic packet to ${mac} (available in the desktop app).`);
