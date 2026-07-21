@@ -4,16 +4,12 @@ name: Publish Release
 # (latest.json) for all platforms. Actions tab -> "Publish Release" -> Run
 # workflow -> pick a version.
 #
-# Because the source repo is private (its release assets aren't publicly
-# downloadable), the installers and latest.json are published to a PUBLIC
-# releases repo that the in-app updater reads from. See docs/AUTO_UPDATE.md.
+# This repo is public, so the in-app updater reads this repo's own Releases
+# feed directly — no separate repo or PAT needed. See docs/AUTO_UPDATE.md.
 #
 # Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           - updater private key (from tauri signer generate)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  - its password ("" if none)
-#   RELEASES_TOKEN                      - a PAT that can create releases in the public releases repo
-#
-# Set RELEASES_REPO below to your public releases repo.
 
 on:
   workflow_dispatch:
@@ -22,9 +18,6 @@ on:
         description: "Release tag (e.g. v1.5.0)"
         required: true
         default: "v1.5.0"
-
-env:
-  RELEASES_REPO: kingnazz/arcscan-releases
 
 concurrency:
   group: release-${{ github.event.inputs.version }}
@@ -89,9 +82,11 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish to release feed
+    name: Publish release + updater manifest
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -108,13 +103,13 @@ jobs:
           find staged -type f -exec cp {} dist/ \;
           ls -la dist
       - name: Generate latest.json (updater manifest)
-        run: node scripts/gen-latest-json.mjs "${{ github.event.inputs.version }}" "${{ env.RELEASES_REPO }}" dist
-      - name: Publish signed release + manifest to the public feed
+        run: node scripts/gen-latest-json.mjs "${{ github.event.inputs.version }}" "${{ github.repository }}" dist
+      - name: Publish signed release + manifest
         uses: softprops/action-gh-release@v2
         with:
-          repository: ${{ env.RELEASES_REPO }}
-          token: ${{ secrets.RELEASES_TOKEN }}
           tag_name: ${{ github.event.inputs.version }}
           name: ArcScan ${{ github.event.inputs.version }}
           files: dist/*
+          draft: false
+          make_latest: "true"
           generate_release_notes: true
