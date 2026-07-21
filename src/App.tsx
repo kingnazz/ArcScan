@@ -5,6 +5,7 @@ import {
   ListTree,
   Moon,
   Radar,
+  RotateCw,
   Sun,
   Wifi,
   WifiOff,
@@ -17,6 +18,14 @@ import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
 import { useTheme } from "./hooks/useTheme";
 import { api } from "./lib/api";
+import {
+  type KnownMap,
+  loadKnown,
+  loadRanges,
+  pushRange,
+  setLabel as prefsSetLabel,
+  toggleKnown as prefsToggleKnown,
+} from "./lib/prefs";
 import type {
   DashboardStats,
   ExportFormat,
@@ -26,7 +35,7 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.3.3";
+const APP_VERSION = "1.4.0";
 
 type Tab = "results" | "history";
 
@@ -41,6 +50,22 @@ export default function App() {
   const [newIps, setNewIps] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [lastMeta, setLastMeta] = useState<{ target: string; duration: number; scanned: number } | null>(null);
+  const [known, setKnown] = useState<KnownMap>({});
+  const [recents, setRecents] = useState<string[]>([]);
+  const [lastOpts, setLastOpts] = useState<ScanOptions | null>(null);
+
+  useEffect(() => {
+    setKnown(loadKnown());
+    setRecents(loadRanges());
+  }, []);
+
+  const toggleKnown = useCallback((mac: string, defaultLabel = "") => {
+    setKnown((m) => prefsToggleKnown(m, mac, defaultLabel));
+  }, []);
+
+  const setDeviceLabel = useCallback((mac: string, label: string) => {
+    setKnown((m) => prefsSetLabel(m, mac, label));
+  }, []);
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -61,6 +86,8 @@ export default function App() {
       setActiveScanId(null);
       setHosts([]);
       setProgress({ done: 0, total: 0, phase: "probing" });
+      setLastOpts(opts);
+      setRecents(pushRange(opts.target));
       try {
         // Snapshot the previous scan's IPs before saving the new one so we can
         // flag genuinely new devices.
@@ -88,6 +115,10 @@ export default function App() {
     },
     [refreshHistory],
   );
+
+  const rescan = useCallback(() => {
+    if (lastOpts && !scanning) runScan(lastOpts);
+  }, [lastOpts, scanning, runScan]);
 
   const openScan = useCallback(async (id: number) => {
     try {
@@ -173,7 +204,7 @@ export default function App() {
 
       {/* Body */}
       <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        <ScanControls scanning={scanning} onScan={runScan} />
+        <ScanControls scanning={scanning} onScan={runScan} recents={recents} />
 
         {scanning && progress && <ScanProgressBar progress={progress} />}
 
@@ -199,23 +230,43 @@ export default function App() {
               History
             </TabButton>
           </div>
-          {lastMeta && tab === "results" && (
-            <div className="hidden items-center gap-2 text-xs text-muted sm:flex">
-              <Radar className="h-3.5 w-3.5 text-brand-500" />
-              <span className="font-mono text-fg">{lastMeta.target}</span>
-              <span>·</span>
-              <span>
-                {hosts.length} live / {lastMeta.scanned} scanned
-              </span>
-              <span>·</span>
-              <span>{(lastMeta.duration / 1000).toFixed(1)}s</span>
-              {activeScanId != null && <span className="text-brand-600 dark:text-brand-300">· from history</span>}
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {lastMeta && tab === "results" && (
+              <div className="hidden items-center gap-2 text-xs text-muted sm:flex">
+                <Radar className="h-3.5 w-3.5 text-brand-500" />
+                <span className="font-mono text-fg">{lastMeta.target}</span>
+                <span>·</span>
+                <span>
+                  {hosts.length} live / {lastMeta.scanned} scanned
+                </span>
+                <span>·</span>
+                <span>{(lastMeta.duration / 1000).toFixed(1)}s</span>
+                {activeScanId != null && <span className="text-brand-600 dark:text-brand-300">· from history</span>}
+              </div>
+            )}
+            {lastOpts && (
+              <button
+                className="btn-ghost py-1.5"
+                onClick={rescan}
+                disabled={scanning}
+                title={`Rescan ${lastOpts.target}`}
+              >
+                <RotateCw className={`h-4 w-4 ${scanning ? "animate-spin" : ""}`} />
+                Rescan
+              </button>
+            )}
+          </div>
         </div>
 
         {tab === "results" ? (
-          <HostsTable hosts={hosts} newIps={newIps} onExport={exportHosts} />
+          <HostsTable
+            hosts={hosts}
+            newIps={newIps}
+            onExport={exportHosts}
+            known={known}
+            onToggleKnown={toggleKnown}
+            onSetLabel={setDeviceLabel}
+          />
         ) : (
           <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
         )}

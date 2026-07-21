@@ -38,6 +38,10 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
   filtering/search.
 - **Per-host actions** — copy IP, open web interface, open shared folders
   (SMB), open RDP, open SSH, and send a **Wake-on-LAN** magic packet.
+- **Known devices** — star a host to save it and give it a friendly label
+  (keyed by MAC, stored locally); filter to **Saved** devices only.
+- **Remembered ranges & one-click rescan** — recent scan targets are suggested
+  in the target box, and **Rescan** re-runs the last scan.
 - **Multi-format export** — export the whole result set to **CSV, JSON, or
   XML** via a native save dialog.
 - **Scan history** — every scan is saved to a local SQLite database and is
