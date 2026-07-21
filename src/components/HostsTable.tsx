@@ -11,11 +11,13 @@ import {
   Monitor,
   Power,
   Search,
+  Star,
   TerminalSquare,
 } from "lucide-react";
 import type { ExportFormat, HostResult } from "../types";
 import { api } from "../lib/api";
 import { hasWeb, ipToNum, formatRelative, serviceLabel } from "../lib/format";
+import { isKnown, labelFor, type KnownMap } from "../lib/prefs";
 
 type SortKey = "ip" | "hostname" | "mac" | "vendor" | "os" | "ports" | "response" | "last_seen";
 type SortDir = "asc" | "desc";
@@ -24,6 +26,9 @@ interface HostsTableProps {
   hosts: HostResult[];
   newIps: Set<string>;
   onExport: (format: ExportFormat) => void;
+  known: KnownMap;
+  onToggleKnown: (mac: string, defaultLabel?: string) => void;
+  onSetLabel: (mac: string, label: string) => void;
 }
 
 const RISKY_PORTS = new Set([23, 445, 3389, 5900]);
@@ -116,14 +121,22 @@ function RowActions({ host }: { host: HostResult }) {
   );
 }
 
-export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
+export function HostsTable({
+  hosts,
+  newIps,
+  onExport,
+  known,
+  onToggleKnown,
+  onSetLabel,
+}: HostsTableProps) {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("ip");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [favOnly, setFavOnly] = useState(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const rows = q
+    let rows = q
       ? hosts.filter((h) => {
           const hay = [
             h.ip,
@@ -131,6 +144,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
             h.mac ?? "",
             h.vendor ?? "",
             h.os_guess ?? "",
+            labelFor(known, h.mac),
             h.open_ports.join(" "),
             h.open_ports.map(serviceLabel).join(" "),
           ]
@@ -139,6 +153,8 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
           return hay.includes(q);
         })
       : hosts.slice();
+
+    if (favOnly) rows = rows.filter((h) => isKnown(known, h.mac));
 
     rows.sort((a, b) => {
       let cmp = 0;
@@ -171,7 +187,12 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return rows;
-  }, [hosts, query, sortKey, sortDir]);
+  }, [hosts, query, sortKey, sortDir, favOnly, known]);
+
+  const knownCount = useMemo(
+    () => hosts.filter((h) => isKnown(known, h.mac)).length,
+    [hosts, known],
+  );
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -209,6 +230,15 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
         <div className="hidden text-xs text-muted sm:block">
           {filtered.length} of {hosts.length}
         </div>
+        <button
+          className={`btn-ghost ${favOnly ? "border-amber-400/50 text-amber-500 dark:text-amber-300" : ""}`}
+          onClick={() => setFavOnly((v) => !v)}
+          disabled={knownCount === 0 && !favOnly}
+          title="Show only saved/known devices"
+        >
+          <Star className={`h-4 w-4 ${favOnly ? "fill-current" : ""}`} />
+          Saved{knownCount > 0 ? ` (${knownCount})` : ""}
+        </button>
         <ExportMenu onExport={onExport} disabled={hosts.length === 0} />
       </div>
 
@@ -216,6 +246,7 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur">
             <tr className="text-left text-xs uppercase tracking-wide text-faint">
+              <th className="w-8 px-2 py-2.5" aria-label="Saved" />
               {columns.map((c) => (
                 <th
                   key={c.key}
@@ -232,8 +263,28 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {filtered.map((h) => (
+            {filtered.map((h) => {
+              const saved = isKnown(known, h.mac);
+              return (
               <tr key={h.ip} className="group transition-colors hover:bg-surface2">
+                <td className="px-2 py-2 text-center">
+                  <button
+                    className={`btn-icon mx-auto disabled:opacity-25 ${
+                      saved ? "text-amber-500 dark:text-amber-300" : "text-faint"
+                    }`}
+                    title={
+                      !h.mac
+                        ? "Saving needs a known MAC"
+                        : saved
+                          ? "Remove from saved devices"
+                          : "Save this device"
+                    }
+                    disabled={!h.mac}
+                    onClick={() => h.mac && onToggleKnown(h.mac, h.hostname ?? "")}
+                  >
+                    <Star className={`h-4 w-4 ${saved ? "fill-current" : ""}`} />
+                  </button>
+                </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-fg">
                   <span className="inline-flex items-center gap-2">
                     {h.ip}
@@ -244,8 +295,18 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
                     )}
                   </span>
                 </td>
-                <td className="max-w-[200px] truncate px-3 py-2 text-muted" title={h.hostname ?? ""}>
-                  {h.hostname ?? <span className="text-faint">—</span>}
+                <td className="max-w-[220px] px-3 py-2 text-muted" title={h.hostname ?? ""}>
+                  {saved && h.mac ? (
+                    <input
+                      className="w-full rounded border border-line bg-surface2 px-2 py-1 text-xs text-fg placeholder:text-faint focus:border-brand-400 focus:outline-none"
+                      value={labelFor(known, h.mac)}
+                      placeholder={h.hostname ?? "Label this device…"}
+                      onChange={(e) => onSetLabel(h.mac!, e.target.value)}
+                      spellCheck={false}
+                    />
+                  ) : (
+                    <span className="block truncate">{h.hostname ?? <span className="text-faint">—</span>}</span>
+                  )}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted">
                   {h.mac ?? <span className="text-faint">—</span>}
@@ -272,7 +333,8 @@ export function HostsTable({ hosts, newIps, onExport }: HostsTableProps) {
                   <RowActions host={h} />
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
 
