@@ -62,6 +62,13 @@ pub fn detect_networks() -> Vec<LocalNetwork> {
     netinfo::detect()
 }
 
+/// Open the ArcScan releases page so the user can check for and download a
+/// newer version.
+#[tauri::command]
+pub async fn open_releases(app: tauri::AppHandle) -> Result<(), String> {
+    open_external(&app, "https://github.com/kingnazz/ArcScan/releases")
+}
+
 /// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to
 /// an operator-chosen path from the native save dialog.
 #[tauri::command]

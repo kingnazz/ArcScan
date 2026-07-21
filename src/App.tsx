@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  DownloadCloud,
   LayoutGrid,
   ListTree,
   Moon,
@@ -35,7 +36,7 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.4.1";
 
 type Tab = "results" | "history";
 
@@ -191,6 +192,14 @@ export default function App() {
             {api.native ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
             {api.native ? "Live" : "Demo"}
           </span>
+          <button
+            className="btn-icon"
+            onClick={() => api.checkForUpdates()}
+            title="Check for updates (opens the releases page)"
+            aria-label="Check for updates"
+          >
+            <DownloadCloud className="h-4 w-4" />
+          </button>
           <button
             className="btn-icon"
             onClick={toggle}
