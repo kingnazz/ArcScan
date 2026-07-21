@@ -8,6 +8,8 @@
     "core:event:default",
     "dialog:default",
     "dialog:allow-save",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "updater:default",
+    "process:allow-restart"
   ]
 }
