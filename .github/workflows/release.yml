@@ -1,17 +1,30 @@
 name: Publish Release
 
-# Manually publish a release with installers for all platforms — no local tag
-# pushing needed. Actions tab -> "Publish Release" -> Run workflow -> pick a
-# version. Produces a draft GitHub Release with the Windows x64/ARM64 and macOS
-# universal installers attached.
+# Manually publish a SIGNED release with installers + the auto-updater manifest
+# (latest.json) for all platforms. Actions tab -> "Publish Release" -> Run
+# workflow -> pick a version.
+#
+# Because the source repo is private (its release assets aren't publicly
+# downloadable), the installers and latest.json are published to a PUBLIC
+# releases repo that the in-app updater reads from. See docs/AUTO_UPDATE.md.
+#
+# Required repository secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           - updater private key (from tauri signer generate)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  - its password ("" if none)
+#   RELEASES_TOKEN                      - a PAT that can create releases in the public releases repo
+#
+# Set RELEASES_REPO below to your public releases repo.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag (e.g. v1.3.0)"
+        description: "Release tag (e.g. v1.5.0)"
         required: true
-        default: "v1.3.0"
+        default: "v1.5.0"
+
+env:
+  RELEASES_REPO: kingnazz/arcscan-releases
 
 concurrency:
   group: release-${{ github.event.inputs.version }}
@@ -28,17 +41,17 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
-            bundles: msi nsis
+            bundles: nsis
             label: ArcScan-windows-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             rust_targets: aarch64-pc-windows-msvc
-            bundles: msi nsis
+            bundles: nsis
             label: ArcScan-windows-arm64
           - os: macos-latest
             target: universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundles: dmg
+            bundles: app dmg
             label: ArcScan-macos-universal
     steps:
       - uses: actions/checkout@v4
@@ -55,14 +68,17 @@ jobs:
           key: ${{ matrix.target }}
       - name: Install frontend dependencies
         run: npm ci
-      - name: Build installers
-        run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-      - name: Collect installers
+      - name: Build signed installers + updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/updater.conf.json
+      - name: Collect installers + signatures
         shell: bash
         run: |
           mkdir -p artifacts
           base="src-tauri/target/${{ matrix.target }}/release/bundle"
-          for pattern in '*.msi' '*-setup.exe' '*.dmg'; do
+          for pattern in '*.msi' '*-setup.exe' '*.dmg' '*.app.tar.gz' '*.sig'; do
             find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
           done
           ls -la artifacts
@@ -73,21 +89,32 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish release
+    name: Publish to release feed
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Download all installers
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist-artifacts
-      - name: Create draft release
+          path: staged
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          find staged -type f -exec cp {} dist/ \;
+          ls -la dist
+      - name: Generate latest.json (updater manifest)
+        run: node scripts/gen-latest-json.mjs "${{ github.event.inputs.version }}" "${{ env.RELEASES_REPO }}" dist
+      - name: Publish signed release + manifest to the public feed
         uses: softprops/action-gh-release@v2
         with:
+          repository: ${{ env.RELEASES_REPO }}
+          token: ${{ secrets.RELEASES_TOKEN }}
           tag_name: ${{ github.event.inputs.version }}
           name: ArcScan ${{ github.event.inputs.version }}
-          files: dist-artifacts/**/*
-          draft: true
+          files: dist/*
           generate_release_notes: true

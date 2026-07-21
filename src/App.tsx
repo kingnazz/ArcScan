@@ -18,6 +18,7 @@ import { ScanControls } from "./components/ScanControls";
 import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
 import { useTheme } from "./hooks/useTheme";
+import { useUpdater } from "./hooks/useUpdater";
 import { api } from "./lib/api";
 import {
   type KnownMap,
@@ -36,12 +37,13 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.4.1";
+const APP_VERSION = "1.5.0";
 
 type Tab = "results" | "history";
 
 export default function App() {
   const { theme, toggle } = useTheme();
+  const updater = useUpdater();
   const [hosts, setHosts] = useState<HostResult[]>([]);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,11 +196,11 @@ export default function App() {
           </span>
           <button
             className="btn-icon"
-            onClick={() => api.checkForUpdates()}
-            title="Check for updates (opens the releases page)"
+            onClick={() => (api.native ? updater.check(true) : api.checkForUpdates())}
+            title="Check for updates"
             aria-label="Check for updates"
           >
-            <DownloadCloud className="h-4 w-4" />
+            <DownloadCloud className={`h-4 w-4 ${updater.status === "checking" ? "animate-pulse" : ""}`} />
           </button>
           <button
             className="btn-icon"
@@ -213,6 +215,8 @@ export default function App() {
 
       {/* Body */}
       <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+        <UpdateBanner updater={updater} />
+
         <ScanControls scanning={scanning} onScan={runScan} recents={recents} />
 
         {scanning && progress && <ScanProgressBar progress={progress} />}
@@ -280,6 +284,50 @@ export default function App() {
           <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
         )}
       </main>
+    </div>
+  );
+}
+
+function UpdateBanner({ updater }: { updater: ReturnType<typeof useUpdater> }) {
+  const { status, version, progress, error, install, dismiss } = updater;
+  if (status === "idle" || status === "checking") return null;
+
+  const busy = status === "downloading" || status === "installing";
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-brand-400/30 bg-brand-500/10 px-3.5 py-2.5 text-sm animate-fade-in">
+      <DownloadCloud className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-300" />
+      <div className="flex-1 leading-relaxed">
+        {status === "available" && (
+          <span className="text-fg">
+            <span className="font-semibold">ArcScan v{version}</span> is available.
+          </span>
+        )}
+        {status === "downloading" && (
+          <span className="text-fg">Downloading update… {progress > 0 ? `${progress}%` : ""}</span>
+        )}
+        {status === "installing" && <span className="text-fg">Installing… ArcScan will restart.</span>}
+        {status === "uptodate" && <span className="text-muted">You're on the latest version.</span>}
+        {status === "error" && (
+          <span className="text-amber-700 dark:text-amber-300">Update check failed: {error}</span>
+        )}
+      </div>
+      {status === "downloading" && (
+        <div className="hidden h-1.5 w-40 overflow-hidden rounded-full bg-surface2 sm:block">
+          <div className="h-full rounded-full bg-brand-500 transition-[width]" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+      {status === "available" && (
+        <button className="btn-primary py-1.5" onClick={install}>
+          <DownloadCloud className="h-4 w-4" />
+          Update now
+        </button>
+      )}
+      {!busy && (
+        <button className="btn-icon" onClick={dismiss} title="Dismiss">
+          <X className="h-4 w-4" />
+        </button>
+      )}
     </div>
   );
 }

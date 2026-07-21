@@ -42,6 +42,9 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
   (keyed by MAC, stored locally); filter to **Saved** devices only.
 - **Remembered ranges & one-click rescan** — recent scan targets are suggested
   in the target box, and **Rescan** re-runs the last scan.
+- **In-app auto-update** — checks a signed release feed on launch and offers a
+  one-click "Update now" (download → install → relaunch). See
+  [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md) to enable it.
 - **Multi-format export** — export the whole result set to **CSV, JSON, or
   XML** via a native save dialog.
 - **Scan history** — every scan is saved to a local SQLite database and is
