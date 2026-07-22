@@ -2,7 +2,7 @@
 //! hostname resolution. Everything here is read-only discovery — no exploit,
 //! brute-force, or credential logic exists or belongs in this module.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,7 +15,14 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::ipparse;
+use crate::netinfo;
 use crate::oui;
+
+/// True if `ip` falls within any (network, mask) range.
+fn ip_in_ranges(ip: Ipv4Addr, ranges: &[(u32, u32)]) -> bool {
+    let v = u32::from(ip);
+    ranges.iter().any(|(net, mask)| v & mask == *net)
+}
 
 /// Progress update streamed to the UI while a scan runs.
 #[derive(Debug, Clone, Serialize)]
@@ -190,20 +197,41 @@ pub async fn run(
     }
     let proxy_threshold = (scanned / 16).max(8);
     let is_proxy = |mac: &str| mac_freq.get(mac).copied().unwrap_or(0) > proxy_threshold;
+    let has_real_mac = |ip: &Ipv4Addr| arp.get(ip).is_some_and(|m| !is_proxy(m));
 
-    // A host is live if a probe proved it (ICMP reply / TCP accept / RST), OR it
-    // has a *unique* (non-proxy) MAC in the ARP cache.
-    probe_results.retain(|(ip, p)| p.up || arp.get(ip).is_some_and(|m| !is_proxy(m)));
+    // On the local segment, ARP is the ground truth: a real device answers ARP
+    // with its own MAC, which no firewall or middlebox can forge. A transparent
+    // router/proxy CAN, however, accept TCP or answer ICMP for *every* address
+    // in the subnet (e.g. intercepting DNS on port 53), which would make dead
+    // IPs look "up". So for hosts on one of this machine's own subnets we require
+    // a real, non-proxy MAC; remote subnets (which have no ARP entries for their
+    // hosts) keep the probe-based signals. This is how Angry IP / Advanced IP
+    // Scanner avoid counting phantom hosts on a LAN.
+    let locals = netinfo::detect();
+    let own_ips: HashSet<Ipv4Addr> = locals.iter().filter_map(|n| n.ip.parse().ok()).collect();
+    let local_ranges: Vec<(u32, u32)> = locals
+        .iter()
+        .filter_map(|n| {
+            let ip: Ipv4Addr = n.ip.parse().ok()?;
+            let mask = if n.prefix == 0 { 0 } else { u32::MAX << (32 - n.prefix) };
+            Some((u32::from(ip) & mask, mask))
+        })
+        .collect();
+    // Even if interface detection missed this subnet, a real resolved MAC for any
+    // scanned IP proves the range is on a local segment.
+    let arp_in_range = probe_results.iter().any(|(ip, _)| has_real_mac(ip));
 
-    // Safety net: if an implausible share of the range still looks "up", the
-    // network is answering for absent hosts (spoofed ICMP/RST from a firewall or
-    // captive appliance). Fall back to the signals a middlebox can't fake — a
-    // genuinely open TCP port or a real, unique ARP MAC.
-    if scanned >= 32 && probe_results.len() * 10 > scanned * 7 {
-        probe_results.retain(|(ip, p)| {
-            !p.open_ports.is_empty() || arp.get(ip).is_some_and(|m| !is_proxy(m))
-        });
-    }
+    probe_results.retain(|(ip, p)| {
+        if own_ips.contains(ip) {
+            return true; // this machine itself
+        }
+        if arp_in_range || ip_in_ranges(*ip, &local_ranges) {
+            has_real_mac(ip)
+        } else {
+            // Remote/routed target: trust ICMP reply / TCP accept / RST.
+            p.up
+        }
+    });
 
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
@@ -526,6 +554,16 @@ mod tests {
         );
         // broadcast MAC is ignored
         assert!(!map.contains_key(&"192.168.1.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_range_containment() {
+        // 192.168.0.0/24
+        let ranges = [(u32::from(Ipv4Addr::new(192, 168, 0, 0)), u32::MAX << 8)];
+        assert!(ip_in_ranges(Ipv4Addr::new(192, 168, 0, 5), &ranges));
+        assert!(ip_in_ranges(Ipv4Addr::new(192, 168, 0, 254), &ranges));
+        assert!(!ip_in_ranges(Ipv4Addr::new(192, 168, 1, 5), &ranges));
+        assert!(!ip_in_ranges(Ipv4Addr::new(10, 0, 0, 1), &ranges));
     }
 
     #[test]

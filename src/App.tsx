@@ -37,7 +37,7 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.2";
 
 type Tab = "results" | "history";
 

@@ -1,6 +1,6 @@
 [package]
 name = "arcscan"
-version = "1.5.1"
+version = "1.5.2"
 description = "A fast, lightweight network and port scanner"
 authors = ["ArcScan"]
 license = "MIT"
