@@ -2,7 +2,8 @@ name: Publish Release
 
 # Manually publish a SIGNED release with installers + the auto-updater manifest
 # (latest.json) for all platforms. Actions tab -> "Publish Release" -> Run
-# workflow -> pick a version.
+# workflow. The version/tag is read automatically from package.json, so it
+# always matches the built app — just bump the version, commit, and run.
 #
 # This repo is public, so the in-app updater reads this repo's own Releases
 # feed directly — no separate repo or PAT needed. See docs/AUTO_UPDATE.md.
@@ -13,14 +14,9 @@ name: Publish Release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Release tag (e.g. v1.5.0)"
-        required: true
-        default: "v1.5.0"
 
 concurrency:
-  group: release-${{ github.event.inputs.version }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -92,6 +88,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Read version from package.json
+        id: ver
+        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -103,12 +102,12 @@ jobs:
           find staged -type f -exec cp {} dist/ \;
           ls -la dist
       - name: Generate latest.json (updater manifest)
-        run: node scripts/gen-latest-json.mjs "${{ github.event.inputs.version }}" "${{ github.repository }}" dist
+        run: node scripts/gen-latest-json.mjs "${{ steps.ver.outputs.tag }}" "${{ github.repository }}" dist
       - name: Publish signed release + manifest
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: ArcScan ${{ github.event.inputs.version }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ArcScan ${{ steps.ver.outputs.tag }}
           files: dist/*
           draft: false
           make_latest: "true"
