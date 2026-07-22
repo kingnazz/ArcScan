@@ -7,9 +7,10 @@ import { parsePorts } from "../lib/format";
 interface ScanControlsProps {
   scanning: boolean;
   onScan: (opts: ScanOptions) => void;
+  recents?: string[];
 }
 
-export function ScanControls({ scanning, onScan }: ScanControlsProps) {
+export function ScanControls({ scanning, onScan, recents = [] }: ScanControlsProps) {
   const [target, setTarget] = useState("192.168.1.0/24");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [timeoutMs, setTimeoutMs] = useState(600);
@@ -82,7 +83,15 @@ export function ScanControls({ scanning, onScan }: ScanControlsProps) {
               placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
               spellCheck={false}
               autoComplete="off"
+              list="arcscan-recent-ranges"
             />
+            {recents.length > 0 && (
+              <datalist id="arcscan-recent-ranges">
+                {recents.map((r) => (
+                  <option key={r} value={r} />
+                ))}
+              </datalist>
+            )}
             <button
               type="button"
               onClick={() => detect(true)}

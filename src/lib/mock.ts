@@ -2,7 +2,7 @@
 // backend so the UI is fully developable and demoable. The API layer falls
 // back to this automatically when the app is not running inside Tauri.
 
-import type { HostResult, LocalNetwork, ScanOptions, ScanResult } from "../types";
+import type { HostResult, LocalNetwork, ScanOptions, ScanProgress, ScanResult } from "../types";
 
 // A small in-memory "history" so the mock supports save/list/get/delete too.
 interface MockScan extends ScanResult {
@@ -78,7 +78,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function mockScan(opts: ScanOptions): Promise<ScanResult> {
+export async function mockScan(
+  opts: ScanOptions,
+  onProgress?: (p: ScanProgress) => void,
+): Promise<ScanResult> {
   const base = firstUsableBase(opts.target);
   const seed = hashString(opts.target);
   // Deterministic-ish count so re-scanning the same target is stable.
@@ -118,8 +121,16 @@ export async function mockScan(opts: ScanOptions): Promise<ScanResult> {
   for (const h of hosts) byIp.set(h.ip, h);
   const unique = [...byIp.values()].sort((a, b) => ipToNum(a.ip) - ipToNum(b.ip));
 
-  // Simulate scan time, capped so the demo stays snappy.
-  await delay(Math.min(1400, 400 + unique.length * 40));
+  // Simulate a progress sweep across the (mock) address space.
+  const total = 254;
+  const steps = 24;
+  for (let s = 1; s <= steps; s++) {
+    await delay(45);
+    onProgress?.({ done: Math.round((total * s) / steps), total, phase: "probing" });
+  }
+  onProgress?.({ done: total, total, phase: "resolving" });
+  await delay(250);
+  onProgress?.({ done: total, total, phase: "done" });
 
   return {
     target: opts.target,
