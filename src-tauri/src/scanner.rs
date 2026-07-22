@@ -4,16 +4,27 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::ipparse;
 use crate::oui;
+
+/// Progress update streamed to the UI while a scan runs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanProgress {
+    pub done: usize,
+    pub total: usize,
+    /// "probing" while hosts are being checked, then "resolving", then "done".
+    pub phase: String,
+}
 
 /// Default TCP ports probed for liveness and quick service detection. A curated
 /// spread of the ports that matter most on a typical LAN — kept small enough to
@@ -86,8 +97,12 @@ pub fn validate(opts: &ScanOptions) -> Result<Vec<Ipv4Addr>, String> {
     ipparse::parse_target(&opts.target)
 }
 
-/// Run a full scan.
-pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
+/// Run a full scan. `progress`, when provided, receives streamed progress
+/// updates the command layer forwards to the UI as events.
+pub async fn run(
+    opts: ScanOptions,
+    progress: Option<UnboundedSender<ScanProgress>>,
+) -> Result<ScanResult, String> {
     let hosts = validate(&opts)?;
 
     let ports: Vec<u16> = if opts.ports.is_empty() {
@@ -101,21 +116,44 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
 
     let started = Instant::now();
 
-    // Read the ARP cache once up front — a single OS call, not per host.
-    let arp = read_arp_cache().await;
-
     // Probe liveness + ports concurrently, bounded by the semaphore.
     let sem = Arc::new(Semaphore::new(concurrency));
     let ports = Arc::new(ports);
     let scanned = hosts.len();
 
+    // Progress: count completed probes and stream throttled updates to the UI.
+    let done = Arc::new(AtomicUsize::new(0));
+    let step = (scanned / 100).max(1);
+    let emit = |p: ScanProgress| {
+        if let Some(tx) = &progress {
+            let _ = tx.send(p);
+        }
+    };
+    emit(ScanProgress {
+        done: 0,
+        total: scanned,
+        phase: "probing".into(),
+    });
+
     let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts)
         .map(|ip| {
             let sem = sem.clone();
             let ports = ports.clone();
+            let done = done.clone();
+            let progress = progress.clone();
             async move {
                 let _permit = sem.acquire().await.unwrap();
                 let probe = probe_host(ip, &ports, per_probe).await;
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(tx) = &progress {
+                    if d == scanned || d % step == 0 {
+                        let _ = tx.send(ScanProgress {
+                            done: d,
+                            total: scanned,
+                            phase: "probing".into(),
+                        });
+                    }
+                }
                 (ip, probe)
             }
         })
@@ -123,8 +161,50 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
         .collect()
         .await;
 
-    // Keep only live hosts.
-    probe_results.retain(|(_, p)| p.up);
+    // Let late ARP replies from slow devices settle before we read the cache, so
+    // a single scan captures them instead of trickling across repeated scans.
+    emit(ScanProgress {
+        done: scanned,
+        total: scanned,
+        phase: "resolving".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Read the ARP cache *after* probing: every probe (ping or TCP SYN) forces
+    // the OS to ARP-resolve its target, so the cache is now primed. On the local
+    // segment ARP is authoritative — a device with a resolved MAC is definitely
+    // up, even if it silently dropped our ICMP/TCP probes (phones, IoT, printers,
+    // firewalled hosts). This is how a LAN scanner actually finds everything.
+    let arp = read_arp_cache().await;
+
+    // Guard against proxy-ARP: some routers/APs (and client-isolated Wi-Fi)
+    // answer ARP for *every* address in the subnet with their own MAC, which
+    // would make the entire scanned range look "up". Any MAC that covers a large
+    // share of the range is such a proxy, not a real device — ignore it for
+    // ARP-based liveness and for MAC/vendor labelling.
+    let mut mac_freq: HashMap<&str, usize> = HashMap::new();
+    for (ip, _) in &probe_results {
+        if let Some(mac) = arp.get(ip) {
+            *mac_freq.entry(mac.as_str()).or_default() += 1;
+        }
+    }
+    let proxy_threshold = (scanned / 16).max(8);
+    let is_proxy = |mac: &str| mac_freq.get(mac).copied().unwrap_or(0) > proxy_threshold;
+
+    // A host is live if a probe proved it (ICMP reply / TCP accept / RST), OR it
+    // has a *unique* (non-proxy) MAC in the ARP cache.
+    probe_results.retain(|(ip, p)| p.up || arp.get(ip).is_some_and(|m| !is_proxy(m)));
+
+    // Safety net: if an implausible share of the range still looks "up", the
+    // network is answering for absent hosts (spoofed ICMP/RST from a firewall or
+    // captive appliance). Fall back to the signals a middlebox can't fake — a
+    // genuinely open TCP port or a real, unique ARP MAC.
+    if scanned >= 32 && probe_results.len() * 10 > scanned * 7 {
+        probe_results.retain(|(ip, p)| {
+            !p.open_ports.is_empty() || arp.get(ip).is_some_and(|m| !is_proxy(m))
+        });
+    }
+
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
     // Resolve hostnames for the live hosts concurrently (bounded, short
@@ -151,7 +231,9 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
     let hosts_out: Vec<HostResult> = probe_results
         .into_iter()
         .map(|(ip, probe)| {
-            let mac = arp.get(&ip).cloned();
+            // Don't label a host with a proxy MAC — it's the router's, not the
+            // device's, and would be misleading.
+            let mac = arp.get(&ip).filter(|m| !is_proxy(m)).cloned();
             let vendor = mac.as_deref().and_then(oui::lookup);
             let os_guess = probe.ttl.and_then(os_from_ttl);
             HostResult {
@@ -167,6 +249,12 @@ pub async fn run(opts: ScanOptions) -> Result<ScanResult, String> {
             }
         })
         .collect();
+
+    emit(ScanProgress {
+        done: scanned,
+        total: scanned,
+        phase: "done".into(),
+    });
 
     Ok(ScanResult {
         target: opts.target,

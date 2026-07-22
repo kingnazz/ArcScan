@@ -17,8 +17,17 @@ fn validated_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
 }
 
 #[tauri::command]
-pub async fn scan_network(opts: ScanOptions) -> Result<ScanResult, String> {
-    scanner::run(opts).await
+pub async fn scan_network(window: tauri::Window, opts: ScanOptions) -> Result<ScanResult, String> {
+    use tauri::Emitter;
+    // Forward streamed scan progress to the UI as `scan:progress` events.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let win = window.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            let _ = win.emit("scan:progress", progress);
+        }
+    });
+    scanner::run(opts, Some(tx)).await
 }
 
 #[tauri::command]
@@ -51,6 +60,13 @@ pub fn last_scan_ips(db: State<'_, Db>) -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn detect_networks() -> Vec<LocalNetwork> {
     netinfo::detect()
+}
+
+/// Open the ArcScan releases page so the user can check for and download a
+/// newer version.
+#[tauri::command]
+pub async fn open_releases(app: tauri::AppHandle) -> Result<(), String> {
+    open_external(&app, "https://github.com/kingnazz/ArcScan/releases")
 }
 
 /// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to

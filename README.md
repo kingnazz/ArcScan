@@ -21,10 +21,13 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 - **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
   (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
 - **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
-  raw-socket/administrator privileges required), with a TCP fallback across a
+  raw-socket/administrator privileges required), plus a TCP fallback across a
   curated set of common ports (FTP, SSH, Telnet, DNS, HTTP/S, SMB, RDP, VNC,
   and more). A host counts as **up** if it answers ICMP, accepts a TCP
-  connection, *or* actively refuses one (RST) — all three prove liveness.
+  connection, actively refuses one (RST), **or appears in the ARP cache** — so
+  devices that silently drop pings/probes (phones, IoT, printers, firewalled
+  hosts) are still found on the local segment, the way Advanced IP / Angry IP
+  do it.
 - **Port & service detection** — the default port set fingerprints most hosts
   at a glance; enter single ports **and ranges** (`1-1024`, `80,443,8000-8100`)
   in the advanced options.
@@ -35,6 +38,13 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
   filtering/search.
 - **Per-host actions** — copy IP, open web interface, open shared folders
   (SMB), open RDP, open SSH, and send a **Wake-on-LAN** magic packet.
+- **Known devices** — star a host to save it and give it a friendly label
+  (keyed by MAC, stored locally); filter to **Saved** devices only.
+- **Remembered ranges & one-click rescan** — recent scan targets are suggested
+  in the target box, and **Rescan** re-runs the last scan.
+- **In-app auto-update** — checks a signed release feed on launch and offers a
+  one-click "Update now" (download → install → relaunch). See
+  [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md) to enable it.
 - **Multi-format export** — export the whole result set to **CSV, JSON, or
   XML** via a native save dialog.
 - **Scan history** — every scan is saved to a local SQLite database and is
@@ -134,6 +144,11 @@ ArcScan is Windows-first but fully cross-platform. It runs on:
 The scanner adapts its `ping`/`arp` invocations per OS, suppresses child console
 windows on Windows (`CREATE_NO_WINDOW`), and adapts the RDP/SSH launch helpers
 (e.g. macOS RDP via the `rdp://` scheme, SSH via a Terminal session).
+
+The Windows installers stay lightweight: they rely on the WebView2 runtime that
+ships with Windows 11 and modern Windows 10, and only fetch it (a small
+Microsoft bootstrapper, `webviewInstallMode: embedBootstrapper`) on the rare
+machine that lacks it.
 
 ## Packaging
 
