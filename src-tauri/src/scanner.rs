@@ -175,14 +175,63 @@ pub async fn run(
         total: scanned,
         phase: "resolving".into(),
     });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Detect our own local segments up front: they decide whether ARP is
+    // authoritative for a given target, and which hosts are worth re-priming.
+    let locals = netinfo::detect();
+    let own_ips: HashSet<Ipv4Addr> = locals.iter().filter_map(|n| n.ip.parse().ok()).collect();
+    let local_ranges: Vec<(u32, u32)> = locals
+        .iter()
+        .filter_map(|n| {
+            let ip: Ipv4Addr = n.ip.parse().ok()?;
+            let mask = if n.prefix == 0 { 0 } else { u32::MAX << (32 - n.prefix) };
+            Some((u32::from(ip) & mask, mask))
+        })
+        .collect();
 
     // Read the ARP cache *after* probing: every probe (ping or TCP SYN) forces
     // the OS to ARP-resolve its target, so the cache is now primed. On the local
     // segment ARP is authoritative — a device with a resolved MAC is definitely
     // up, even if it silently dropped our ICMP/TCP probes (phones, IoT, printers,
     // firewalled hosts). This is how a LAN scanner actually finds everything.
-    let arp = read_arp_cache().await;
+    let mut arp = read_arp_cache().await;
+
+    // Second discovery pass — the key to *stable* results. A device that answered
+    // a beat slowly, or dropped our single first packet (common on Wi-Fi), has no
+    // ARP entry at the instant we read the cache, so it appears one scan and
+    // vanishes the next. Re-trigger ARP for every local-segment address that
+    // still lacks an entry, let it settle, then read and merge the cache again.
+    // This is the software-privilege equivalent of the retried ARP sweep that
+    // makes Advanced IP Scanner / Angry IP consistent run to run.
+    let range_is_local =
+        !arp.is_empty() || probe_results.iter().any(|(ip, _)| ip_in_ranges(*ip, &local_ranges));
+    if range_is_local {
+        let needs_prime: Vec<Ipv4Addr> = probe_results
+            .iter()
+            .map(|(ip, _)| *ip)
+            .filter(|ip| !own_ips.contains(ip) && !arp.contains_key(ip))
+            .collect();
+        if !needs_prime.is_empty() {
+            let prime_sem = Arc::new(Semaphore::new(concurrency));
+            stream::iter(needs_prime)
+                .map(|ip| {
+                    let prime_sem = prime_sem.clone();
+                    let ports = ports.clone();
+                    async move {
+                        let _permit = prime_sem.acquire().await.unwrap();
+                        arp_prime(ip, &ports, per_probe).await;
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .collect::<Vec<()>>()
+                .await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            // Union the two reads (latest wins) so entries that resolved in either
+            // pass are kept, even if one expired between reads.
+            arp.extend(read_arp_cache().await);
+        }
+    }
 
     // Guard against proxy-ARP: some routers/APs (and client-isolated Wi-Fi)
     // answer ARP for *every* address in the subnet with their own MAC, which
@@ -207,16 +256,7 @@ pub async fn run(
     // a real, non-proxy MAC; remote subnets (which have no ARP entries for their
     // hosts) keep the probe-based signals. This is how Angry IP / Advanced IP
     // Scanner avoid counting phantom hosts on a LAN.
-    let locals = netinfo::detect();
-    let own_ips: HashSet<Ipv4Addr> = locals.iter().filter_map(|n| n.ip.parse().ok()).collect();
-    let local_ranges: Vec<(u32, u32)> = locals
-        .iter()
-        .filter_map(|n| {
-            let ip: Ipv4Addr = n.ip.parse().ok()?;
-            let mask = if n.prefix == 0 { 0 } else { u32::MAX << (32 - n.prefix) };
-            Some((u32::from(ip) & mask, mask))
-        })
-        .collect();
+    //
     // Even if interface detection missed this subnet, a real resolved MAC for any
     // scanned IP proves the range is on a local segment.
     let arp_in_range = probe_results.iter().any(|(ip, _)| has_real_mac(ip));
@@ -297,6 +337,28 @@ struct Probe {
     open_ports: Vec<u16>,
     response_ms: Option<u64>,
     ttl: Option<u8>,
+}
+
+/// Re-trigger ARP resolution for one address without caring about the result.
+/// Any outgoing packet forces the OS to ARP-resolve the destination first, so a
+/// second round of connects (plus a ping, for hosts that filter every TCP port)
+/// repopulates the neighbour cache for devices that were slow or lossy on the
+/// first pass. This is a discovery aid only — no result is read back here.
+async fn arp_prime(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) {
+    let subset: Vec<u16> = ports.iter().copied().take(4).collect();
+    let tcp = async {
+        stream::iter(subset)
+            .map(|port| async move {
+                let _ = tcp_probe(ip, port, per_probe).await;
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<()>>()
+            .await;
+    };
+    let ping = async {
+        let _ = icmp_ping(ip, per_probe).await;
+    };
+    futures::join!(tcp, ping);
 }
 
 async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
