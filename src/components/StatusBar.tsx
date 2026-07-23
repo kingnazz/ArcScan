@@ -46,7 +46,7 @@ export function StatusBar({ stats, meta, scanning, progress, native, version }: 
         </>
       )}
 
-      <span className="min-w-0 flex-1 truncate text-center text-faint">
+      <span className="min-w-0 flex-1 truncate text-center text-muted">
         {scanning && progress
           ? progress.phase === "resolving"
             ? "Resolving names, MACs & vendors…"

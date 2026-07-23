@@ -42,7 +42,13 @@ function PortList({ ports }: { ports: number[] }) {
       {ports.map((p, i) => (
         <span key={p} title={`${p} · ${serviceLabel(p)}`}>
           {i > 0 && <span className="text-faint">, </span>}
-          <span className={RISKY_PORTS.has(p) ? "text-amber-600 dark:text-amber-400" : "text-muted"}>
+          <span
+            className={
+              RISKY_PORTS.has(p)
+                ? "font-semibold text-amber-700 dark:text-amber-400"
+                : "font-medium text-brand-700 dark:text-brand-300"
+            }
+          >
             {serviceLabel(p)}
           </span>
         </span>
@@ -297,7 +303,7 @@ export function HostsTable({
                       )}
                     </span>
                   </td>
-                  <td className="max-w-[220px] !whitespace-normal text-muted" title={h.hostname ?? ""}>
+                  <td className="max-w-[220px] !whitespace-normal text-fg" title={h.hostname ?? ""}>
                     {saved && h.mac ? (
                       <input
                         className="w-full rounded-sm border border-line bg-surface px-1.5 py-0.5 text-xs text-fg placeholder:text-faint focus:border-brand-500 focus:outline-none"
@@ -311,19 +317,19 @@ export function HostsTable({
                     )}
                   </td>
                   <td className="font-mono text-xs text-muted">{h.mac ?? <span className="text-faint">—</span>}</td>
-                  <td className="max-w-[220px] truncate text-muted" title={h.vendor ?? ""}>
+                  <td className="max-w-[220px] truncate text-fg" title={h.vendor ?? ""}>
                     {h.vendor ?? <span className="text-faint">Unknown</span>}
                   </td>
-                  <td className="text-muted" title={h.ttl != null ? `TTL ${h.ttl}` : ""}>
+                  <td className="text-fg" title={h.ttl != null ? `TTL ${h.ttl}` : ""}>
                     {h.os_guess ?? <span className="text-faint">—</span>}
                   </td>
                   <td className="max-w-[280px] truncate">
                     <PortList ports={h.open_ports} />
                   </td>
-                  <td className="text-right font-mono text-xs text-muted">
+                  <td className="text-right font-mono text-xs text-fg">
                     {h.response_ms != null ? `${h.response_ms} ms` : "—"}
                   </td>
-                  <td className="text-right text-xs text-faint">{formatRelative(h.last_seen)}</td>
+                  <td className="text-right text-xs text-muted">{formatRelative(h.last_seen)}</td>
                   <td className="!py-0">
                     <RowActions host={h} />
                   </td>

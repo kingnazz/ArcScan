@@ -139,8 +139,8 @@ export function ScanControls({ scanning, onScan, onRescan, canRescan = false, re
       />
 
       {localIp && (
-        <span className="ml-auto hidden shrink-0 text-xs text-faint lg:block">
-          This device: <span className="font-mono text-muted">{localIp}</span>
+        <span className="ml-auto hidden shrink-0 text-xs text-muted lg:block">
+          This device: <span className="font-mono font-medium text-fg">{localIp}</span>
         </span>
       )}
     </form>
