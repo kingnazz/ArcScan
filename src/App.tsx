@@ -1,19 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Clock,
   DownloadCloud,
   LayoutGrid,
-  ListTree,
   Moon,
-  Radar,
-  RotateCw,
   Sun,
-  Wifi,
-  WifiOff,
   X,
 } from "lucide-react";
 import { Logo } from "./components/Logo";
-import { Dashboard } from "./components/Dashboard";
+import { StatusBar } from "./components/StatusBar";
 import { ScanControls } from "./components/ScanControls";
 import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
@@ -37,7 +33,7 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.6.0";
 
 type Tab = "results" | "history";
 
@@ -174,26 +170,12 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <header className="flex items-center gap-3 border-b border-line bg-surface/70 px-5 py-3 backdrop-blur">
-        <Logo size={30} />
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-lg font-semibold tracking-tight text-fg">ArcScan</h1>
-          <span className="text-[11px] font-medium text-faint">v{APP_VERSION}</span>
-        </div>
-        <span className="hidden text-xs text-muted sm:block">Fast, lightweight network &amp; port scanner</span>
-        <div className="ml-auto flex items-center gap-2">
-          <span
-            className={`chip ${
-              api.native
-                ? "border-brand-500/30 bg-brand-500/10 text-brand-700 dark:text-brand-300"
-                : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-            }`}
-            title={api.native ? "Native backend active" : "Running in browser demo mode with mock data"}
-          >
-            {api.native ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-            {api.native ? "Live" : "Demo"}
-          </span>
+      {/* Title bar */}
+      <header className="flex items-center gap-2.5 border-b border-line bg-surface px-3 py-1.5">
+        <Logo size={22} />
+        <h1 className="text-[13px] font-semibold tracking-tight text-fg">ArcScan</h1>
+        <span className="hidden text-xs text-faint sm:block">Network &amp; port scanner</span>
+        <div className="ml-auto flex items-center gap-1">
           <button
             className="btn-icon"
             onClick={() => (api.native ? updater.check(true) : api.checkForUpdates())}
@@ -213,77 +195,80 @@ export default function App() {
         </div>
       </header>
 
-      {/* Body */}
-      <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        <UpdateBanner updater={updater} />
+      {/* Toolbar */}
+      <ScanControls
+        scanning={scanning}
+        onScan={runScan}
+        onRescan={rescan}
+        canRescan={lastOpts != null}
+        recents={recents}
+      />
 
-        <ScanControls scanning={scanning} onScan={runScan} recents={recents} />
-
-        {scanning && progress && <ScanProgressBar progress={progress} />}
-
-        {error && (
-          <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-sm text-red-700 dark:text-red-200 animate-fade-in">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
-            <p className="flex-1 leading-relaxed">{error}</p>
-            <button className="btn-icon hover:text-red-500 dark:hover:text-red-200" onClick={() => setError(null)} title="Dismiss">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        <Dashboard stats={stats} />
-
-        {/* Tabs */}
-        <div className="flex items-center justify-between">
-          <div className="flex gap-1 rounded-lg border border-line bg-surface p-1">
-            <TabButton active={tab === "results"} onClick={() => setTab("results")} icon={<LayoutGrid className="h-4 w-4" />}>
-              Results
-            </TabButton>
-            <TabButton active={tab === "history"} onClick={() => setTab("history")} icon={<ListTree className="h-4 w-4" />}>
-              History
-            </TabButton>
-          </div>
-          <div className="flex items-center gap-3">
-            {lastMeta && tab === "results" && (
-              <div className="hidden items-center gap-2 text-xs text-muted sm:flex">
-                <Radar className="h-3.5 w-3.5 text-brand-500" />
-                <span className="font-mono text-fg">{lastMeta.target}</span>
-                <span>·</span>
-                <span>
-                  {hosts.length} live / {lastMeta.scanned} scanned
-                </span>
-                <span>·</span>
-                <span>{(lastMeta.duration / 1000).toFixed(1)}s</span>
-                {activeScanId != null && <span className="text-brand-600 dark:text-brand-300">· from history</span>}
-              </div>
-            )}
-            {lastOpts && (
-              <button
-                className="btn-ghost py-1.5"
-                onClick={rescan}
-                disabled={scanning}
-                title={`Rescan ${lastOpts.target}`}
-              >
-                <RotateCw className={`h-4 w-4 ${scanning ? "animate-spin" : ""}`} />
-                Rescan
-              </button>
-            )}
-          </div>
-        </div>
-
-        {tab === "results" ? (
-          <HostsTable
-            hosts={hosts}
-            newIps={newIps}
-            onExport={exportHosts}
-            known={known}
-            onToggleKnown={toggleKnown}
-            onSetLabel={setDeviceLabel}
+      {/* Thin progress strip under the toolbar while scanning */}
+      <div className="h-[3px] w-full bg-surface2" aria-hidden={!scanning}>
+        {scanning && progress && (
+          <div
+            className={`h-full bg-brand-500 transition-[width] duration-200 ease-out ${
+              progress.total === 0 || progress.phase !== "probing" ? "w-1/3 animate-pulse" : ""
+            }`}
+            style={
+              progress.total > 0 && progress.phase === "probing"
+                ? { width: `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%` }
+                : undefined
+            }
           />
-        ) : (
-          <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
         )}
-      </main>
+      </div>
+
+      <UpdateBanner updater={updater} />
+
+      {error && (
+        <div className="flex items-start gap-3 border-b border-red-500/30 bg-red-500/10 px-3.5 py-2 text-sm text-red-700 dark:text-red-200 animate-fade-in">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
+          <p className="flex-1 leading-relaxed">{error}</p>
+          <button className="btn-icon hover:text-red-500 dark:hover:text-red-200" onClick={() => setError(null)} title="Dismiss">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Tab strip */}
+      <div className="flex items-center border-b border-line bg-surface px-2">
+        <button className={`tab ${tab === "results" ? "tab-active" : ""}`} onClick={() => setTab("results")}>
+          <LayoutGrid className="h-3.5 w-3.5" />
+          Scan list
+        </button>
+        <button className={`tab ${tab === "history" ? "tab-active" : ""}`} onClick={() => setTab("history")}>
+          <Clock className="h-3.5 w-3.5" />
+          History
+        </button>
+        {activeScanId != null && tab === "results" && (
+          <span className="ml-auto pr-2 text-xs text-brand-700 dark:text-brand-300">viewing saved scan</span>
+        )}
+      </div>
+
+      {/* Content */}
+      {tab === "results" ? (
+        <HostsTable
+          hosts={hosts}
+          newIps={newIps}
+          onExport={exportHosts}
+          known={known}
+          onToggleKnown={toggleKnown}
+          onSetLabel={setDeviceLabel}
+        />
+      ) : (
+        <ScanHistory scans={history} activeId={activeScanId} onOpen={openScan} onDelete={deleteScan} />
+      )}
+
+      <StatusBar
+        stats={stats}
+        meta={lastMeta}
+        scanning={scanning}
+        progress={progress}
+        native={api.native}
+        version={APP_VERSION}
+      />
     </div>
   );
 }
@@ -295,7 +280,7 @@ function UpdateBanner({ updater }: { updater: ReturnType<typeof useUpdater> }) {
   const busy = status === "downloading" || status === "installing";
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-brand-400/30 bg-brand-500/10 px-3.5 py-2.5 text-sm animate-fade-in">
+    <div className="flex items-center gap-3 border-b border-brand-400/30 bg-brand-500/10 px-3.5 py-2 text-sm animate-fade-in">
       <DownloadCloud className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-300" />
       <div className="flex-1 leading-relaxed">
         {status === "available" && (
@@ -318,7 +303,7 @@ function UpdateBanner({ updater }: { updater: ReturnType<typeof useUpdater> }) {
         </div>
       )}
       {status === "available" && (
-        <button className="btn-primary py-1.5" onClick={install}>
+        <button className="btn-primary" onClick={install}>
           <DownloadCloud className="h-4 w-4" />
           Update now
         </button>
@@ -329,60 +314,5 @@ function UpdateBanner({ updater }: { updater: ReturnType<typeof useUpdater> }) {
         </button>
       )}
     </div>
-  );
-}
-
-function ScanProgressBar({ progress }: { progress: ScanProgress }) {
-  const pct = progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
-  const label =
-    progress.phase === "resolving"
-      ? "Resolving names, MACs & ARP…"
-      : progress.phase === "done"
-        ? "Finishing…"
-        : "Probing hosts…";
-  const indeterminate = progress.total === 0 || progress.phase === "resolving";
-  return (
-    <div className="panel px-4 py-3 animate-fade-in">
-      <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="font-medium text-fg">{label}</span>
-        {progress.total > 0 && progress.phase === "probing" && (
-          <span className="tabular-nums text-muted">
-            {pct}% <span className="ml-1 text-faint">({progress.done}/{progress.total})</span>
-          </span>
-        )}
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-surface2">
-        <div
-          className={`h-full rounded-full bg-brand-500 transition-[width] duration-200 ease-out ${
-            indeterminate ? "w-1/3 animate-pulse" : ""
-          }`}
-          style={indeterminate ? undefined : { width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-        active ? "bg-brand-500/15 text-brand-700 dark:text-brand-200" : "text-muted hover:text-fg"
-      }`}
-    >
-      {icon}
-      {children}
-    </button>
   );
 }

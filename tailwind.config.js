@@ -14,6 +14,7 @@ export default {
         fg: "var(--fg)",
         muted: "var(--muted)",
         faint: "var(--faint)",
+        stripe: "var(--stripe)",
         // Brand accent — cyan/teal arc. Static so opacity modifiers work.
         brand: {
           50: "#e6fbff",

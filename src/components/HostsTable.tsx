@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
-  ArrowUpDown,
   Check,
   Copy,
   Download,
@@ -33,29 +32,28 @@ interface HostsTableProps {
 
 const RISKY_PORTS = new Set([23, 445, 3389, 5900]);
 
-function PortBadges({ ports }: { ports: number[] }) {
+// Compact comma-separated service list; risky services highlighted.
+function PortList({ ports }: { ports: number[] }) {
   if (ports.length === 0) {
-    return <span className="text-xs text-faint">—</span>;
+    return <span className="text-faint">—</span>;
   }
   return (
-    <div className="flex flex-wrap gap-1">
-      {ports.map((p) => {
-        const risky = RISKY_PORTS.has(p);
-        return (
+    <span className="font-mono text-xs">
+      {ports.map((p, i) => (
+        <span key={p} title={`${p} · ${serviceLabel(p)}`}>
+          {i > 0 && <span className="text-faint">, </span>}
           <span
-            key={p}
-            className={`chip ${
-              risky
-                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                : "border-brand-500/30 bg-brand-500/10 text-brand-700 dark:text-brand-300"
-            }`}
-            title={`${p} · ${serviceLabel(p)}`}
+            className={
+              RISKY_PORTS.has(p)
+                ? "font-semibold text-amber-700 dark:text-amber-400"
+                : "font-medium text-brand-700 dark:text-brand-300"
+            }
           >
             {serviceLabel(p)}
           </span>
-        );
-      })}
-    </div>
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -73,41 +71,37 @@ function RowActions({ host }: { host: HostResult }) {
   }
 
   return (
-    <div className="flex items-center justify-end gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
+    <div className="flex items-center justify-end gap-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       <button className="btn-icon" title="Copy IP" onClick={copy}>
-        {copied ? (
-          <Check className="h-4 w-4 text-brand-600 dark:text-brand-300" />
-        ) : (
-          <Copy className="h-4 w-4" />
-        )}
+        {copied ? <Check className="h-3.5 w-3.5 text-brand-600 dark:text-brand-300" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
       <button
-        className={`btn-icon ${web ? "text-brand-600 dark:text-brand-300" : ""}`}
+        className={`btn-icon ${web ? "text-brand-700 dark:text-brand-300" : ""}`}
         title={web ? `Open web interface (:${web})` : "Open web interface"}
         onClick={() => api.openWeb(host.ip, web ?? undefined)}
       >
-        <Globe className="h-4 w-4" />
+        <Globe className="h-3.5 w-3.5" />
       </button>
       <button
-        className={`btn-icon ${smb ? "text-brand-600 dark:text-brand-300" : ""}`}
+        className={`btn-icon ${smb ? "text-brand-700 dark:text-brand-300" : ""}`}
         title="Open shared folders (SMB)"
         onClick={() => api.openSmb(host.ip)}
       >
-        <FolderOpen className="h-4 w-4" />
+        <FolderOpen className="h-3.5 w-3.5" />
       </button>
       <button
-        className={`btn-icon ${rdp ? "text-amber-500 dark:text-amber-300" : ""}`}
+        className={`btn-icon ${rdp ? "text-amber-600 dark:text-amber-400" : ""}`}
         title="Open RDP"
         onClick={() => api.openRdp(host.ip)}
       >
-        <Monitor className="h-4 w-4" />
+        <Monitor className="h-3.5 w-3.5" />
       </button>
       <button
-        className={`btn-icon ${ssh ? "text-brand-600 dark:text-brand-300" : ""}`}
+        className={`btn-icon ${ssh ? "text-brand-700 dark:text-brand-300" : ""}`}
         title="Open SSH"
         onClick={() => api.openSsh(host.ip)}
       >
-        <TerminalSquare className="h-4 w-4" />
+        <TerminalSquare className="h-3.5 w-3.5" />
       </button>
       <button
         className="btn-icon disabled:opacity-30"
@@ -115,7 +109,7 @@ function RowActions({ host }: { host: HostResult }) {
         onClick={() => host.mac && api.wakeOnLan(host.mac)}
         disabled={!host.mac}
       >
-        <Power className="h-4 w-4" />
+        <Power className="h-3.5 w-3.5" />
       </button>
     </div>
   );
@@ -205,134 +199,141 @@ export function HostsTable({
 
   const columns: Array<{ key: SortKey; label: string; className?: string }> = [
     { key: "ip", label: "IP address" },
-    { key: "hostname", label: "Hostname" },
-    { key: "mac", label: "MAC" },
-    { key: "vendor", label: "Vendor" },
+    { key: "hostname", label: "Name" },
+    { key: "mac", label: "MAC address" },
+    { key: "vendor", label: "Manufacturer" },
     { key: "os", label: "OS" },
     { key: "ports", label: "Open ports" },
-    { key: "response", label: "Resp", className: "text-right" },
+    { key: "response", label: "Ping", className: "text-right" },
     { key: "last_seen", label: "Last seen", className: "text-right" },
   ];
 
   return (
-    <div className="panel flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-3 border-b border-line p-3">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+    <div className="flex min-h-0 flex-1 flex-col bg-surface">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-1.5">
+        <div className="relative w-72 max-w-full">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
           <input
-            className="input pl-9"
-            placeholder="Filter by IP, hostname, MAC, vendor, or service…"
+            className="input pl-8"
+            placeholder="Filter results…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             spellCheck={false}
           />
         </div>
-        <div className="hidden text-xs text-muted sm:block">
-          {filtered.length} of {hosts.length}
+        <div className="text-xs text-faint">
+          {filtered.length === hosts.length ? `${hosts.length} hosts` : `${filtered.length} of ${hosts.length}`}
         </div>
-        <button
-          className={`btn-ghost ${favOnly ? "border-amber-400/50 text-amber-500 dark:text-amber-300" : ""}`}
-          onClick={() => setFavOnly((v) => !v)}
-          disabled={knownCount === 0 && !favOnly}
-          title="Show only saved/known devices"
-        >
-          <Star className={`h-4 w-4 ${favOnly ? "fill-current" : ""}`} />
-          Saved{knownCount > 0 ? ` (${knownCount})` : ""}
-        </button>
-        <ExportMenu onExport={onExport} disabled={hosts.length === 0} />
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            className={`btn-ghost ${favOnly ? "border-amber-500/50 text-amber-600 dark:text-amber-400" : ""}`}
+            onClick={() => setFavOnly((v) => !v)}
+            disabled={knownCount === 0 && !favOnly}
+            title="Show only saved/known devices"
+          >
+            <Star className={`h-3.5 w-3.5 ${favOnly ? "fill-current" : ""}`} />
+            Saved{knownCount > 0 ? ` (${knownCount})` : ""}
+          </button>
+          <ExportMenu onExport={onExport} disabled={hosts.length === 0} />
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-surface/95 backdrop-blur">
-            <tr className="text-left text-xs uppercase tracking-wide text-faint">
-              <th className="w-8 px-2 py-2.5" aria-label="Saved" />
+        <table className="grid-table">
+          <thead>
+            <tr>
+              <th className="w-7 !px-2" aria-label="Status" />
+              <th className="w-8 !px-1 text-center" aria-label="Saved" />
               {columns.map((c) => (
                 <th
                   key={c.key}
-                  className={`cursor-pointer select-none whitespace-nowrap px-3 py-2.5 font-medium hover:text-fg ${c.className ?? ""}`}
+                  className={`cursor-pointer select-none hover:text-fg ${c.className ?? ""}`}
                   onClick={() => toggleSort(c.key)}
                 >
                   <span className={`inline-flex items-center gap-1 ${c.className === "text-right" ? "flex-row-reverse" : ""}`}>
                     {c.label}
-                    <SortIcon active={sortKey === c.key} dir={sortDir} />
+                    {sortKey === c.key &&
+                      (sortDir === "asc" ? (
+                        <ArrowUp className="h-3 w-3 text-brand-600 dark:text-brand-300" />
+                      ) : (
+                        <ArrowDown className="h-3 w-3 text-brand-600 dark:text-brand-300" />
+                      ))}
                   </span>
                 </th>
               ))}
-              <th className="px-3 py-2.5 text-right font-medium">Actions</th>
+              <th className="text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-line">
+          <tbody>
             {filtered.map((h) => {
               const saved = isKnown(known, h.mac);
               return (
-              <tr key={h.ip} className="group transition-colors hover:bg-surface2">
-                <td className="px-2 py-2 text-center">
-                  <button
-                    className={`btn-icon mx-auto disabled:opacity-25 ${
-                      saved ? "text-amber-500 dark:text-amber-300" : "text-faint"
-                    }`}
-                    title={
-                      !h.mac
-                        ? "Saving needs a known MAC"
-                        : saved
-                          ? "Remove from saved devices"
-                          : "Save this device"
-                    }
-                    disabled={!h.mac}
-                    onClick={() => h.mac && onToggleKnown(h.mac, h.hostname ?? "")}
-                  >
-                    <Star className={`h-4 w-4 ${saved ? "fill-current" : ""}`} />
-                  </button>
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 font-mono text-fg">
-                  <span className="inline-flex items-center gap-2">
-                    {h.ip}
-                    {newIps.has(h.ip) && (
-                      <span className="chip border-brand-500/40 bg-brand-500/15 text-brand-700 dark:text-brand-300">
-                        new
-                      </span>
-                    )}
-                  </span>
-                </td>
-                <td className="max-w-[220px] px-3 py-2 text-muted" title={h.hostname ?? ""}>
-                  {saved && h.mac ? (
-                    <input
-                      className="w-full rounded border border-line bg-surface2 px-2 py-1 text-xs text-fg placeholder:text-faint focus:border-brand-400 focus:outline-none"
-                      value={labelFor(known, h.mac)}
-                      placeholder={h.hostname ?? "Label this device…"}
-                      onChange={(e) => onSetLabel(h.mac!, e.target.value)}
-                      spellCheck={false}
+                <tr key={h.ip} className="group">
+                  <td className="!px-2 text-center">
+                    <span
+                      className="inline-block h-2 w-2 rounded-full bg-emerald-500"
+                      title="Online"
                     />
-                  ) : (
-                    <span className="block truncate">{h.hostname ?? <span className="text-faint">—</span>}</span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted">
-                  {h.mac ?? <span className="text-faint">—</span>}
-                </td>
-                <td className="max-w-[220px] truncate px-3 py-2 text-muted" title={h.vendor ?? ""}>
-                  {h.vendor ?? <span className="text-faint">Unknown</span>}
-                </td>
-                <td
-                  className="whitespace-nowrap px-3 py-2 text-muted"
-                  title={h.ttl != null ? `TTL ${h.ttl}` : ""}
-                >
-                  {h.os_guess ?? <span className="text-faint">—</span>}
-                </td>
-                <td className="px-3 py-2">
-                  <PortBadges ports={h.open_ports} />
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs text-muted">
-                  {h.response_ms != null ? `${h.response_ms} ms` : "—"}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right text-xs text-faint">
-                  {formatRelative(h.last_seen)}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2">
-                  <RowActions host={h} />
-                </td>
-              </tr>
+                  </td>
+                  <td className="!px-1 text-center">
+                    <button
+                      className={`btn-icon mx-auto h-6 w-6 disabled:opacity-25 ${
+                        saved ? "text-amber-500 dark:text-amber-400" : "text-faint"
+                      }`}
+                      title={
+                        !h.mac
+                          ? "Saving needs a known MAC"
+                          : saved
+                            ? "Remove from saved devices"
+                            : "Save this device"
+                      }
+                      disabled={!h.mac}
+                      onClick={() => h.mac && onToggleKnown(h.mac, h.hostname ?? "")}
+                    >
+                      <Star className={`h-3.5 w-3.5 ${saved ? "fill-current" : ""}`} />
+                    </button>
+                  </td>
+                  <td className="font-mono text-fg">
+                    <span className="inline-flex items-center gap-2">
+                      {h.ip}
+                      {newIps.has(h.ip) && (
+                        <span className="chip border-brand-500/40 bg-brand-500/15 text-brand-700 dark:text-brand-300">
+                          new
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  <td className="max-w-[220px] !whitespace-normal text-fg" title={h.hostname ?? ""}>
+                    {saved && h.mac ? (
+                      <input
+                        className="w-full rounded-sm border border-line bg-surface px-1.5 py-0.5 text-xs text-fg placeholder:text-faint focus:border-brand-500 focus:outline-none"
+                        value={labelFor(known, h.mac)}
+                        placeholder={h.hostname ?? "Label this device…"}
+                        onChange={(e) => onSetLabel(h.mac!, e.target.value)}
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <span className="block truncate">{h.hostname ?? <span className="text-faint">—</span>}</span>
+                    )}
+                  </td>
+                  <td className="font-mono text-xs text-muted">{h.mac ?? <span className="text-faint">—</span>}</td>
+                  <td className="max-w-[220px] truncate text-fg" title={h.vendor ?? ""}>
+                    {h.vendor ?? <span className="text-faint">Unknown</span>}
+                  </td>
+                  <td className="text-fg" title={h.ttl != null ? `TTL ${h.ttl}` : ""}>
+                    {h.os_guess ?? <span className="text-faint">—</span>}
+                  </td>
+                  <td className="max-w-[280px] truncate">
+                    <PortList ports={h.open_ports} />
+                  </td>
+                  <td className="text-right font-mono text-xs text-fg">
+                    {h.response_ms != null ? `${h.response_ms} ms` : "—"}
+                  </td>
+                  <td className="text-right text-xs text-muted">{formatRelative(h.last_seen)}</td>
+                  <td className="!py-0">
+                    <RowActions host={h} />
+                  </td>
+                </tr>
               );
             })}
           </tbody>
@@ -348,15 +349,6 @@ export function HostsTable({
         )}
       </div>
     </div>
-  );
-}
-
-function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
-  if (!active) return <ArrowUpDown className="h-3 w-3 text-faint" />;
-  return dir === "asc" ? (
-    <ArrowUp className="h-3 w-3 text-brand-600 dark:text-brand-300" />
-  ) : (
-    <ArrowDown className="h-3 w-3 text-brand-600 dark:text-brand-300" />
   );
 }
 
@@ -388,15 +380,15 @@ function ExportMenu({
   return (
     <div className="relative" ref={ref}>
       <button className="btn-ghost" onClick={() => setOpen((v) => !v)} disabled={disabled}>
-        <Download className="h-4 w-4" />
+        <Download className="h-3.5 w-3.5" />
         Export
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-lg border border-line bg-surface shadow-panel animate-fade-in">
+        <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border border-line bg-surface shadow-panel animate-fade-in">
           {formats.map((f) => (
             <button
               key={f.key}
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-fg hover:bg-surface2"
+              className="flex w-full items-center px-3 py-1.5 text-left text-[13px] text-fg hover:bg-surface2"
               onClick={() => {
                 setOpen(false);
                 onExport(f.key);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Locate, Radar, Settings2 } from "lucide-react";
+import { Loader2, Locate, Play, RotateCw, Settings2 } from "lucide-react";
 import { DEFAULT_PORTS, type ScanOptions } from "../types";
 import { api } from "../lib/api";
 import { parsePorts } from "../lib/format";
@@ -7,12 +7,15 @@ import { parsePorts } from "../lib/format";
 interface ScanControlsProps {
   scanning: boolean;
   onScan: (opts: ScanOptions) => void;
+  onRescan?: () => void;
+  canRescan?: boolean;
   recents?: string[];
 }
 
-export function ScanControls({ scanning, onScan, recents = [] }: ScanControlsProps) {
+// Single-row toolbar: Scan button, target field, detect, and an Options
+// popover for timeout/concurrency/ports — the classic scanner layout.
+export function ScanControls({ scanning, onScan, onRescan, canRescan = false, recents = [] }: ScanControlsProps) {
   const [target, setTarget] = useState("192.168.1.0/24");
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [timeoutMs, setTimeoutMs] = useState(600);
   const [concurrency, setConcurrency] = useState(128);
   const [portsInput, setPortsInput] = useState(DEFAULT_PORTS.join(", "));
@@ -60,109 +63,132 @@ export function ScanControls({ scanning, onScan, recents = [] }: ScanControlsPro
   }
 
   return (
-    <form onSubmit={submit} className="panel p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-        <div className="flex-1">
-          <label htmlFor="target" className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted">
-            Target — IP, range, or CIDR
-            {localIp && (
-              <span className="text-faint">
-                · this device: <span className="font-mono text-brand-600 dark:text-brand-300">{localIp}</span>
-              </span>
-            )}
-          </label>
-          <div className="flex gap-2">
-            <input
-              id="target"
-              className="input font-mono"
-              value={target}
-              onChange={(e) => {
-                userEditedTarget.current = true;
-                setTarget(e.target.value);
-              }}
-              placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
-              spellCheck={false}
-              autoComplete="off"
-              list="arcscan-recent-ranges"
-            />
-            {recents.length > 0 && (
-              <datalist id="arcscan-recent-ranges">
-                {recents.map((r) => (
-                  <option key={r} value={r} />
-                ))}
-              </datalist>
-            )}
-            <button
-              type="button"
-              onClick={() => detect(true)}
-              className="btn-ghost shrink-0"
-              title="Auto-detect this device's local network"
-              disabled={detecting}
-            >
-              {detecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Locate className="h-4 w-4" />}
-              Detect
-            </button>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowAdvanced((v) => !v)}
-            className={`btn-ghost ${showAdvanced ? "border-brand-400/50 text-brand-600" : ""}`}
-            aria-expanded={showAdvanced}
-          >
-            <Settings2 className="h-4 w-4" />
-            Advanced
-          </button>
-          <button type="submit" className="btn-primary min-w-[124px]" disabled={!canScan}>
-            {scanning ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Scanning…
-              </>
-            ) : (
-              <>
-                <Radar className="h-4 w-4" />
-                Scan
-              </>
-            )}
-          </button>
-        </div>
+    <form onSubmit={submit} className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
+      <button type="submit" className="btn-primary min-w-[104px]" disabled={!canScan}>
+        {scanning ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Scanning
+          </>
+        ) : (
+          <>
+            <Play className="h-4 w-4" />
+            Scan
+          </>
+        )}
+      </button>
+
+      <div className="flex min-w-0 max-w-xl flex-1 items-center gap-2">
+        <input
+          id="target"
+          className="input font-mono"
+          value={target}
+          onChange={(e) => {
+            userEditedTarget.current = true;
+            setTarget(e.target.value);
+          }}
+          placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
+          spellCheck={false}
+          autoComplete="off"
+          list="arcscan-recent-ranges"
+          aria-label="Target — IP, range, or CIDR"
+          title="Target — single IP, dashed range, or CIDR"
+        />
+        {recents.length > 0 && (
+          <datalist id="arcscan-recent-ranges">
+            {recents.map((r) => (
+              <option key={r} value={r} />
+            ))}
+          </datalist>
+        )}
       </div>
 
-      {showAdvanced && (
-        <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg border border-line bg-surface2 p-3 sm:grid-cols-3 animate-fade-in">
-          <div>
-            <label htmlFor="timeout" className="mb-1 block text-xs font-medium text-muted">
-              Per-host timeout: <span className="text-brand-600">{timeoutMs} ms</span>
-            </label>
-            <input
-              id="timeout"
-              type="range"
-              min={100}
-              max={3000}
-              step={50}
-              value={timeoutMs}
-              onChange={(e) => setTimeoutMs(Number(e.target.value))}
-              className="w-full accent-brand-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="concurrency" className="mb-1 block text-xs font-medium text-muted">
-              Max concurrency: <span className="text-brand-600">{concurrency}</span>
-            </label>
-            <input
-              id="concurrency"
-              type="range"
-              min={8}
-              max={1024}
-              step={8}
-              value={concurrency}
-              onChange={(e) => setConcurrency(Number(e.target.value))}
-              className="w-full accent-brand-500"
-            />
-          </div>
-          <div>
+      <button
+        type="button"
+        onClick={() => detect(true)}
+        className="btn-ghost shrink-0"
+        title="Auto-detect this device's local network"
+        disabled={detecting}
+      >
+        {detecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Locate className="h-4 w-4" />}
+        Detect
+      </button>
+
+      {onRescan && (
+        <button
+          type="button"
+          className="btn-ghost shrink-0"
+          onClick={onRescan}
+          disabled={!canRescan || scanning}
+          title="Rescan the last target"
+        >
+          <RotateCw className={`h-4 w-4 ${scanning ? "animate-spin" : ""}`} />
+          Rescan
+        </button>
+      )}
+
+      <div className="mx-1 h-6 w-px shrink-0 bg-line" aria-hidden />
+
+      <OptionsMenu
+        timeoutMs={timeoutMs}
+        setTimeoutMs={setTimeoutMs}
+        concurrency={concurrency}
+        setConcurrency={setConcurrency}
+        portsInput={portsInput}
+        setPortsInput={setPortsInput}
+      />
+
+      {localIp && (
+        <span className="ml-auto hidden shrink-0 text-xs text-muted lg:block">
+          This device: <span className="font-mono font-medium text-fg">{localIp}</span>
+        </span>
+      )}
+    </form>
+  );
+}
+
+function OptionsMenu({
+  timeoutMs,
+  setTimeoutMs,
+  concurrency,
+  setConcurrency,
+  portsInput,
+  setPortsInput,
+}: {
+  timeoutMs: number;
+  setTimeoutMs: (v: number) => void;
+  concurrency: number;
+  setConcurrency: (v: number) => void;
+  portsInput: string;
+  setPortsInput: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`btn-ghost ${open ? "bg-surface2" : ""}`}
+        aria-expanded={open}
+        title="Scan options — ports, timeout, concurrency"
+      >
+        <Settings2 className="h-4 w-4" />
+        Options
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-80 rounded-md border border-line bg-surface p-3 shadow-panel animate-fade-in">
+          <div className="mb-3">
             <label htmlFor="ports" className="mb-1 block text-xs font-medium text-muted">
               TCP ports <span className="text-faint">— lists &amp; ranges, e.g. 1-1024</span>
             </label>
@@ -175,8 +201,38 @@ export function ScanControls({ scanning, onScan, recents = [] }: ScanControlsPro
               spellCheck={false}
             />
           </div>
+          <div className="mb-3">
+            <label htmlFor="timeout" className="mb-1 block text-xs font-medium text-muted">
+              Per-host timeout: <span className="font-semibold text-fg">{timeoutMs} ms</span>
+            </label>
+            <input
+              id="timeout"
+              type="range"
+              min={100}
+              max={3000}
+              step={50}
+              value={timeoutMs}
+              onChange={(e) => setTimeoutMs(Number(e.target.value))}
+              className="w-full accent-brand-600"
+            />
+          </div>
+          <div>
+            <label htmlFor="concurrency" className="mb-1 block text-xs font-medium text-muted">
+              Max concurrency: <span className="font-semibold text-fg">{concurrency}</span>
+            </label>
+            <input
+              id="concurrency"
+              type="range"
+              min={8}
+              max={1024}
+              step={8}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Number(e.target.value))}
+              className="w-full accent-brand-600"
+            />
+          </div>
         </div>
       )}
-    </form>
+    </div>
   );
 }
