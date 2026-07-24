@@ -6,12 +6,12 @@ never needs editing when a new version ships.
 
 ## Files
 
-- `index.html` — the page (hero, features, screenshots, install steps, FAQ).
-- `styles.css` — light/dark theme, fully self-contained.
-- `app.js` — theme toggle, OS/arch detection, and GitHub-Release-driven download
-  buttons with a `releases/latest` fallback.
-- `assets/` — logo, favicon, and screenshots (swap the screenshots for fresh
-  captures whenever the app UI changes).
+- `index.html` — the page (hero, features, preview, install steps, FAQ, CTA).
+- `styles.css` — a single refined light theme, fully self-contained.
+- `app.js` — OS/arch detection and GitHub-Release-driven download buttons with a
+  `releases/latest` fallback.
+- `assets/` — logo, favicon, and `app.png` (swap the screenshot for a fresh
+  capture whenever the app UI changes; capture at 2× for a crisp image).
 
 ## How downloads work
 
