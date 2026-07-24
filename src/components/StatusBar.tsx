@@ -1,5 +1,6 @@
-import { Wifi, WifiOff } from "lucide-react";
+import { Globe, Wifi, WifiOff } from "lucide-react";
 import type { DashboardStats, ScanProgress } from "../types";
+import { api } from "../lib/api";
 
 interface StatusBarProps {
   stats: DashboardStats;
@@ -8,6 +9,7 @@ interface StatusBarProps {
   progress: ScanProgress | null;
   native: boolean;
   version: string;
+  publicIp: string | null;
 }
 
 function Sep() {
@@ -16,7 +18,7 @@ function Sep() {
 
 // Slim bottom status bar with live counters — the commercial-scanner
 // replacement for a card dashboard.
-export function StatusBar({ stats, meta, scanning, progress, native, version }: StatusBarProps) {
+export function StatusBar({ stats, meta, scanning, progress, native, version, publicIp }: StatusBarProps) {
   const pct =
     progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : null;
 
@@ -57,6 +59,20 @@ export function StatusBar({ stats, meta, scanning, progress, native, version }: 
             ? `${meta.target} — ${meta.scanned} scanned in ${(meta.duration / 1000).toFixed(1)}s`
             : "Ready"}
       </span>
+
+      {publicIp && (
+        <>
+          <button
+            className="inline-flex items-center gap-1.5 hover:text-fg"
+            title="Your public IP address (click to copy)"
+            onClick={() => api.copyIp(publicIp)}
+          >
+            <Globe className="h-3.5 w-3.5" />
+            Public IP <span className="font-mono text-fg">{publicIp}</span>
+          </button>
+          <Sep />
+        </>
+      )}
 
       <span
         className={`inline-flex items-center gap-1.5 ${native ? "text-muted" : "text-amber-600 dark:text-amber-400"}`}

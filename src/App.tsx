@@ -15,6 +15,7 @@ import { HostsTable } from "./components/HostsTable";
 import { ScanHistory } from "./components/ScanHistory";
 import { useTheme } from "./hooks/useTheme";
 import { useUpdater } from "./hooks/useUpdater";
+import { usePublicIp } from "./hooks/usePublicIp";
 import { api } from "./lib/api";
 import {
   type KnownMap,
@@ -33,13 +34,14 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.6.2";
+const APP_VERSION = "1.6.3";
 
 type Tab = "results" | "history";
 
 export default function App() {
   const { theme, toggle } = useTheme();
   const updater = useUpdater();
+  const publicIp = usePublicIp();
   const [hosts, setHosts] = useState<HostResult[]>([]);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -268,6 +270,7 @@ export default function App() {
         progress={progress}
         native={api.native}
         version={APP_VERSION}
+        publicIp={publicIp}
       />
     </div>
   );
