@@ -16,8 +16,8 @@ interface ScanControlsProps {
 // popover for timeout/concurrency/ports — the classic scanner layout.
 export function ScanControls({ scanning, onScan, onRescan, canRescan = false, recents = [] }: ScanControlsProps) {
   const [target, setTarget] = useState("192.168.1.0/24");
-  const [timeoutMs, setTimeoutMs] = useState(600);
-  const [concurrency, setConcurrency] = useState(128);
+  const [timeoutMs, setTimeoutMs] = useState(900);
+  const [concurrency, setConcurrency] = useState(64);
   const [portsInput, setPortsInput] = useState(DEFAULT_PORTS.join(", "));
   const [localIp, setLocalIp] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);

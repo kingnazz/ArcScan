@@ -52,10 +52,14 @@ pub struct ScanOptions {
 }
 
 fn default_timeout() -> u64 {
-    600
+    900
 }
 fn default_concurrency() -> usize {
-    128
+    // Deliberately conservative: consumer routers and access points rate-limit
+    // and drop ARP replies when hit with too many simultaneous connects, which
+    // makes hosts vanish from a single scan. A gentler fan-out resolves more of
+    // them in one pass.
+    64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +179,7 @@ pub async fn run(
         total: scanned,
         phase: "resolving".into(),
     });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
 
     // Detect our own local segments up front: they decide whether ARP is
     // authoritative for a given target, and which hosts are worth re-priming.
@@ -226,7 +230,7 @@ pub async fn run(
                 .buffer_unordered(concurrency)
                 .collect::<Vec<()>>()
                 .await;
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
             // Union the two reads (latest wins) so entries that resolved in either
             // pass are kept, even if one expired between reads.
             arp.extend(read_arp_cache().await);
