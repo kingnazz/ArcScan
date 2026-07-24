@@ -8,15 +8,15 @@ never needs editing when a new version ships.
 
 - `index.html` is the page (hero, features, preview, install steps, FAQ, CTA),
   including SEO metadata and `SoftwareApplication` structured data.
-- `main.css` is a single dark theme, fully self-contained.
-- `site.js` handles OS/arch detection and the GitHub-Release-driven download
+- `app.v2.css` is a single dark theme, fully self-contained.
+- `app.v2.js` handles OS/arch detection and the GitHub-Release-driven download
   buttons, with a `releases/latest` fallback.
 - `assets/` holds the logo, favicon, and `app-dark.png` (swap the screenshot for
   a fresh capture whenever the app UI changes; capture at 2x for a crisp image).
 
 ## How downloads work
 
-On load, `site.js` fetches
+On load, `app.v2.js` fetches
 `https://api.github.com/repos/kingnazz/ArcScan/releases/latest` and maps the
 release assets to download buttons:
 
@@ -43,7 +43,7 @@ buttons, and no API token is ever embedded in the page.
 
 ## Filenames and caching
 
-Asset filenames (`main.css`, `site.js`, `app-dark.png`) are versioned by name.
+Asset filenames (`app.v2.css`, `app.v2.js`, `app-dark.png`) are versioned by name.
 If the design changes in a way that could clash with a cached older stylesheet,
 rename the file so a stale cache cannot pair an old stylesheet with new markup.
 
