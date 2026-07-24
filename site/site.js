@@ -9,7 +9,6 @@
   var REPO = "kingnazz/ArcScan";
   var RELEASES_LATEST = "https://github.com/" + REPO + "/releases/latest";
 
-  /* ---------- OS / arch detection ---------- */
   function detectPlatform() {
     var ua = navigator.userAgent || "";
     var uaData = navigator.userAgentData;
@@ -46,7 +45,7 @@
   };
 
   var plat = detectPlatform();
-  applyLabels(plat, null); // sensible label before the API responds
+  applyLabels(plat, null);
 
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest", {
     headers: { Accept: "application/vnd.github+json" },
@@ -67,7 +66,7 @@
         var date = rel.published_at
           ? " · " + new Date(rel.published_at).toLocaleDateString()
           : "";
-        els.version.textContent = "Latest: " + rel.tag_name + date;
+        els.version.textContent = "Latest release " + rel.tag_name + date;
       }
 
       wireSecondary(map);
@@ -126,7 +125,7 @@
       label = "Download for macOS";
       glyph = "apple";
     } else if (plat.os === "windows") {
-      label = "Download for Windows" + (key === "win-arm64" ? " (ARM64)" : " (x64)");
+      label = "Download for Windows" + (key === "win-arm64" ? " (ARM64)" : "");
       glyph = "win";
     } else {
       label = "Download ArcScan";
