@@ -31,8 +31,10 @@ html {
 }
 html,
 body {
-  /* Kill any horizontal overflow so the page can't be dragged sideways. */
-  overflow-x: hidden;
+  /* Clip horizontal overflow so the page can't be dragged sideways. Using
+     `clip` (not `hidden`) avoids turning these into vertical scroll
+     containers, which would break normal page scrolling. */
+  overflow-x: clip;
   max-width: 100%;
 }
 body {
