@@ -26,16 +26,6 @@
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
-  /* Allow vertical scroll only: disables pinch-zoom and horizontal panning. */
-  touch-action: pan-y;
-}
-html,
-body {
-  /* Clip horizontal overflow so the page can't be dragged sideways. Using
-     `clip` (not `hidden`) avoids turning these into vertical scroll
-     containers, which would break normal page scrolling. */
-  overflow-x: clip;
-  max-width: 100%;
 }
 body {
   margin: 0;
@@ -45,7 +35,6 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  overscroll-behavior: none;
 }
 img {
   max-width: 100%;
@@ -289,7 +278,7 @@ h3 {
 }
 .glow {
   position: absolute;
-  inset: -8% -14% auto;
+  inset: -8% 0 auto;
   height: 75%;
   background: radial-gradient(50% 60% at 50% 45%, rgba(41, 151, 255, 0.28), rgba(53, 211, 242, 0.1) 55%, transparent 75%);
   filter: blur(30px);
