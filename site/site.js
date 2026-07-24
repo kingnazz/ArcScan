@@ -1,4 +1,4 @@
-/* ArcScan download site logic — no dependencies, no tracking.
+/* ArcScan download site logic. No dependencies, no tracking.
  * Fetch the latest GitHub release and wire real asset URLs into the download
  * controls, promoting the visitor's OS/arch. Degrades gracefully: if the API
  * is blocked/rate-limited, every control already points at releases/latest.
