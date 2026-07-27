@@ -78,10 +78,19 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Cooperative cancellation for the mock scan, mirroring the native backend so
+// the Stop button behaves the same in demo mode.
+let mockCancelled = false;
+
+export function mockCancel(): void {
+  mockCancelled = true;
+}
+
 export async function mockScan(
   opts: ScanOptions,
   onProgress?: (p: ScanProgress) => void,
 ): Promise<ScanResult> {
+  mockCancelled = false;
   const base = firstUsableBase(opts.target);
   const seed = hashString(opts.target);
   // Deterministic-ish count so re-scanning the same target is stable.
@@ -124,7 +133,19 @@ export async function mockScan(
   // Simulate a progress sweep across the (mock) address space.
   const total = 254;
   const steps = 24;
+  let swept = total;
   for (let s = 1; s <= steps; s++) {
+    if (mockCancelled) {
+      // Stop early and return only the hosts within the range swept so far.
+      swept = Math.round((total * (s - 1)) / steps);
+      const partial = unique.filter((h) => Number(h.ip.split(".")[3]) <= swept);
+      return {
+        target: opts.target,
+        duration_ms: 400 + partial.length * 38,
+        scanned: swept,
+        hosts: partial,
+      };
+    }
     await delay(45);
     onProgress?.({ done: Math.round((total * s) / steps), total, phase: "probing" });
   }
@@ -135,7 +156,7 @@ export async function mockScan(
   return {
     target: opts.target,
     duration_ms: 400 + unique.length * 38,
-    scanned: 254,
+    scanned: swept,
     hosts: unique,
   };
 }

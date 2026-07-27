@@ -30,6 +30,13 @@ pub async fn scan_network(window: tauri::Window, opts: ScanOptions) -> Result<Sc
     scanner::run(opts, Some(tx)).await
 }
 
+/// Ask the in-flight scan to stop. It finishes early and still returns whatever
+/// hosts were discovered up to that point.
+#[tauri::command]
+pub fn cancel_scan() {
+    scanner::request_cancel();
+}
+
 #[tauri::command]
 pub fn save_scan(db: State<'_, Db>, result: ScanResult) -> Result<i64, String> {
     db.save_scan(&result)
