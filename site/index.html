@@ -23,7 +23,7 @@
     <meta name="theme-color" content="#000000" />
     <link rel="canonical" href="https://kingnazz.github.io/ArcScan/" />
     <link rel="icon" href="assets/favicon.png" />
-    <link rel="stylesheet" href="app.v2.css" />
+    <link rel="stylesheet" href="app.v3.css" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ArcScan" />
@@ -69,12 +69,13 @@
     <header class="nav-bar">
       <div class="nav-inner">
         <a class="brand" href="#top" aria-label="ArcScan home">
-          <img src="assets/logo.png" width="26" height="26" alt="" />
+          <img src="assets/logo.png" width="24" height="24" alt="" />
           <span>ArcScan</span>
         </a>
         <nav class="nav-links" aria-label="Primary">
           <a href="#features">Features</a>
           <a href="#preview">Preview</a>
+          <a href="#install">Install</a>
           <a href="#faq">FAQ</a>
           <a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a>
         </nav>
@@ -85,46 +86,46 @@
     <main id="top">
       <!-- Hero -->
       <section class="hero" id="download">
-        <p class="eyebrow">Free and open source for Windows and macOS</p>
-        <h1>
-          The fast, lightweight<br class="br-desk" />
-          <span class="grad">network scanner.</span>
-        </h1>
-        <p class="sub">
-          ArcScan finds every device on your network in seconds and shows its
-          IP address, hostname, MAC address, manufacturer, and open ports in
-          one clean view.
-        </p>
+        <div class="wrap">
+          <p class="eyebrow">ArcScan</p>
+          <h1>
+            Every device on your network.
+            <span class="muted-line">In seconds.</span>
+          </h1>
+          <p class="sub">
+            A fast, lightweight network and port scanner for Windows and macOS.
+            Free and open source.
+          </p>
 
-        <div class="cta-row">
-          <a
-            id="primary-download"
-            class="btn btn-primary"
-            href="https://github.com/kingnazz/ArcScan/releases/latest"
-          >
-            <span class="os-glyph" id="primary-glyph" aria-hidden="true"></span>
-            <span id="primary-label">Download</span>
-          </a>
-          <a class="link-arrow" href="https://github.com/kingnazz/ArcScan" rel="noopener">View on GitHub</a>
+          <div class="cta-row">
+            <a
+              id="primary-download"
+              class="btn btn-primary"
+              href="https://github.com/kingnazz/ArcScan/releases/latest"
+            >
+              <span class="os-glyph" id="primary-glyph" aria-hidden="true"></span>
+              <span id="primary-label">Download</span>
+            </a>
+            <a class="link-arrow" href="#features">See what it does</a>
+          </div>
+
+          <p class="release-line">
+            <span id="version-label">Loading latest release…</span><span id="size-label"></span>
+          </p>
+
+          <p class="alt-downloads" id="secondary-downloads">
+            <a data-os="win-x64" href="https://github.com/kingnazz/ArcScan/releases/latest">Windows (x64)</a>
+            <span>·</span>
+            <a data-os="win-arm64" href="https://github.com/kingnazz/ArcScan/releases/latest">Windows (ARM64)</a>
+            <span>·</span>
+            <a data-os="mac" href="https://github.com/kingnazz/ArcScan/releases/latest">macOS (universal)</a>
+            <span>·</span>
+            <a id="checksums-link" href="https://github.com/kingnazz/ArcScan/releases/latest" rel="noopener">SHA-256 checksums</a>
+          </p>
         </div>
-
-        <p class="release-line">
-          <span id="version-label">Loading latest release…</span><span id="size-label"></span>
-        </p>
-
-        <p class="alt-downloads" id="secondary-downloads">
-          <a data-os="win-x64" href="https://github.com/kingnazz/ArcScan/releases/latest">Windows (x64)</a>
-          <span>·</span>
-          <a data-os="win-arm64" href="https://github.com/kingnazz/ArcScan/releases/latest">Windows (ARM64)</a>
-          <span>·</span>
-          <a data-os="mac" href="https://github.com/kingnazz/ArcScan/releases/latest">macOS (universal)</a>
-          <span>·</span>
-          <a id="checksums-link" href="https://github.com/kingnazz/ArcScan/releases/latest" rel="noopener">SHA-256 checksums</a>
-        </p>
 
         <!-- Product shot -->
         <div class="stage">
-          <div class="glow" aria-hidden="true"></div>
           <figure class="device">
             <div class="device-bar">
               <span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>
@@ -141,63 +142,71 @@
         </div>
       </section>
 
-      <!-- Highlights -->
-      <section class="highlights">
-        <div class="highlights-inner">
-          <div><strong>ICMP + TCP</strong><span>fast discovery</span></div>
-          <div><strong>ARP-verified</strong><span>LAN accuracy</span></div>
-          <div><strong>x64 · ARM64</strong><span>Windows &amp; macOS</span></div>
-          <div><strong>Stop anytime</strong><span>keeps partial results</span></div>
-        </div>
-      </section>
-
       <!-- Features -->
-      <section class="section" id="features">
-        <h2>Everything you need to scan a network</h2>
-        <p class="section-sub">
-          Read-only discovery that inspects what is reachable. It never attacks,
-          brute-forces, or uploads anything.
-        </p>
+      <section class="section section-alt" id="features">
+        <div class="section-head wide">
+          <h2>Everything you need to scan a network.</h2>
+          <p class="section-sub">
+            Read-only discovery that inspects what is reachable. It never attacks,
+            brute-forces, or uploads anything.
+          </p>
+        </div>
         <div class="grid">
           <article class="card">
-            <div class="ic" data-ic="scan"></div>
             <h3>Knows your network</h3>
-            <p>Opens ready to scan your local subnet, shows your public IP when you are online, and accepts any IP, dashed range, or CIDR.</p>
+            <p>
+              Opens ready to scan your local subnet, shows your public IP when you
+              are online, and accepts any IP, dashed range, or CIDR.
+            </p>
           </article>
           <article class="card">
-            <div class="ic" data-ic="target"></div>
-            <h3>Accurate host discovery</h3>
-            <p>ICMP and TCP probing with an ARP-verified LAN sweep finds slow and quiet devices, and keeps results consistent on every scan.</p>
+            <h3>Accurate discovery</h3>
+            <p>
+              ICMP and TCP probing with an ARP-verified sweep finds slow and quiet
+              devices, and keeps results consistent on every scan.
+            </p>
           </article>
           <article class="card">
-            <div class="ic" data-ic="rows"></div>
-            <h3>Detailed device information</h3>
-            <p>IP address, hostname, MAC, manufacturer, OS guess, open ports, and ping. Sortable and filterable.</p>
+            <h3>Details that matter</h3>
+            <p>
+              IP address, hostname, MAC, manufacturer, OS guess, open ports, and
+              ping. Sortable and filterable.
+            </p>
           </article>
           <article class="card">
-            <div class="ic" data-ic="sliders"></div>
             <h3>You control the scan</h3>
-            <p>Stop at any time with the Stop button or the Esc key and keep what was found. Tune ports, timeout, and concurrency to suit your network.</p>
+            <p>
+              Stop at any time and keep what was found. Tune ports, timeout, and
+              concurrency to suit your network.
+            </p>
           </article>
           <article class="card">
-            <div class="ic" data-ic="bolt"></div>
-            <h3>One-click actions</h3>
-            <p>Open a device's web UI, RDP, SSH, or SMB shares, send Wake-on-LAN, or copy its address.</p>
+            <h3>One click away</h3>
+            <p>
+              Open a device's web interface, RDP, SSH, or shared folders. Send
+              Wake-on-LAN or copy its address.
+            </p>
           </article>
           <article class="card">
-            <div class="ic" data-ic="star"></div>
-            <h3>History, saved devices, and export</h3>
-            <p>Every scan is stored locally. Star and label known devices, spot new arrivals, and export to CSV, JSON, or XML.</p>
+            <h3>History and export</h3>
+            <p>
+              Every scan is stored locally. Star and label known devices, spot new
+              arrivals, and export to CSV, JSON, or XML.
+            </p>
           </article>
         </div>
       </section>
 
       <!-- Preview -->
       <section class="section" id="preview">
-        <h2>A native desktop app for network scanning</h2>
-        <p class="section-sub">ArcScan runs locally with a fast, responsive interface designed for scanning.</p>
-        <div class="stage stage-tight">
-          <div class="glow glow-2" aria-hidden="true"></div>
+        <div class="section-head wide">
+          <h2>Built as a native desktop app.</h2>
+          <p class="section-sub">
+            Everything runs locally, in an interface designed for scanning rather
+            than a web page in disguise.
+          </p>
+        </div>
+        <div class="stage" style="margin-top: 0">
           <figure class="device">
             <div class="device-bar">
               <span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>
@@ -213,35 +222,45 @@
         </div>
       </section>
 
-      <!-- Steps -->
-      <section class="section steps-wrap">
-        <h2>Get started in three steps</h2>
+      <!-- Install -->
+      <section class="section section-alt" id="install">
+        <div class="section-head">
+          <h2>Get started in three steps.</h2>
+        </div>
         <ol class="steps">
           <li>
-            <span class="n">1</span>
+            <span class="n">Step 1</span>
             <h3>Download</h3>
-            <p>Get the installer for your operating system. Windows x64, Windows ARM64, and macOS are all supported.</p>
-          </li>
-          <li>
-            <span class="n">2</span>
-            <h3>Install</h3>
             <p>
-              The app is not code-signed yet, so Windows SmartScreen may warn on first launch.
-              Choose <em>More info</em>, then <em>Run anyway</em>. On macOS, right-click the app
-              and choose <em>Open</em> the first time. You can verify the SHA-256 checksum for certainty.
+              Get the installer for your operating system. Windows x64, Windows
+              ARM64, and macOS are all supported.
             </p>
           </li>
           <li>
-            <span class="n">3</span>
+            <span class="n">Step 2</span>
+            <h3>Install</h3>
+            <p>
+              ArcScan is not code-signed yet, so Windows SmartScreen may warn on
+              first launch. Choose <em>More info</em>, then <em>Run anyway</em>. On
+              macOS, right-click the app and choose <em>Open</em> the first time.
+            </p>
+          </li>
+          <li>
+            <span class="n">Step 3</span>
             <h3>Scan</h3>
-            <p>Press Scan. Devices appear in seconds, and the app updates itself from then on.</p>
+            <p>
+              Press Scan. Devices appear in seconds, and the app keeps itself up to
+              date from then on.
+            </p>
           </li>
         </ol>
       </section>
 
       <!-- FAQ -->
-      <section class="section faq" id="faq">
-        <h2>Frequently asked questions</h2>
+      <section class="section" id="faq">
+        <div class="section-head">
+          <h2>Frequently asked questions.</h2>
+        </div>
         <div class="faq-list">
           <details>
             <summary>Is ArcScan free?</summary>
@@ -249,32 +268,51 @@
           </details>
           <details>
             <summary>Which operating systems are supported?</summary>
-            <p>Windows 10 and 11 on x64 and ARM64, and macOS with a single universal build for Apple Silicon and Intel.</p>
+            <p>
+              Windows 10 and 11 on x64 and ARM64, and macOS with a single universal
+              build for Apple Silicon and Intel.
+            </p>
           </details>
           <details>
             <summary>Does ArcScan send my data anywhere?</summary>
-            <p>No. Scans run entirely on your machine and results stay local. Nothing is uploaded. This website's only network request is a read-only check to GitHub for the latest version.</p>
+            <p>
+              No. Scans run entirely on your machine and results stay local. Nothing
+              is uploaded. This website's only network request is a read-only check
+              to GitHub for the latest version.
+            </p>
           </details>
           <details>
             <summary>Does it need administrator rights?</summary>
-            <p>No administrator rights are needed to scan, because ArcScan uses ordinary operating system networking. The installer may prompt for elevation to install for all users, like any app.</p>
+            <p>
+              No administrator rights are needed to scan, because ArcScan uses
+              ordinary operating system networking. The installer may prompt for
+              elevation to install for all users, like any app.
+            </p>
           </details>
           <details>
-            <summary>Why does my OS warn me on first run?</summary>
-            <p>The installers are not code-signed with a paid certificate yet, so SmartScreen and Gatekeeper flag a new publisher. Proceed as described in the install steps, and verify the SHA-256 checksum for peace of mind.</p>
+            <summary>Why does my system warn me on first run?</summary>
+            <p>
+              The installers are not code-signed with a paid certificate yet, so
+              SmartScreen and Gatekeeper flag a new publisher. Proceed as described
+              in the install steps, and verify the SHA-256 checksum for peace of mind.
+            </p>
           </details>
           <details>
             <summary>How is ArcScan different from Advanced IP Scanner or Angry IP Scanner?</summary>
-            <p>ArcScan is a modern, native, cross-platform alternative. It runs on both Windows and macOS, stays consistent between scans with ARP-verified discovery, and updates itself with signed releases.</p>
+            <p>
+              ArcScan is a modern, native, cross-platform alternative. It runs on both
+              Windows and macOS, stays consistent between scans with ARP-verified
+              discovery, and updates itself with signed releases.
+            </p>
           </details>
         </div>
       </section>
 
       <!-- Final CTA -->
       <section class="final">
-        <h2>Ready to scan?</h2>
-        <p>Free. Lightweight. Native. Windows &amp; macOS.</p>
-        <a id="cta-download" class="btn btn-primary btn-big" href="https://github.com/kingnazz/ArcScan/releases/latest">
+        <h2>Scan your network in seconds.</h2>
+        <p>Free and open source, for Windows and macOS.</p>
+        <a id="cta-download" class="btn btn-primary" href="https://github.com/kingnazz/ArcScan/releases/latest">
           <span class="os-glyph" id="cta-glyph" aria-hidden="true"></span>
           <span id="cta-label">Download ArcScan</span>
         </a>
@@ -283,10 +321,7 @@
 
     <footer class="footer">
       <div class="footer-inner">
-        <a class="brand brand-dim" href="#top" aria-label="ArcScan home">
-          <img src="assets/logo.png" width="20" height="20" alt="" />
-          <span>ArcScan</span>
-        </a>
+        <span>ArcScan</span>
         <nav class="footer-links" aria-label="Footer">
           <a href="https://github.com/kingnazz/ArcScan" rel="noopener">Source</a>
           <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Releases</a>
