@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Locate, Play, RotateCw, Settings2 } from "lucide-react";
+import { Loader2, Locate, Play, RotateCw, Settings2, Square } from "lucide-react";
 import { DEFAULT_PORTS, type ScanOptions } from "../types";
 import { api } from "../lib/api";
 import { parsePorts } from "../lib/format";
@@ -7,6 +7,8 @@ import { parsePorts } from "../lib/format";
 interface ScanControlsProps {
   scanning: boolean;
   onScan: (opts: ScanOptions) => void;
+  onCancel?: () => void;
+  stopping?: boolean;
   onRescan?: () => void;
   canRescan?: boolean;
   recents?: string[];
@@ -14,7 +16,15 @@ interface ScanControlsProps {
 
 // Single-row toolbar: Scan button, target field, detect, and an Options
 // popover for timeout/concurrency/ports — the classic scanner layout.
-export function ScanControls({ scanning, onScan, onRescan, canRescan = false, recents = [] }: ScanControlsProps) {
+export function ScanControls({
+  scanning,
+  onScan,
+  onCancel,
+  stopping = false,
+  onRescan,
+  canRescan = false,
+  recents = [],
+}: ScanControlsProps) {
   const [target, setTarget] = useState("192.168.1.0/24");
   const [timeoutMs, setTimeoutMs] = useState(900);
   const [concurrency, setConcurrency] = useState(64);
@@ -64,19 +74,41 @@ export function ScanControls({ scanning, onScan, onRescan, canRescan = false, re
 
   return (
     <form onSubmit={submit} className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
-      <button type="submit" className="btn-primary min-w-[104px]" disabled={!canScan}>
-        {scanning ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Scanning
-          </>
-        ) : (
-          <>
-            <Play className="h-4 w-4" />
-            Scan
-          </>
-        )}
-      </button>
+      {scanning && onCancel ? (
+        <button
+          type="button"
+          className="btn min-w-[104px] border border-red-500/40 bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:text-red-300"
+          onClick={onCancel}
+          disabled={stopping}
+          title="Stop the running scan and keep what was found (Esc)"
+        >
+          {stopping ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Stopping
+            </>
+          ) : (
+            <>
+              <Square className="h-4 w-4 fill-current" />
+              Stop
+            </>
+          )}
+        </button>
+      ) : (
+        <button type="submit" className="btn-primary min-w-[104px]" disabled={!canScan}>
+          {scanning ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Scanning
+            </>
+          ) : (
+            <>
+              <Play className="h-4 w-4" />
+              Scan
+            </>
+          )}
+        </button>
+      )}
 
       <div className="flex min-w-0 max-w-xl flex-1 items-center gap-2">
         <input
