@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,21 @@ use crate::oui;
 fn ip_in_ranges(ip: Ipv4Addr, ranges: &[(u32, u32)]) -> bool {
     let v = u32::from(ip);
     ranges.iter().any(|(net, mask)| v & mask == *net)
+}
+
+/// Cooperative cancellation for the in-flight scan. Only one scan runs at a
+/// time (the UI disables Scan while one is active), so a single global flag is
+/// enough. A cancelled scan returns the hosts found so far rather than an
+/// error, so the user keeps partial results.
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Ask the running scan to stop as soon as it can.
+pub fn request_cancel() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
+fn cancelled() -> bool {
+    CANCEL.load(Ordering::Relaxed)
 }
 
 /// Progress update streamed to the UI while a scan runs.
@@ -116,6 +131,9 @@ pub async fn run(
 ) -> Result<ScanResult, String> {
     let hosts = validate(&opts)?;
 
+    // Clear any cancellation left over from a previous scan.
+    CANCEL.store(false, Ordering::Relaxed);
+
     let ports: Vec<u16> = if opts.ports.is_empty() {
         DEFAULT_PORTS.to_vec()
     } else {
@@ -154,7 +172,18 @@ pub async fn run(
             let progress = progress.clone();
             async move {
                 let _permit = sem.acquire().await.unwrap();
-                let probe = probe_host(ip, &ports, per_probe).await;
+                // Once cancelled, drain the remaining hosts without probing so
+                // the stream finishes immediately instead of running to the end.
+                let probe = if cancelled() {
+                    Probe {
+                        up: false,
+                        open_ports: Vec::new(),
+                        response_ms: None,
+                        ttl: None,
+                    }
+                } else {
+                    probe_host(ip, &ports, per_probe).await
+                };
                 let d = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Some(tx) = &progress {
                     if d == scanned || d % step == 0 {
@@ -179,7 +208,11 @@ pub async fn run(
         total: scanned,
         phase: "resolving".into(),
     });
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // A cancelled scan skips the settle so it stops promptly; the ARP cache is
+    // still read below so whatever was found keeps its MAC and vendor.
+    if !cancelled() {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+    }
 
     // Detect our own local segments up front: they decide whether ARP is
     // authoritative for a given target, and which hosts are worth re-priming.
@@ -210,7 +243,7 @@ pub async fn run(
     // makes Advanced IP Scanner / Angry IP consistent run to run.
     let range_is_local =
         !arp.is_empty() || probe_results.iter().any(|(ip, _)| ip_in_ranges(*ip, &local_ranges));
-    if range_is_local {
+    if range_is_local && !cancelled() {
         let needs_prime: Vec<Ipv4Addr> = probe_results
             .iter()
             .map(|(ip, _)| *ip)

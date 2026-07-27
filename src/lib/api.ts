@@ -20,6 +20,7 @@ import {
   mockList,
   mockSave,
   mockScan,
+  mockCancel,
 } from "./mock";
 
 export function isTauri(): boolean {
@@ -48,6 +49,13 @@ export const api = {
       }
     }
     return mockScan(opts, onProgress);
+  },
+
+  // Ask the running scan to stop. It ends early and still resolves with the
+  // hosts discovered so far, so partial results are kept.
+  async cancelScan(): Promise<void> {
+    if (isTauri()) return invoke<void>("cancel_scan");
+    mockCancel();
   },
 
   async save(result: ScanResult): Promise<number> {

@@ -34,7 +34,7 @@ import type {
   ScanSummary,
 } from "./types";
 
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.4";
 
 type Tab = "results" | "history";
 
@@ -54,6 +54,7 @@ export default function App() {
   const [known, setKnown] = useState<KnownMap>({});
   const [recents, setRecents] = useState<string[]>([]);
   const [lastOpts, setLastOpts] = useState<ScanOptions | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
     setKnown(loadKnown());
@@ -83,6 +84,7 @@ export default function App() {
   const runScan = useCallback(
     async (opts: ScanOptions) => {
       setScanning(true);
+      setStopping(false);
       setError(null);
       setActiveScanId(null);
       setHosts([]);
@@ -111,6 +113,7 @@ export default function App() {
         setError(String(e instanceof Error ? e.message : e));
       } finally {
         setScanning(false);
+        setStopping(false);
         setProgress(null);
       }
     },
@@ -120,6 +123,26 @@ export default function App() {
   const rescan = useCallback(() => {
     if (lastOpts && !scanning) runScan(lastOpts);
   }, [lastOpts, scanning, runScan]);
+
+  const cancelScan = useCallback(async () => {
+    if (!scanning || stopping) return;
+    setStopping(true);
+    try {
+      await api.cancelScan();
+    } catch (e) {
+      console.error("Failed to cancel scan", e);
+    }
+  }, [scanning, stopping]);
+
+  // Esc stops a running scan.
+  useEffect(() => {
+    if (!scanning) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") cancelScan();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scanning, cancelScan]);
 
   const openScan = useCallback(async (id: number) => {
     try {
@@ -201,6 +224,8 @@ export default function App() {
       <ScanControls
         scanning={scanning}
         onScan={runScan}
+        onCancel={cancelScan}
+        stopping={stopping}
         onRescan={rescan}
         canRescan={lastOpts != null}
         recents={recents}

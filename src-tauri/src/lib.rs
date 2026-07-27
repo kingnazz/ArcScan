@@ -36,6 +36,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::scan_network,
+            commands::cancel_scan,
             commands::save_scan,
             commands::list_scans,
             commands::get_scan,
