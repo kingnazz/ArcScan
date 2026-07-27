@@ -11,7 +11,7 @@ never needs editing when a new version ships.
 - `app.v2.css` is a single dark theme, fully self-contained.
 - `app.v2.js` handles OS/arch detection and the GitHub-Release-driven download
   buttons, with a `releases/latest` fallback.
-- `assets/` holds the logo, favicon, and `app-dark.png` (swap the screenshot for
+- `assets/` holds the logo, favicon, and `app-dark.v2.png` (swap the screenshot for
   a fresh capture whenever the app UI changes; capture at 2x for a crisp image).
 
 ## How downloads work
@@ -43,7 +43,7 @@ buttons, and no API token is ever embedded in the page.
 
 ## Filenames and caching
 
-Asset filenames (`app.v2.css`, `app.v2.js`, `app-dark.png`) are versioned by name.
+Asset filenames (`app.v2.css`, `app.v2.js`, `app-dark.v2.png`) are versioned by name.
 If the design changes in a way that could clash with a cached older stylesheet,
 rename the file so a stale cache cannot pair an old stylesheet with new markup.
 
