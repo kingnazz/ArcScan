@@ -42,9 +42,12 @@ export default defineConfig(async () => ({
   // Env variables starting with VITE_ are exposed to the client.
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {
-    // Tauri uses Chromium on Windows and WebKit on macOS/Linux.
+    // Tauri uses Chromium on Windows and WebKit on macOS/Linux, so the bundle
+    // can target whatever those ship.
     target: "esnext",
-    minify: "esbuild",
+    // Vite 8 minifies with oxc and no longer bundles esbuild, so naming a
+    // minifier explicitly only risks pinning us to one that is not installed.
+    minify: true,
     sourcemap: false,
   },
 }));
