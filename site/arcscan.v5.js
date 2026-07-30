@@ -45,9 +45,9 @@
     });
 
     // Widening past the breakpoint restores the full bar, so a menu left open
-    // must not linger underneath it.
+    // must not linger underneath it. 860 matches the CSS media query.
     window.addEventListener("resize", function () {
-      if (window.innerWidth > 960) setOpen(false);
+      if (window.innerWidth > 860) setOpen(false);
     });
   }
 
@@ -131,6 +131,9 @@
   var heroLink = document.getElementById("hero-download");
   var heroLabel = document.getElementById("hero-label");
   var heroGlyph = document.getElementById("hero-glyph");
+  var ctaLink = document.getElementById("cta-download");
+  var ctaLabel = document.getElementById("cta-label");
+  var ctaGlyph = document.getElementById("cta-glyph");
 
   function labelFor(key) {
     if (key === "mac") return { text: "Download for macOS", glyph: "apple" };
@@ -145,6 +148,8 @@
     var label = labelFor(recommended);
     if (heroLabel) heroLabel.textContent = label.text;
     if (heroGlyph) heroGlyph.className = "os-glyph " + label.glyph;
+    if (ctaLabel) ctaLabel.textContent = label.text;
+    if (ctaGlyph) ctaGlyph.className = "os-glyph " + label.glyph;
 
     var card = recommended && cards[recommended];
     if (card) {
@@ -230,7 +235,10 @@
       });
 
       var preferred = recommended && map[recommended];
-      if (heroLink && preferred) heroLink.href = preferred.browser_download_url;
+      if (preferred) {
+        if (heroLink) heroLink.href = preferred.browser_download_url;
+        if (ctaLink) ctaLink.href = preferred.browser_download_url;
+      }
 
       if (status) {
         status.textContent =

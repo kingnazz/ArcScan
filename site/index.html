@@ -12,9 +12,8 @@
     />
     <link rel="canonical" href="https://kingnazz.github.io/ArcScan/" />
     <link rel="icon" href="assets/favicon.png" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0f1318" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
 
     <!--
       The page fetches release metadata from the GitHub API and nothing else. No
@@ -26,7 +25,7 @@
       content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'"
     />
 
-    <link rel="stylesheet" href="arcscan.v4.css" />
+    <link rel="stylesheet" href="arcscan.v5.css" />
     <!-- The hero screenshot is the largest paint on the page, so it is preloaded. -->
     <link
       rel="preload"
@@ -267,7 +266,10 @@
       <section class="hero" id="top">
         <div class="wrap">
           <p class="eyebrow">ArcScan for Windows and macOS</p>
-          <h1>See every device on your network.</h1>
+          <h1>
+            See every device on your network.
+            <span class="muted-line">Know what changed.</span>
+          </h1>
           <p class="lede">
             ArcScan gives you a fast, private inventory of connected devices, open services,
             manufacturers and hostnames, and tells you exactly what changed since the last scan. No
@@ -463,8 +465,7 @@
 
       <!-- ================================================ change detection -->
       <section class="section" id="changes">
-        <div class="wrap">
-          <div class="split">
+        <div class="split">
             <div>
               <p class="eyebrow">Change detection</p>
               <h2>Know what moved, arrived or disappeared.</h2>
@@ -819,17 +820,16 @@
 
       <!-- ===================================================== open source -->
       <section class="section section-alt" id="open-source">
-        <div class="wrap">
-          <div class="split reverse">
+        <div class="split reverse">
             <figure class="frame">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/history-light.webp"
-                srcset="assets/shots/history-light-800.webp 800w, assets/shots/history-light.webp 1440w, assets/shots/history-light@2x.webp 2880w"
-              sizes="(max-width: 76rem) 100vw, 71rem"
+                src="assets/shots/history-dark.webp"
+                srcset="assets/shots/history-dark-800.webp 800w, assets/shots/history-dark.webp 1440w, assets/shots/history-dark@2x.webp 2880w"
+                sizes="(max-width: 62rem) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="ArcScan scan history in the light theme, listing saved scans with their target, profile, date, device count and change counts."
+                alt="ArcScan scan history, listing saved scans with their target, profile, date, device count and change counts."
                 loading="lazy"
                 decoding="async"
               />
@@ -1006,6 +1006,17 @@
           </div>
         </div>
       </section>
+      <!-- ======================================================= final CTA -->
+      <section class="final">
+        <h2>Know your network.</h2>
+        <p>
+          Free and open source, for Windows and macOS. Your scan results never leave your computer.
+        </p>
+        <a class="btn btn-primary" id="cta-download" href="https://github.com/kingnazz/ArcScan/releases/latest">
+          <span class="os-glyph win" id="cta-glyph" aria-hidden="true"></span>
+          <span id="cta-label">Download ArcScan</span>
+        </a>
+      </section>
     </main>
 
     <footer class="footer">
@@ -1033,6 +1044,6 @@
       </div>
     </footer>
 
-    <script src="arcscan.v4.js" defer></script>
+    <script src="arcscan.v5.js" defer></script>
   </body>
 </html>
