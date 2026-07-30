@@ -28,9 +28,25 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The stylesheet and script are hand-written and stay readable in the
+      # repository; minification happens here, on a copy, so the deployed bytes
+      # are small without anyone having to maintain a minified file.
+      - name: Minify CSS and JavaScript
+        run: |
+          cp -r site _site
+          npx --yes esbuild@0.24 _site/arcscan.v4.css \
+            --minify --outfile=_site/arcscan.v4.css --allow-overwrite
+          npx --yes esbuild@0.24 _site/arcscan.v4.js \
+            --minify --target=es2018 --outfile=_site/arcscan.v4.js --allow-overwrite
+          ls -l _site/arcscan.v4.css _site/arcscan.v4.js
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
       - id: deploy
         uses: actions/deploy-pages@v4

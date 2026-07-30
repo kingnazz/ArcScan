@@ -20,12 +20,18 @@ interface UpdateHandle {
 }
 
 /**
- * In-app auto-updater. On launch it silently checks the configured update feed;
- * if a newer signed build is available it exposes it so the UI can offer a
- * one-click "Update now" (download → install → relaunch). No-ops outside Tauri
- * or when no update feed is reachable.
+ * In-app auto-updater.
+ *
+ * On launch it checks the configured update feed and, if a newer signed build is
+ * available, exposes it so the UI can offer a one-click "Update now" (download,
+ * install, relaunch). It no-ops outside Tauri or when no feed is reachable.
+ *
+ * The check contacts GitHub, so it is listed in the privacy documentation
+ * alongside the public-IP lookup and can be switched off in Settings. Unlike the
+ * public-IP lookup it stays on by default: an out-of-date network tool is a
+ * problem in itself, and the request carries only the version being checked.
  */
-export function useUpdater() {
+export function useUpdater(autoCheck = true) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [version, setVersion] = useState<string | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
@@ -57,8 +63,8 @@ export function useUpdater() {
   }, []);
 
   useEffect(() => {
-    check(false);
-  }, [check]);
+    if (autoCheck) check(false);
+  }, [check, autoCheck]);
 
   const install = useCallback(async () => {
     if (!handle) return;

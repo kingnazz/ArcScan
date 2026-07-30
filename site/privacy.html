@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Privacy: what ArcScan sends and what it stores</title>
+    <meta
+      name="description"
+      content="Exactly which network requests ArcScan makes, what it stores on your computer, and what it never collects. Scan results and the device inventory stay local; the public IP lookup is opt-in."
+    />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/privacy.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1318" media="(prefers-color-scheme: dark)" />
+
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+
+    <link rel="stylesheet" href="arcscan.v4.css" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="ArcScan" />
+    <meta property="og:url" content="https://kingnazz.github.io/ArcScan/privacy.html" />
+    <meta property="og:title" content="Privacy: what ArcScan sends and what it stores" />
+    <meta
+      property="og:description"
+      content="Exactly which network requests ArcScan makes, what it stores on your computer, and what it never collects."
+    />
+    <meta property="og:image" content="https://kingnazz.github.io/ArcScan/assets/og.v4.png" />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <img src="assets/logo.png" width="24" height="24" alt="" />
+          <span>ArcScan</span>
+        </a>
+        <nav aria-label="Primary">
+          <ul class="nav-links">
+            <li><a href="./#features">Features</a></li>
+            <li><a href="./#how">How it works</a></li>
+            <li><a href="./#faq">FAQ</a></li>
+            <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+          </ul>
+        </nav>
+        <a class="btn btn-primary btn-small nav-cta" href="./#download">Download</a>
+      </div>
+    </header>
+
+    <main id="main" class="section">
+      <div class="wrap prose">
+        <p class="eyebrow">Privacy</p>
+        <h1 class="page-title">What ArcScan sends, and what it keeps.</h1>
+        <p class="lede">
+          ArcScan is a local-first tool, and this page states precisely what that means rather than
+          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.7.0</span>
+          and this website.
+        </p>
+
+        <h2>The short version</h2>
+        <p>
+          Your scan results, device inventory, names and notes never leave your computer. The
+          application makes exactly two kinds of outbound request, both optional and both described
+          below: an update check, and a public IP lookup that is off until you turn it on.
+        </p>
+
+        <h2>What stays on your computer</h2>
+        <p>
+          Everything ArcScan discovers is written to a SQLite database in your operating system's
+          application data directory. Nothing in it is transmitted anywhere.
+        </p>
+        <ul>
+          <li>Scan results: addresses, hostnames, MAC addresses, manufacturers and open services.</li>
+          <li>The device inventory, including first-seen and last-seen dates.</li>
+          <li>Names you give devices, their status, and your notes.</li>
+          <li>Scan history and the comparisons between scans.</li>
+          <li>Your preferences, which are stored separately by the application window.</li>
+        </ul>
+        <p>
+          The database lives at
+          <code>%APPDATA%\com.arcscan.app\arcscan.db</code> on Windows and
+          <code>~/Library/Application Support/com.arcscan.app/arcscan.db</code> on macOS. It is an
+          ordinary SQLite file: you can copy it, back it up, inspect it or delete it.
+        </p>
+
+        <h2>Requests the application makes</h2>
+
+        <h3>Update check</h3>
+        <p>
+          On launch, ArcScan asks GitHub whether a newer signed release exists, by requesting the
+          update manifest published with each release. The request carries only what any HTTPS
+          request carries, plus the version being checked. It does not include your scan targets,
+          your results or any identifier.
+        </p>
+        <p>
+          GitHub receives ordinary request metadata for this, including your IP address, as it would
+          for any file you download from it. You can switch the check off in
+          <strong>Settings, Network requests</strong>, and ArcScan will then never contact the
+          update feed on its own.
+        </p>
+
+        <h3>Public IP lookup</h3>
+        <p>
+          ArcScan can tell you the address your internet connection appears from. This is
+          <strong>off by default</strong> and never runs on its own. You have to enable it in
+          Settings and then press the button.
+        </p>
+        <p>
+          When you do, ArcScan requests <code>https://api64.ipify.org</code> and, if that does not
+          answer, <code>https://icanhazip.com</code>. Those services see your public IP address,
+          because that is what they exist to report back to you. Nothing else is sent: no scan
+          target, no result, no device data. The answer is held in memory for the current session
+          only and is forgotten when you close the application or press Forget.
+        </p>
+        <p>
+          Earlier versions of ArcScan performed this lookup automatically at startup. Version 1.7
+          changed that, because a network tool should not make an outbound request before you have
+          asked it to do anything.
+        </p>
+
+        <h3>Release downloads</h3>
+        <p>
+          When you download an installer or install an update, the file comes from GitHub. GitHub
+          receives the normal request metadata for a download, including your IP address, user agent
+          and the file requested. ArcScan never re-hosts binaries, and this website never serves
+          them itself.
+        </p>
+
+        <h2>What the scan itself sends, and to whom</h2>
+        <p>
+          A scan sends packets to the addresses you asked it to scan, and to nowhere else. For each
+          address that means one ICMP echo request and a TCP connection attempt on each port the
+          selected profile covers. ArcScan then reads your own computer's ARP table, which is a
+          local operation involving no network traffic of its own.
+        </p>
+        <p>
+          Devices on the network you scan will see those probes, as they would from any network
+          scanner. Nothing about the scan is reported to the ArcScan project or to anyone else.
+        </p>
+
+        <h2>What ArcScan never collects</h2>
+        <ul>
+          <li>No telemetry, usage statistics, crash reports or feature analytics.</li>
+          <li>No account, email address, licence key or device identifier.</li>
+          <li>No upload of scan results, device names, notes, MAC addresses or hostnames.</li>
+          <li>No advertising identifiers, and no third-party SDK of any kind.</li>
+        </ul>
+
+        <h2>This website</h2>
+        <p>
+          The site is static and hosted on GitHub Pages. It sets no cookies, uses no analytics, and
+          loads no fonts, scripts or images from anywhere but its own origin.
+        </p>
+        <p>
+          It makes one request to <code>api.github.com</code> to read the latest release, so the
+          download cards can show real file sizes and links. That call sends nothing about you
+          beyond the request itself, and the page works fully without it. A
+          <code>Content-Security-Policy</code> header on every page restricts network access to
+          exactly that one host.
+        </p>
+        <p>
+          GitHub Pages operates the hosting and, like any web host, sees the requests your browser
+          makes. That is outside the ArcScan project's control and is covered by
+          <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement" rel="noopener">GitHub's privacy statement</a>.
+        </p>
+
+        <h2>Uninstalling</h2>
+        <p>
+          Uninstalling ArcScan removes the application. It does not delete your database, so your
+          history, device names and notes survive a reinstall or an upgrade. To remove them, delete
+          the database file at the path listed above.
+        </p>
+
+        <h2>Responsible use</h2>
+        <p>
+          ArcScan performs read-only discovery: it never attempts a password, never sends an
+          exploit, and has no stealth or evasion behaviour. Scan only networks you own or have been
+          authorised to inspect. Scanning a network without permission may be unlawful where you
+          are, whatever tool is used.
+        </p>
+
+        <h2>Changes to this page</h2>
+        <p>
+          If ArcScan's network behaviour changes, this page changes with it in the same release. The
+          full history is in the
+          <a href="https://github.com/kingnazz/ArcScan/commits/main/site/privacy.html" rel="noopener">repository</a>,
+          and the code that makes every request described here is in the
+          <a href="https://github.com/kingnazz/ArcScan" rel="noopener">source</a>.
+        </p>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="./#download">Download ArcScan</a>
+          <a class="btn btn-secondary" href="./">Back to the overview</a>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-inner">
+          <a class="brand" href="./">
+            <img src="assets/logo.png" width="22" height="22" alt="" />
+            <span>ArcScan</span>
+          </a>
+          <nav aria-label="Footer">
+            <a href="./#download">Download</a>
+            <a href="./#faq">FAQ</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/kingnazz/ArcScan" rel="noopener">Source</a>
+            <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Releases</a>
+          </nav>
+        </div>
+        <p class="footer-note">
+          Free and open source under the MIT license. For networks you own or are authorised to
+          inspect.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
