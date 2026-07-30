@@ -130,9 +130,10 @@ export function useToast(): ToastApi {
 function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div
-      // Errors are assertive because they report something that did not happen;
-      // confirmations are polite so they never interrupt a screen reader.
-      className="pointer-events-none fixed bottom-10 right-3 z-[60] flex w-[min(24rem,calc(100vw-1.5rem))] flex-col gap-2"
+      // Bottom left, clear of the device panel's action footer on the right. A
+      // toast that covers the buttons an operator is reaching for is worse than
+      // no toast at all.
+      className="pointer-events-none fixed bottom-9 left-3 z-[60] flex w-[min(24rem,calc(100vw-1.5rem))] flex-col gap-2"
     >
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} onDismiss={onDismiss} />

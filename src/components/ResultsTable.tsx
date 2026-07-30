@@ -13,7 +13,9 @@ import {
   formatLatency,
   formatRelative,
   isSensitivePort,
+  serviceInfo,
   serviceLabel,
+  serviceWithPort,
 } from "../lib/format";
 import { isUnnamed, rowName, type DeviceRow } from "../lib/live";
 import { COLUMNS, type SortDir, type SortKey } from "../lib/table";
@@ -285,8 +287,11 @@ function StateCell({ row }: { row: DeviceRow }) {
 }
 
 /**
- * Services as name and number. Sensitive ones are marked, but everything stays
- * plain text rather than a wall of pills.
+ * Services as name and number, comma separated. Sensitive ones are marked, but
+ * everything stays plain text rather than becoming a wall of pills.
+ *
+ * A port with no known service shows only its number: printing "3000 · 3000"
+ * would be noise dressed up as information.
  */
 function ServiceList({ ports }: { ports: number[] }) {
   if (ports.length === 0) {
@@ -296,20 +301,37 @@ function ServiceList({ ports }: { ports: number[] }) {
       </span>
     );
   }
-  // Beyond six the list stops being readable, so the rest is a count with the
-  // full set in the title.
-  const shown = ports.slice(0, 6);
+  // Beyond five the list stops being readable at this width, so the remainder
+  // becomes a count with the full set in the title.
+  const shown = ports.slice(0, 5);
   const rest = ports.length - shown.length;
 
   return (
-    <span className="mono flex min-w-0 items-baseline gap-x-2 truncate" title={ports.join(", ")}>
-      {shown.map((port) => (
-        <span key={port} className={isSensitivePort(port) ? "text-warning" : "text-text-secondary"}>
-          <span className="font-medium">{serviceLabel(port)}</span>
-          <span className="text-text-muted"> · {port}</span>
+    <span className="mono block truncate" title={ports.map(serviceWithPort).join(", ")}>
+      {shown.map((port, index) => {
+        const name = serviceInfo(port)?.name;
+        return (
+          <span
+            key={port}
+            className={isSensitivePort(port) ? "text-warning" : "text-text-secondary"}
+          >
+            {index > 0 ? <span className="text-text-muted">, </span> : null}
+            {name ? (
+              <>
+                <span className="font-medium">{name}</span>
+                <span className="text-text-muted">&nbsp;·&nbsp;{port}</span>
+              </>
+            ) : (
+              <span className="font-medium">{port}</span>
+            )}
+          </span>
+        );
+      })}
+      {rest > 0 ? (
+        <span className="text-text-muted">
+          , +{rest} more
         </span>
-      ))}
-      {rest > 0 ? <span className="text-text-muted">+{rest}</span> : null}
+      ) : null}
     </span>
   );
 }

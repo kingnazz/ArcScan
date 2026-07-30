@@ -32,7 +32,7 @@
     /* Text, in descending prominence. */
     --text: #14181d;
     --text-secondary: #4b535e;
-    --text-muted: #6f7885;
+    --text-muted: #5f6874;
 
     /* One accent, used sparingly. */
     --accent: #0b7f9c;
@@ -95,7 +95,7 @@
 
     --text: #e7edf4;
     --text-secondary: #a6b1bf;
-    --text-muted: #737e8c;
+    --text-muted: #8a95a3;
 
     --accent: #1aa4c4;
     --accent-hover: #2dbadb;
