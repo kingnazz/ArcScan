@@ -35,14 +35,24 @@ jobs:
       # The stylesheet and script are hand-written and stay readable in the
       # repository; minification happens here, on a copy, so the deployed bytes
       # are small without anyone having to maintain a minified file.
+      #
+      # The assets are discovered rather than named, because they carry a version
+      # in the filename (arcscan.v5.css) that changes whenever the markup changes
+      # enough that an older cached file must not be paired with it. Naming them
+      # here means a rename deploys an unminified site, or fails, long after the
+      # rename looked complete. Finding nothing is an error, not a no-op.
       - name: Minify CSS and JavaScript
         run: |
+          set -euo pipefail
           cp -r site _site
-          npx --yes esbuild@0.24 _site/arcscan.v4.css \
-            --minify --outfile=_site/arcscan.v4.css --allow-overwrite
-          npx --yes esbuild@0.24 _site/arcscan.v4.js \
-            --minify --target=es2018 --outfile=_site/arcscan.v4.js --allow-overwrite
-          ls -l _site/arcscan.v4.css _site/arcscan.v4.js
+          shopt -s failglob
+          for css in _site/arcscan.*.css; do
+            npx --yes esbuild@0.24 "$css" --minify --outfile="$css" --allow-overwrite
+          done
+          for js in _site/arcscan.*.js; do
+            npx --yes esbuild@0.24 "$js" --minify --target=es2018 --outfile="$js" --allow-overwrite
+          done
+          ls -l _site/arcscan.*.css _site/arcscan.*.js
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
