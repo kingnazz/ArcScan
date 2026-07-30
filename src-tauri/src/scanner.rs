@@ -1,10 +1,29 @@
 //! The network scanner: liveness detection, port probing, MAC/vendor and
 //! hostname resolution. Everything here is read-only discovery — no exploit,
 //! brute-force, or credential logic exists or belongs in this module.
+//!
+//! # Concurrency model
+//!
+//! Three independent limits bound a scan, because they exhaust three different
+//! resources:
+//!
+//! * **Host concurrency** — how many addresses are worked on at once. Bounds
+//!   in-flight bookkeeping and how aggressively the range is swept.
+//! * **Global TCP probe concurrency** — how many TCP connection attempts exist
+//!   across the *entire* scan. This is the limit that protects file descriptors
+//!   and consumer routers, which drop ARP replies (making hosts vanish) when hit
+//!   with too much simultaneous fan-out.
+//! * **Ping process concurrency** — how many OS `ping` child processes run at
+//!   once. Processes are far more expensive than sockets, so this is the
+//!   tightest limit.
+//!
+//! Before this split, host concurrency alone was bounded while each host fanned
+//! out to *every* selected port simultaneously, so 64 hosts times 2,048 ports
+//! meant over 130,000 concurrent connects.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +36,7 @@ use tokio::time::timeout;
 use crate::ipparse;
 use crate::netinfo;
 use crate::oui;
+use crate::ports;
 
 /// True if `ip` falls within any (network, mask) range.
 fn ip_in_ranges(ip: Ipv4Addr, ranges: &[(u32, u32)]) -> bool {
@@ -24,37 +44,155 @@ fn ip_in_ranges(ip: Ipv4Addr, ranges: &[(u32, u32)]) -> bool {
     ranges.iter().any(|(net, mask)| v & mask == *net)
 }
 
-/// Cooperative cancellation for the in-flight scan. Only one scan runs at a
-/// time (the UI disables Scan while one is active), so a single global flag is
-/// enough. A cancelled scan returns the hosts found so far rather than an
-/// error, so the user keeps partial results.
-static CANCEL: AtomicBool = AtomicBool::new(false);
+/// The scan currently running, and the scan a cancel was requested for.
+///
+/// Keying cancellation to a scan id means a Stop click that lands after a scan
+/// already finished cannot cancel the *next* one. Only one scan runs at a time
+/// (the UI disables Scan while one is active), so two counters are enough.
+static ACTIVE_SCAN: AtomicU64 = AtomicU64::new(0);
+static CANCEL_SCAN: AtomicU64 = AtomicU64::new(0);
+static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Ask the running scan to stop as soon as it can.
+/// Allocate the id used to tag every event of one scan, so the UI can discard
+/// events that belong to a scan it is no longer showing.
+pub fn next_scan_id() -> u64 {
+    NEXT_SCAN_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Ask the running scan to stop as soon as it can. It finishes early and still
+/// returns the hosts discovered so far, so the user keeps partial results.
 pub fn request_cancel() {
-    CANCEL.store(true, Ordering::Relaxed);
+    CANCEL_SCAN.store(ACTIVE_SCAN.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
-fn cancelled() -> bool {
-    CANCEL.load(Ordering::Relaxed)
+fn cancelled(scan_id: u64) -> bool {
+    scan_id != 0 && CANCEL_SCAN.load(Ordering::Relaxed) == scan_id
 }
+
+/// How many simultaneous operations of each kind a scan may run.
+///
+/// Defaults are deliberately conservative. Consumer routers and access points
+/// rate-limit and drop ARP replies when hit with too much simultaneous fan-out,
+/// which makes real hosts vanish from a scan; a gentler sweep resolves more of
+/// them in one pass.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ScanLimits {
+    /// Addresses worked on at once.
+    pub host_concurrency: usize,
+    /// TCP connection attempts in flight across the whole scan.
+    pub tcp_concurrency: usize,
+    /// OS `ping` child processes running at once.
+    pub ping_concurrency: usize,
+}
+
+impl Default for ScanLimits {
+    fn default() -> Self {
+        Self {
+            host_concurrency: 64,
+            tcp_concurrency: 256,
+            ping_concurrency: 32,
+        }
+    }
+}
+
+impl ScanLimits {
+    /// Clamp operator-supplied limits into ranges the app can actually sustain.
+    fn clamped(self) -> Self {
+        Self {
+            host_concurrency: self.host_concurrency.clamp(1, 1_024),
+            tcp_concurrency: self.tcp_concurrency.clamp(8, 2_048),
+            ping_concurrency: self.ping_concurrency.clamp(1, 128),
+        }
+    }
+
+    /// How many ports one host may probe simultaneously.
+    ///
+    /// The global semaphore is what actually bounds sockets; this only keeps the
+    /// number of *pending futures* proportional to the work available, so a
+    /// 2,048-port single-host scan is not throttled to a trickle while a /24
+    /// sweep does not build a 130,000-future queue.
+    fn per_host_fanout(&self, host_count: usize) -> usize {
+        let busy_hosts = host_count.min(self.host_concurrency).max(1);
+        (self.tcp_concurrency / busy_hosts).clamp(8, 256)
+    }
+}
+
+/// Probe budget for one scan: addresses times ports.
+///
+/// Rejecting by workload rather than by address count alone is what stops the
+/// combination that actually hurts. A /16 with the 14 default ports is a long
+/// but legitimate sweep; a /16 with 2,048 ports is 134 million connection
+/// attempts and is always a mistake.
+pub const MAX_WORKLOAD: u64 = 4_000_000;
+
+/// Workload above which the scan still runs but the UI shows a warning.
+pub const WARN_WORKLOAD: u64 = 500_000;
 
 /// Progress update streamed to the UI while a scan runs.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanProgress {
+    pub scan_id: u64,
     pub done: usize,
     pub total: usize,
-    /// "probing" while hosts are being checked, then "resolving", then "done".
-    pub phase: String,
+    /// Live hosts confirmed so far.
+    pub found: usize,
+    pub phase: ScanPhase,
+    pub elapsed_ms: u64,
 }
 
-/// Default TCP ports probed for liveness and quick service detection. A curated
-/// spread of the ports that matter most on a typical LAN — kept small enough to
-/// stay fast, wide enough to fingerprint most hosts.
-pub const DEFAULT_PORTS: [u16; 14] = [
-    21, 22, 23, 53, 80, 110, 139, 143, 443, 445, 3389, 5900, 8080, 8443,
-];
+/// The stage a scan is in. Drives the phase label in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScanPhase {
+    /// Sweeping addresses with ICMP and TCP probes.
+    Probing,
+    /// Re-triggering ARP for local addresses that did not answer.
+    Confirming,
+    /// Reading the ARP cache and resolving hostnames and vendors.
+    Resolving,
+    Done,
+    Cancelled,
+}
 
+/// Emitted once at the start of a scan so the UI can size its progress display
+/// and surface any workload warning before results arrive.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanStarted {
+    pub scan_id: u64,
+    pub target: String,
+    pub profile: Option<String>,
+    pub total: usize,
+    pub port_count: usize,
+    /// Non-blocking advisory, e.g. a large but legal workload.
+    pub warning: Option<String>,
+}
+
+/// Everything the scanner streams to the command layer while running.
+#[derive(Debug, Clone, Serialize)]
+pub enum ScanEvent {
+    Started(ScanStarted),
+    Progress(ScanProgress),
+    /// A live host was found. Fields other than the address may still be empty.
+    HostDiscovered {
+        scan_id: u64,
+        host: Box<HostResult>,
+    },
+    /// An already-reported host gained MAC, vendor, hostname or OS information.
+    HostUpdated {
+        scan_id: u64,
+        host: Box<HostResult>,
+    },
+    /// A host reported during probing turned out not to be real (see the
+    /// proxy-ARP and local-segment rules in [`run`]). Sent so the streamed table
+    /// always ends up identical to the saved result.
+    HostRemoved {
+        scan_id: u64,
+        ip: String,
+    },
+}
+
+/// Options for one scan. Field names are stable: `concurrency` keeps its v1.6
+/// meaning of *host* concurrency so older saved preferences still apply.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
     pub target: String,
@@ -62,42 +200,116 @@ pub struct ScanOptions {
     pub ports: Vec<u16>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
-    #[serde(default = "default_concurrency")]
+    #[serde(default = "default_host_concurrency")]
     pub concurrency: usize,
+    /// Global TCP probe ceiling. Falls back to the default when absent.
+    #[serde(default)]
+    pub tcp_concurrency: Option<usize>,
+    /// Ping process ceiling. Falls back to the default when absent.
+    #[serde(default)]
+    pub ping_concurrency: Option<usize>,
+    /// Name of the profile the options came from, recorded with the scan so
+    /// comparisons only ever line up like with like.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// `Some(false)` forces routed-scan behaviour: no ARP-based liveness and no
+    /// re-prime pass, for targets the operator knows are remote. `None` decides
+    /// automatically from the detected local subnets and the ARP cache.
+    #[serde(default)]
+    pub arp_assist: Option<bool>,
 }
 
 fn default_timeout() -> u64 {
     900
 }
-fn default_concurrency() -> usize {
-    // Deliberately conservative: consumer routers and access points rate-limit
-    // and drop ARP replies when hit with too many simultaneous connects, which
-    // makes hosts vanish from a single scan. A gentler fan-out resolves more of
-    // them in one pass.
-    64
+
+fn default_host_concurrency() -> usize {
+    ScanLimits::default().host_concurrency
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ScanOptions {
+    fn limits(&self) -> ScanLimits {
+        let d = ScanLimits::default();
+        ScanLimits {
+            host_concurrency: self.concurrency,
+            tcp_concurrency: self.tcp_concurrency.unwrap_or(d.tcp_concurrency),
+            ping_concurrency: self.ping_concurrency.unwrap_or(d.ping_concurrency),
+        }
+        .clamped()
+    }
+}
+
+/// One host as observed by a single scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HostResult {
     pub ip: String,
     pub hostname: Option<String>,
     pub mac: Option<String>,
     pub vendor: Option<String>,
     pub open_ports: Vec<u16>,
+    /// Fastest response of any kind, in whole milliseconds. Kept for exports and
+    /// databases written by earlier versions; prefer the two measurements below.
     pub response_ms: Option<u64>,
+    /// ICMP round-trip time as reported by the OS `ping` output.
+    #[serde(default)]
+    pub icmp_ms: Option<f64>,
+    /// Fastest TCP connection establishment time across the probed ports.
+    #[serde(default)]
+    pub tcp_ms: Option<f64>,
     /// TTL from the ICMP echo reply, when a ping succeeded.
     pub ttl: Option<u8>,
-    /// Coarse OS guess derived from the TTL (Angry-IP-style fetcher).
+    /// Coarse OS guess derived from the TTL.
     pub os_guess: Option<String>,
     pub last_seen: String,
 }
 
+impl HostResult {
+    fn new(ip: Ipv4Addr, probe: &Probe, seen_at: &str) -> Self {
+        let mut host = HostResult {
+            ip: ip.to_string(),
+            hostname: None,
+            mac: None,
+            vendor: None,
+            open_ports: probe.open_ports.clone(),
+            response_ms: None,
+            icmp_ms: probe.icmp_ms,
+            tcp_ms: probe.tcp_ms,
+            ttl: probe.ttl,
+            os_guess: probe.ttl.and_then(os_from_ttl),
+            last_seen: seen_at.to_string(),
+        };
+        host.response_ms = host.fastest_ms();
+        host
+    }
+
+    /// Fastest observed response in whole milliseconds, rounded up so a
+    /// sub-millisecond reply reads as `1 ms` rather than `0 ms`.
+    fn fastest_ms(&self) -> Option<u64> {
+        let best = match (self.icmp_ms, self.tcp_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }?;
+        Some(best.ceil().max(1.0) as u64)
+    }
+}
+
+/// Result of a completed or cancelled scan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
+    pub scan_id: u64,
     pub target: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     pub duration_ms: u64,
+    /// Addresses enumerated by the target.
     pub scanned: usize,
+    /// Addresses actually probed. Lower than `scanned` for a cancelled scan.
+    #[serde(default)]
+    pub probed: usize,
     pub hosts: Vec<HostResult>,
+    /// True when the operator stopped the scan before it finished.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// Build a `tokio::process::Command` that never pops a console window on
@@ -117,263 +329,439 @@ pub fn quiet_command(program: &str) -> tokio::process::Command {
     tokio::process::Command::from(std_cmd)
 }
 
-/// Parse and validate the scan target into a concrete host list. Rejects
-/// malformed input and oversized ranges (see `ipparse::MAX_HOSTS`).
-pub fn validate(opts: &ScanOptions) -> Result<Vec<Ipv4Addr>, String> {
-    ipparse::parse_target(&opts.target)
+/// A validated scan, ready to run. Produced by [`plan`] so the command layer can
+/// reject bad input and report the workload before any probe is sent.
+#[derive(Debug, Clone)]
+pub struct ScanPlan {
+    pub hosts: Vec<Ipv4Addr>,
+    pub ports: Vec<u16>,
+    pub limits: ScanLimits,
+    pub timeout: Duration,
+    pub workload: u64,
+    pub warning: Option<String>,
 }
 
-/// Run a full scan. `progress`, when provided, receives streamed progress
-/// updates the command layer forwards to the UI as events.
+/// Validate a scan request. Every limit that matters is enforced here, in Rust,
+/// so the backend never depends on the frontend having done the same checks.
+pub fn plan(opts: &ScanOptions) -> Result<ScanPlan, String> {
+    let hosts = ipparse::parse_target(&opts.target)?;
+    let ports = ports::sanitize(&opts.ports)?;
+    let limits = opts.limits();
+    let timeout_ms = opts.timeout_ms.clamp(50, 10_000);
+
+    let workload = hosts.len() as u64 * ports.len() as u64;
+    if workload > MAX_WORKLOAD {
+        return Err(format!(
+            "This scan would make {} connection attempts ({} addresses x {} ports), \
+             past the {} attempt limit. Narrow the address range or the port list.",
+            thousands(workload),
+            thousands(hosts.len() as u64),
+            ports.len(),
+            thousands(MAX_WORKLOAD),
+        ));
+    }
+    let warning = (workload > WARN_WORKLOAD).then(|| {
+        format!(
+            "Large scan: {} connection attempts across {} addresses. This can take a while \
+             and puts sustained load on your network.",
+            thousands(workload),
+            thousands(hosts.len() as u64),
+        )
+    });
+
+    Ok(ScanPlan {
+        hosts,
+        ports,
+        limits,
+        timeout: Duration::from_millis(timeout_ms),
+        workload,
+        warning,
+    })
+}
+
+/// Group digits so large numbers stay readable in an error message.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Run a full scan, streaming events to `events` as hosts are discovered and
+/// enriched. `scan_id` tags every event and scopes cancellation.
 pub async fn run(
     opts: ScanOptions,
-    progress: Option<UnboundedSender<ScanProgress>>,
+    scan_id: u64,
+    events: Option<UnboundedSender<ScanEvent>>,
 ) -> Result<ScanResult, String> {
-    let hosts = validate(&opts)?;
+    let ScanPlan {
+        hosts,
+        ports,
+        limits,
+        timeout: per_probe,
+        warning,
+        ..
+    } = plan(&opts)?;
 
-    // Clear any cancellation left over from a previous scan.
-    CANCEL.store(false, Ordering::Relaxed);
-
-    let ports: Vec<u16> = if opts.ports.is_empty() {
-        DEFAULT_PORTS.to_vec()
-    } else {
-        opts.ports.clone()
-    };
-    let timeout_ms = opts.timeout_ms.clamp(50, 10_000);
-    let concurrency = opts.concurrency.clamp(1, 4096);
-    let per_probe = Duration::from_millis(timeout_ms);
+    // Take ownership of the cancellation slot for this scan, clearing any stale
+    // request left by a previous one.
+    ACTIVE_SCAN.store(scan_id, Ordering::Relaxed);
+    CANCEL_SCAN.store(0, Ordering::Relaxed);
 
     let started = Instant::now();
-
-    // Probe liveness + ports concurrently, bounded by the semaphore.
-    let sem = Arc::new(Semaphore::new(concurrency));
-    let ports = Arc::new(ports);
     let scanned = hosts.len();
-
-    // Progress: count completed probes and stream throttled updates to the UI.
-    let done = Arc::new(AtomicUsize::new(0));
-    let step = (scanned / 100).max(1);
-    let emit = |p: ScanProgress| {
-        if let Some(tx) = &progress {
-            let _ = tx.send(p);
+    let emit = |event: ScanEvent| {
+        if let Some(tx) = &events {
+            let _ = tx.send(event);
         }
     };
-    emit(ScanProgress {
-        done: 0,
-        total: scanned,
-        phase: "probing".into(),
-    });
 
-    let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts)
-        .map(|ip| {
-            let sem = sem.clone();
-            let ports = ports.clone();
-            let done = done.clone();
-            let progress = progress.clone();
-            async move {
-                let _permit = sem.acquire().await.unwrap();
-                // Once cancelled, drain the remaining hosts without probing so
-                // the stream finishes immediately instead of running to the end.
-                let probe = if cancelled() {
-                    Probe {
-                        up: false,
-                        open_ports: Vec::new(),
-                        response_ms: None,
-                        ttl: None,
-                    }
-                } else {
-                    probe_host(ip, &ports, per_probe).await
-                };
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(tx) = &progress {
-                    if d == scanned || d % step == 0 {
-                        let _ = tx.send(ScanProgress {
-                            done: d,
-                            total: scanned,
-                            phase: "probing".into(),
-                        });
-                    }
-                }
-                (ip, probe)
-            }
-        })
-        .buffer_unordered(concurrency)
-        .collect()
-        .await;
-
-    // Let late ARP replies from slow devices settle before we read the cache, so
-    // a single scan captures them instead of trickling across repeated scans.
-    emit(ScanProgress {
-        done: scanned,
+    emit(ScanEvent::Started(ScanStarted {
+        scan_id,
+        target: opts.target.clone(),
+        profile: opts.profile.clone(),
         total: scanned,
-        phase: "resolving".into(),
-    });
-    // A cancelled scan skips the settle so it stops promptly; the ARP cache is
-    // still read below so whatever was found keeps its MAC and vendor.
-    if !cancelled() {
-        tokio::time::sleep(Duration::from_millis(700)).await;
-    }
+        port_count: ports.len(),
+        warning,
+    }));
 
     // Detect our own local segments up front: they decide whether ARP is
-    // authoritative for a given target, and which hosts are worth re-priming.
+    // authoritative for this target, and therefore whether the re-prime pass is
+    // worth running at all.
     let locals = netinfo::detect();
     let own_ips: HashSet<Ipv4Addr> = locals.iter().filter_map(|n| n.ip.parse().ok()).collect();
     let local_ranges: Vec<(u32, u32)> = locals
         .iter()
         .filter_map(|n| {
             let ip: Ipv4Addr = n.ip.parse().ok()?;
-            let mask = if n.prefix == 0 { 0 } else { u32::MAX << (32 - n.prefix) };
+            let mask = if n.prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - n.prefix)
+            };
             Some((u32::from(ip) & mask, mask))
         })
         .collect();
+    let overlaps_local_subnet = hosts.iter().any(|ip| ip_in_ranges(*ip, &local_ranges));
+
+    let tcp_sem = Arc::new(Semaphore::new(limits.tcp_concurrency));
+    let ping_sem = Arc::new(Semaphore::new(limits.ping_concurrency));
+    let ports = Arc::new(ports);
+    let fanout = limits.per_host_fanout(scanned);
+
+    // Probe every address. Progress and discoveries stream out as they land.
+    let counters = Arc::new(Counters::default());
+    let probe_started = Instant::now();
+    let mut probe_results: Vec<(Ipv4Addr, Probe)> = stream::iter(hosts)
+        .map(|ip| {
+            let ports = Arc::clone(&ports);
+            let tcp_sem = Arc::clone(&tcp_sem);
+            let ping_sem = Arc::clone(&ping_sem);
+            let counters = Arc::clone(&counters);
+            let events = events.clone();
+            async move {
+                // Once cancelled, drain the remaining addresses without probing
+                // so the stream finishes immediately instead of running to the
+                // end of the range.
+                let probe = if cancelled(scan_id) {
+                    Probe::dead()
+                } else {
+                    let probe = probe_host(
+                        ip,
+                        &ports,
+                        per_probe,
+                        fanout,
+                        Arc::clone(&tcp_sem),
+                        Arc::clone(&ping_sem),
+                    )
+                    .await;
+                    counters.probed.fetch_add(1, Ordering::Relaxed);
+                    if probe.up {
+                        counters.found.fetch_add(1, Ordering::Relaxed);
+                        if let Some(tx) = &events {
+                            let now = chrono::Local::now().to_rfc3339();
+                            let _ = tx.send(ScanEvent::HostDiscovered {
+                                scan_id,
+                                host: Box::new(HostResult::new(ip, &probe, &now)),
+                            });
+                        }
+                    }
+                    probe
+                };
+                let done = counters.done.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(tx) = &events {
+                    if counters.should_report(done, scanned) {
+                        let _ = tx.send(ScanEvent::Progress(ScanProgress {
+                            scan_id,
+                            done,
+                            total: scanned,
+                            found: counters.found.load(Ordering::Relaxed),
+                            phase: ScanPhase::Probing,
+                            elapsed_ms: probe_started.elapsed().as_millis() as u64,
+                        }));
+                    }
+                }
+                (ip, probe)
+            }
+        })
+        .buffer_unordered(limits.host_concurrency)
+        .collect()
+        .await;
+
+    let was_cancelled = cancelled(scan_id);
+    let probed = counters.probed.load(Ordering::Relaxed);
+    let progress_at = |phase: ScanPhase| ScanProgress {
+        scan_id,
+        done: counters.done.load(Ordering::Relaxed),
+        total: scanned,
+        found: counters.found.load(Ordering::Relaxed),
+        phase,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
 
     // Read the ARP cache *after* probing: every probe (ping or TCP SYN) forces
     // the OS to ARP-resolve its target, so the cache is now primed. On the local
     // segment ARP is authoritative — a device with a resolved MAC is definitely
-    // up, even if it silently dropped our ICMP/TCP probes (phones, IoT, printers,
-    // firewalled hosts). This is how a LAN scanner actually finds everything.
+    // up, even if it silently dropped our ICMP/TCP probes (phones, IoT,
+    // printers, firewalled hosts). This is how a LAN scanner finds everything.
+    //
+    // A cancelled scan skips the settle delay so Stop feels immediate; the cache
+    // is still read so whatever was found keeps its MAC and vendor.
+    emit(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
+    if !was_cancelled {
+        // Let late ARP replies from slow devices settle before reading, so one
+        // scan captures them instead of trickling across repeated scans.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+    }
     let mut arp = read_arp_cache().await;
 
-    // Second discovery pass — the key to *stable* results. A device that answered
-    // a beat slowly, or dropped our single first packet (common on Wi-Fi), has no
-    // ARP entry at the instant we read the cache, so it appears one scan and
-    // vanishes the next. Re-trigger ARP for every local-segment address that
+    // Is ARP authoritative for *this* target? Two pieces of evidence count:
+    // the range overlaps one of our own subnets, or one of the addresses we
+    // actually scanned resolved to a real, non-proxy MAC.
+    //
+    // Unrelated entries in the ARP cache are NOT evidence. Every machine has a
+    // gateway entry, so treating a non-empty cache as proof of locality (which
+    // v1.6 did) made every remote scan run a pointless re-prime pass and applied
+    // local-segment liveness rules to routed targets.
+    let target_arp_evidence = |arp: &HashMap<Ipv4Addr, String>| {
+        let freq = proxy_frequencies(arp, probe_results.iter().map(|(ip, _)| *ip));
+        let threshold = proxy_threshold(scanned);
+        probe_results
+            .iter()
+            .any(|(ip, _)| is_real_mac(arp, &freq, threshold, ip))
+    };
+    let arp_authoritative = match opts.arp_assist {
+        // The Remote subnet profile opts out of every local ARP assumption.
+        Some(false) => false,
+        Some(true) => true,
+        None => overlaps_local_subnet || target_arp_evidence(&arp),
+    };
+
+    // Second discovery pass — the key to *stable* results. A device that
+    // answered a beat slowly, or dropped our first packet (common on Wi-Fi), has
+    // no ARP entry at the instant we read the cache, so it appears in one scan
+    // and vanishes from the next. Re-trigger ARP for every local address that
     // still lacks an entry, let it settle, then read and merge the cache again.
-    // This is the software-privilege equivalent of the retried ARP sweep that
-    // makes Advanced IP Scanner / Angry IP consistent run to run.
-    let range_is_local =
-        !arp.is_empty() || probe_results.iter().any(|(ip, _)| ip_in_ranges(*ip, &local_ranges));
-    if range_is_local && !cancelled() {
+    //
+    // Routed targets never get here: they have no ARP entries to repair, so the
+    // pass would be pure wasted traffic.
+    if arp_authoritative && !was_cancelled {
         let needs_prime: Vec<Ipv4Addr> = probe_results
             .iter()
             .map(|(ip, _)| *ip)
             .filter(|ip| !own_ips.contains(ip) && !arp.contains_key(ip))
             .collect();
         if !needs_prime.is_empty() {
-            let prime_sem = Arc::new(Semaphore::new(concurrency));
+            emit(ScanEvent::Progress(progress_at(ScanPhase::Confirming)));
             stream::iter(needs_prime)
                 .map(|ip| {
-                    let prime_sem = prime_sem.clone();
-                    let ports = ports.clone();
+                    let ports = Arc::clone(&ports);
+                    let tcp_sem = Arc::clone(&tcp_sem);
+                    let ping_sem = Arc::clone(&ping_sem);
                     async move {
-                        let _permit = prime_sem.acquire().await.unwrap();
-                        arp_prime(ip, &ports, per_probe).await;
+                        if !cancelled(scan_id) {
+                            arp_prime(ip, &ports, per_probe, tcp_sem, ping_sem).await;
+                        }
                     }
                 })
-                .buffer_unordered(concurrency)
+                .buffer_unordered(limits.host_concurrency)
                 .collect::<Vec<()>>()
                 .await;
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            // Union the two reads (latest wins) so entries that resolved in either
-            // pass are kept, even if one expired between reads.
+            if !cancelled(scan_id) {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+            }
+            // Union the two reads (latest wins) so entries that resolved in
+            // either pass are kept, even if one expired between reads.
             arp.extend(read_arp_cache().await);
+            emit(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
         }
     }
 
-    // Guard against proxy-ARP: some routers/APs (and client-isolated Wi-Fi)
+    // Guard against proxy-ARP: some routers and APs (and client-isolated Wi-Fi)
     // answer ARP for *every* address in the subnet with their own MAC, which
-    // would make the entire scanned range look "up". Any MAC that covers a large
-    // share of the range is such a proxy, not a real device — ignore it for
-    // ARP-based liveness and for MAC/vendor labelling.
-    let mut mac_freq: HashMap<&str, usize> = HashMap::new();
-    for (ip, _) in &probe_results {
-        if let Some(mac) = arp.get(ip) {
-            *mac_freq.entry(mac.as_str()).or_default() += 1;
-        }
-    }
-    let proxy_threshold = (scanned / 16).max(8);
-    let is_proxy = |mac: &str| mac_freq.get(mac).copied().unwrap_or(0) > proxy_threshold;
-    let has_real_mac = |ip: &Ipv4Addr| arp.get(ip).is_some_and(|m| !is_proxy(m));
+    // would make the whole scanned range look "up". Any MAC covering a large
+    // share of the range is such a proxy, not a real device.
+    let mac_freq = proxy_frequencies(&arp, probe_results.iter().map(|(ip, _)| *ip));
+    let threshold = proxy_threshold(scanned);
+    let has_real_mac = |ip: &Ipv4Addr| is_real_mac(&arp, &mac_freq, threshold, ip);
 
-    // On the local segment, ARP is the ground truth: a real device answers ARP
-    // with its own MAC, which no firewall or middlebox can forge. A transparent
-    // router/proxy CAN, however, accept TCP or answer ICMP for *every* address
-    // in the subnet (e.g. intercepting DNS on port 53), which would make dead
-    // IPs look "up". So for hosts on one of this machine's own subnets we require
-    // a real, non-proxy MAC; remote subnets (which have no ARP entries for their
-    // hosts) keep the probe-based signals. This is how Angry IP / Advanced IP
-    // Scanner avoid counting phantom hosts on a LAN.
-    //
-    // Even if interface detection missed this subnet, a real resolved MAC for any
-    // scanned IP proves the range is on a local segment.
-    let arp_in_range = probe_results.iter().any(|(ip, _)| has_real_mac(ip));
-
+    // On the local segment ARP is ground truth: a real device answers ARP with
+    // its own MAC, which no firewall or middlebox can forge. A transparent
+    // router CAN, however, accept TCP or answer ICMP for *every* address in the
+    // subnet (intercepting port 53, for instance), which would make dead
+    // addresses look up. So for local targets we require a real, non-proxy MAC;
+    // routed targets, which have no ARP entries at all, keep the probe signals.
+    let mut removed: Vec<String> = Vec::new();
     probe_results.retain(|(ip, p)| {
-        if own_ips.contains(ip) {
-            return true; // this machine itself
-        }
-        if arp_in_range || ip_in_ranges(*ip, &local_ranges) {
+        let keep = if own_ips.contains(ip) {
+            true // this machine itself
+        } else if arp_authoritative {
             has_real_mac(ip)
         } else {
-            // Remote/routed target: trust ICMP reply / TCP accept / RST.
             p.up
+        };
+        // A host streamed as discovered that does not survive the local-segment
+        // rule must be withdrawn, or the live table would disagree with what
+        // gets saved.
+        if !keep && p.up {
+            removed.push(ip.to_string());
         }
+        keep
     });
+    for ip in removed {
+        emit(ScanEvent::HostRemoved { scan_id, ip });
+    }
 
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
-    // Resolve hostnames for the live hosts concurrently (bounded, short
+    // Resolve hostnames for the live hosts concurrently (bounded, with a short
     // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
-    let live_ips: Vec<Ipv4Addr> = probe_results.iter().map(|(ip, _)| *ip).collect();
-    let dns_sem = Arc::new(Semaphore::new(256));
-    let hostnames: HashMap<Ipv4Addr, String> = stream::iter(live_ips)
-        .map(|ip| {
-            let dns_sem = dns_sem.clone();
-            async move {
-                let _permit = dns_sem.acquire().await.unwrap();
-                let name = resolve_hostname(ip).await;
-                (ip, name)
-            }
-        })
-        .buffer_unordered(256)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .filter_map(|(ip, name)| name.map(|n| (ip, n)))
-        .collect();
+    let dns_concurrency = limits.tcp_concurrency.min(128);
+    let dns_sem = Arc::new(Semaphore::new(dns_concurrency));
+    let hostnames: HashMap<Ipv4Addr, String> =
+        stream::iter(probe_results.iter().map(|(ip, _)| *ip).collect::<Vec<_>>())
+            .map(|ip| {
+                let dns_sem = Arc::clone(&dns_sem);
+                async move {
+                    let _permit = dns_sem.acquire().await.ok()?;
+                    resolve_hostname(ip).await.map(|name| (ip, name))
+                }
+            })
+            .buffer_unordered(dns_concurrency)
+            .filter_map(|pair| async move { pair })
+            .collect()
+            .await;
 
     let now = chrono::Local::now().to_rfc3339();
     let hosts_out: Vec<HostResult> = probe_results
         .into_iter()
         .map(|(ip, probe)| {
-            // Don't label a host with a proxy MAC — it's the router's, not the
+            let mut host = HostResult::new(ip, &probe, &now);
+            // Never label a host with a proxy MAC: it is the router's, not the
             // device's, and would be misleading.
-            let mac = arp.get(&ip).filter(|m| !is_proxy(m)).cloned();
-            let vendor = mac.as_deref().and_then(oui::lookup);
-            let os_guess = probe.ttl.and_then(os_from_ttl);
-            HostResult {
-                ip: ip.to_string(),
-                hostname: hostnames.get(&ip).cloned(),
-                mac,
-                vendor,
-                open_ports: probe.open_ports,
-                response_ms: probe.response_ms,
-                ttl: probe.ttl,
-                os_guess,
-                last_seen: now.clone(),
-            }
+            host.mac = arp.get(&ip).filter(|_| has_real_mac(&ip)).cloned();
+            host.vendor = host.mac.as_deref().and_then(oui::lookup);
+            host.hostname = hostnames.get(&ip).cloned();
+            emit(ScanEvent::HostUpdated {
+                scan_id,
+                host: Box::new(host.clone()),
+            });
+            host
         })
         .collect();
 
-    emit(ScanProgress {
-        done: scanned,
-        total: scanned,
-        phase: "done".into(),
-    });
+    emit(ScanEvent::Progress(progress_at(if was_cancelled {
+        ScanPhase::Cancelled
+    } else {
+        ScanPhase::Done
+    })));
+
+    ACTIVE_SCAN.store(0, Ordering::Relaxed);
 
     Ok(ScanResult {
+        scan_id,
         target: opts.target,
+        profile: opts.profile,
         duration_ms: started.elapsed().as_millis() as u64,
         scanned,
+        probed,
         hosts: hosts_out,
+        cancelled: was_cancelled,
     })
 }
 
+/// Progress bookkeeping shared by the probe tasks.
+#[derive(Default)]
+struct Counters {
+    done: std::sync::atomic::AtomicUsize,
+    probed: std::sync::atomic::AtomicUsize,
+    found: std::sync::atomic::AtomicUsize,
+}
+
+impl Counters {
+    /// Throttle progress events to roughly 100 per scan plus the final one, so a
+    /// 65k-address sweep does not push 65k messages through the event bridge.
+    fn should_report(&self, done: usize, total: usize) -> bool {
+        let step = (total / 100).max(1);
+        done == total || done % step == 0
+    }
+}
+
+/// A MAC covering more than this share of the scanned range is a proxy-ARP
+/// responder rather than a device.
+fn proxy_threshold(scanned: usize) -> usize {
+    (scanned / 16).max(8)
+}
+
+fn proxy_frequencies(
+    arp: &HashMap<Ipv4Addr, String>,
+    scanned: impl Iterator<Item = Ipv4Addr>,
+) -> HashMap<String, usize> {
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for ip in scanned {
+        if let Some(mac) = arp.get(&ip) {
+            *freq.entry(mac.clone()).or_default() += 1;
+        }
+    }
+    freq
+}
+
+/// True when `ip` has an ARP entry that belongs to a real device rather than a
+/// proxy-ARP responder.
+fn is_real_mac(
+    arp: &HashMap<Ipv4Addr, String>,
+    freq: &HashMap<String, usize>,
+    threshold: usize,
+    ip: &Ipv4Addr,
+) -> bool {
+    arp.get(ip)
+        .is_some_and(|mac| freq.get(mac).copied().unwrap_or(0) <= threshold)
+}
+
+#[derive(Debug, Clone)]
 struct Probe {
     up: bool,
     open_ports: Vec<u16>,
-    response_ms: Option<u64>,
+    icmp_ms: Option<f64>,
+    tcp_ms: Option<f64>,
     ttl: Option<u8>,
+}
+
+impl Probe {
+    fn dead() -> Self {
+        Probe {
+            up: false,
+            open_ports: Vec::new(),
+            icmp_ms: None,
+            tcp_ms: None,
+            ttl: None,
+        }
+    }
 }
 
 /// Re-trigger ARP resolution for one address without caring about the result.
@@ -381,30 +769,51 @@ struct Probe {
 /// second round of connects (plus a ping, for hosts that filter every TCP port)
 /// repopulates the neighbour cache for devices that were slow or lossy on the
 /// first pass. This is a discovery aid only — no result is read back here.
-async fn arp_prime(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) {
+async fn arp_prime(
+    ip: Ipv4Addr,
+    ports: &[u16],
+    per_probe: Duration,
+    tcp_sem: Arc<Semaphore>,
+    ping_sem: Arc<Semaphore>,
+) {
     let subset: Vec<u16> = ports.iter().copied().take(4).collect();
     let tcp = async {
         stream::iter(subset)
-            .map(|port| async move {
-                let _ = tcp_probe(ip, port, per_probe).await;
+            .map(|port| {
+                let tcp_sem = Arc::clone(&tcp_sem);
+                async move {
+                    let _ = tcp_probe(ip, port, per_probe, tcp_sem).await;
+                }
             })
             .buffer_unordered(4)
             .collect::<Vec<()>>()
             .await;
     };
     let ping = async {
-        let _ = icmp_ping(ip, per_probe).await;
+        let _ = icmp_ping(ip, per_probe, ping_sem).await;
     };
     futures::join!(tcp, ping);
 }
 
-async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
-    // Fire ICMP ping and all TCP probes concurrently.
-    let ping_fut = icmp_ping(ip, per_probe);
+/// Probe one address: one ICMP echo plus a bounded TCP fan-out across the
+/// selected ports. Both kinds of probe take a permit from their global
+/// semaphore, so the totals stay bounded no matter how many hosts are in flight.
+async fn probe_host(
+    ip: Ipv4Addr,
+    ports: &[u16],
+    per_probe: Duration,
+    fanout: usize,
+    tcp_sem: Arc<Semaphore>,
+    ping_sem: Arc<Semaphore>,
+) -> Probe {
+    let ping_fut = icmp_ping(ip, per_probe, ping_sem);
     let tcp_fut = async {
         stream::iter(ports.iter().copied())
-            .map(|port| async move { (port, tcp_probe(ip, port, per_probe).await) })
-            .buffer_unordered(ports.len().max(1))
+            .map(|port| {
+                let tcp_sem = Arc::clone(&tcp_sem);
+                async move { (port, tcp_probe(ip, port, per_probe, tcp_sem).await) }
+            })
+            .buffer_unordered(fanout.min(ports.len().max(1)))
             .collect::<Vec<_>>()
             .await
     };
@@ -412,26 +821,23 @@ async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
     let (ping_reply, tcp_results) = futures::join!(ping_fut, tcp_fut);
 
     let mut open_ports = Vec::new();
-    let mut best: Option<u64> = None;
+    let mut tcp_ms: Option<f64> = None;
     let mut alive_via_tcp = false;
-
-    if let Some(reply) = &ping_reply {
-        best = Some(reply.rtt.as_millis() as u64);
-    }
+    let note = |ms: f64, best: &mut Option<f64>| {
+        *best = Some(best.map_or(ms, |b: f64| b.min(ms)));
+    };
 
     for (port, state) in tcp_results {
         match state {
             PortState::Open(d) => {
                 open_ports.push(port);
                 alive_via_tcp = true;
-                let ms = d.as_millis() as u64;
-                best = Some(best.map_or(ms, |b| b.min(ms)));
+                note(millis(d), &mut tcp_ms);
             }
             // A refused connection (RST) still proves the host is alive.
             PortState::Refused(d) => {
                 alive_via_tcp = true;
-                let ms = d.as_millis() as u64;
-                best = Some(best.map_or(ms, |b| b.min(ms)));
+                note(millis(d), &mut tcp_ms);
             }
             PortState::NoReply => {}
         }
@@ -441,13 +847,20 @@ async fn probe_host(ip: Ipv4Addr, ports: &[u16], per_probe: Duration) -> Probe {
     Probe {
         up: ping_reply.is_some() || alive_via_tcp,
         open_ports,
-        response_ms: best,
+        icmp_ms: ping_reply.as_ref().map(|r| r.rtt_ms),
+        tcp_ms,
         ttl: ping_reply.and_then(|r| r.ttl),
     }
 }
 
+/// Duration as fractional milliseconds, rounded to two decimals so sub-
+/// millisecond LAN responses stay meaningful without noisy precision.
+fn millis(d: Duration) -> f64 {
+    (d.as_secs_f64() * 100_000.0).round() / 100.0
+}
+
 struct PingReply {
-    rtt: Duration,
+    rtt_ms: f64,
     ttl: Option<u8>,
 }
 
@@ -482,13 +895,51 @@ fn parse_ttl(output: &str) -> Option<u8> {
     digits.parse().ok()
 }
 
-async fn tcp_probe(ip: Ipv4Addr, port: u16, per_probe: Duration) -> PortState {
+/// Parse the round-trip time reported by `ping` itself, which is the actual ICMP
+/// latency rather than how long the child process took to start, run and exit.
+///
+/// Handles the three formats ArcScan ships on:
+///
+/// * Windows: `Reply from 10.0.0.1: bytes=32 time=3ms TTL=64`, and `time<1ms`
+///   for sub-millisecond replies.
+/// * macOS and Linux: `64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=0.443 ms`
+///
+/// Returns `None` for localised or unexpected output, so the caller can fall
+/// back to the measured process duration.
+fn parse_rtt_ms(output: &str) -> Option<f64> {
+    let lower = output.to_ascii_lowercase();
+    let idx = lower.find("time")?;
+    let rest = &lower[idx + 4..];
+    // `time=0.443 ms`, `time<1ms`, `time = 3ms`
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('=').or_else(|| rest.strip_prefix('<'))?;
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let value: f64 = digits.parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
+async fn tcp_probe(
+    ip: Ipv4Addr,
+    port: u16,
+    per_probe: Duration,
+    tcp_sem: Arc<Semaphore>,
+) -> PortState {
+    // The global permit is taken *before* the socket is created, so the number
+    // of simultaneous connection attempts across the whole scan never exceeds
+    // the configured ceiling.
+    let Ok(_permit) = tcp_sem.acquire().await else {
+        return PortState::NoReply;
+    };
     let addr = SocketAddr::new(IpAddr::V4(ip), port);
     let start = Instant::now();
     match timeout(per_probe, tokio::net::TcpStream::connect(addr)).await {
         Ok(Ok(_stream)) => PortState::Open(start.elapsed()),
         Ok(Err(e)) => match e.kind() {
-            // Actively refused == host is up but port closed.
+            // Actively refused == host is up but the port is closed.
             std::io::ErrorKind::ConnectionRefused => PortState::Refused(start.elapsed()),
             _ => PortState::NoReply,
         },
@@ -497,10 +948,19 @@ async fn tcp_probe(ip: Ipv4Addr, port: u16, per_probe: Duration) -> PortState {
 }
 
 /// ICMP echo via the OS `ping` binary — deliberately avoids raw sockets so the
-/// app never needs administrator/root privileges. Captures the reply so the TTL
-/// can be parsed; requiring a `ttl=` marker also filters out the Windows quirk
-/// where `ping` exits 0 on a "Destination host unreachable" response.
-async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<PingReply> {
+/// app never needs administrator or root privileges. The reply is captured so
+/// the TTL and the reported round-trip time can be parsed; requiring a `ttl=`
+/// marker also filters out the Windows quirk where `ping` exits 0 on a
+/// "Destination host unreachable" response.
+async fn icmp_ping(
+    ip: Ipv4Addr,
+    per_probe: Duration,
+    ping_sem: Arc<Semaphore>,
+) -> Option<PingReply> {
+    // Child processes are the most expensive thing a scan does, so they get the
+    // tightest global limit. Without it a wide sweep spawns hundreds at once.
+    let _permit = ping_sem.acquire().await.ok()?;
+
     let ms = per_probe.as_millis().max(1);
     let ip_s = ip.to_string();
     let start = Instant::now();
@@ -538,7 +998,10 @@ async fn icmp_ping(ip: Ipv4Addr, per_probe: Duration) -> Option<PingReply> {
                 return None;
             }
             Some(PingReply {
-                rtt: start.elapsed(),
+                // Prefer the RTT ping itself reports. Process startup and exit
+                // add several milliseconds on every platform, so the measured
+                // duration is only a fallback for output we cannot parse.
+                rtt_ms: parse_rtt_ms(&text).unwrap_or_else(|| millis(start.elapsed())),
                 ttl: parse_ttl(&text),
             })
         }
@@ -613,7 +1076,7 @@ fn parse_arp(text: &str) -> HashMap<Ipv4Addr, String> {
 /// uppercase colon-separated form. macOS `arp -a` prints unpadded octets
 /// (`a0:ce:c8:d:cf:d1`), so 1-digit groups are zero-padded. Returns None for
 /// non-MAC tokens (e.g. the `ff-ff-ff-ff-ff-ff` broadcast or malformed input).
-fn normalize_mac(tok: &str) -> Option<String> {
+pub fn normalize_mac(tok: &str) -> Option<String> {
     let sep = if tok.contains('-') {
         '-'
     } else if tok.contains(':') {
@@ -643,6 +1106,54 @@ fn normalize_mac(tok: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn opts(target: &str) -> ScanOptions {
+        ScanOptions {
+            target: target.into(),
+            ports: Vec::new(),
+            timeout_ms: 900,
+            concurrency: 64,
+            tcp_concurrency: None,
+            ping_concurrency: None,
+            profile: None,
+            arp_assist: None,
+        }
+    }
+
+    fn arp_map(pairs: &[(&str, &str)]) -> HashMap<Ipv4Addr, String> {
+        pairs
+            .iter()
+            .map(|(ip, mac)| (ip.parse().unwrap(), (*mac).to_string()))
+            .collect()
+    }
+
+    /// The locality decision extracted from `run` so it can be tested without
+    /// touching the network: a target is local when it overlaps one of our own
+    /// subnets, or when an address we actually scanned has a real, non-proxy
+    /// ARP entry.
+    fn is_local(
+        scanned: &[Ipv4Addr],
+        local_ranges: &[(u32, u32)],
+        arp: &HashMap<Ipv4Addr, String>,
+    ) -> bool {
+        if scanned.iter().any(|ip| ip_in_ranges(*ip, local_ranges)) {
+            return true;
+        }
+        let freq = proxy_frequencies(arp, scanned.iter().copied());
+        let threshold = proxy_threshold(scanned.len());
+        scanned
+            .iter()
+            .any(|ip| is_real_mac(arp, &freq, threshold, ip))
+    }
+
+    fn range(base: &str, prefix: u32) -> (u32, u32) {
+        let mask = u32::MAX << (32 - prefix);
+        (u32::from(base.parse::<Ipv4Addr>().unwrap()) & mask, mask)
+    }
+
+    fn hosts(list: &[&str]) -> Vec<Ipv4Addr> {
+        list.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
     #[test]
     fn parses_windows_arp() {
         let sample = "\nInterface: 192.168.1.10 --- 0x5\n  Internet Address      Physical Address      Type\n  192.168.1.1           a0-11-22-33-44-55     dynamic\n  192.168.1.255         ff-ff-ff-ff-ff-ff     static\n";
@@ -656,9 +1167,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_unix_arp() {
+        let sample = "router.lan (192.168.0.1) at 3c:37:86:aa:bb:cc [ether] on eth0\n? (192.168.0.44) at 00:1a:2b:3c:4d:5e [ether] on eth0\n";
+        let map = parse_arp(sample);
+        assert_eq!(
+            map.get(&"192.168.0.1".parse().unwrap()).map(String::as_str),
+            Some("3C:37:86:AA:BB:CC")
+        );
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parses_macos_unpadded_mac() {
+        let sample = "gateway.lan (10.0.1.1) at a0:ce:c8:d:cf:d1 on en0 ifscope [ethernet]\n";
+        let map = parse_arp(sample);
+        assert_eq!(
+            map.get(&"10.0.1.1".parse().unwrap()).map(String::as_str),
+            Some("A0:CE:C8:0D:CF:D1")
+        );
+    }
+
+    #[test]
     fn ip_range_containment() {
-        // 192.168.0.0/24
-        let ranges = [(u32::from(Ipv4Addr::new(192, 168, 0, 0)), u32::MAX << 8)];
+        let ranges = [range("192.168.0.0", 24)];
         assert!(ip_in_ranges(Ipv4Addr::new(192, 168, 0, 5), &ranges));
         assert!(ip_in_ranges(Ipv4Addr::new(192, 168, 0, 254), &ranges));
         assert!(!ip_in_ranges(Ipv4Addr::new(192, 168, 1, 5), &ranges));
@@ -666,10 +1197,130 @@ mod tests {
     }
 
     #[test]
+    fn local_subnet_scan_is_local() {
+        let scanned = hosts(&["192.168.1.10", "192.168.1.11"]);
+        let locals = [range("192.168.1.0", 24)];
+        assert!(is_local(&scanned, &locals, &arp_map(&[])));
+    }
+
+    #[test]
+    fn remote_scan_is_not_local_despite_unrelated_arp_entries() {
+        // The regression this replaces: every machine has a gateway in its ARP
+        // cache, so a non-empty cache used to mark even a routed target local,
+        // forcing a pointless re-prime pass and local liveness rules.
+        let scanned = hosts(&["8.8.8.8", "8.8.4.4"]);
+        let locals = [range("192.168.1.0", 24)];
+        let arp = arp_map(&[
+            ("192.168.1.1", "AA:BB:CC:00:00:01"),
+            ("192.168.1.20", "AA:BB:CC:00:00:02"),
+        ]);
+        assert!(!is_local(&scanned, &locals, &arp));
+    }
+
+    #[test]
+    fn empty_arp_cache_and_remote_target_is_not_local() {
+        let scanned = hosts(&["203.0.113.5"]);
+        let locals = [range("10.0.0.0", 24)];
+        assert!(!is_local(&scanned, &locals, &arp_map(&[])));
+    }
+
+    #[test]
+    fn arp_entry_for_a_scanned_target_proves_locality() {
+        // Interface detection can miss a subnet (VPNs, bridged adapters). A real
+        // MAC for an address we actually scanned is still proof it is local.
+        let scanned = hosts(&["172.20.5.9"]);
+        let locals: [(u32, u32); 0] = [];
+        let arp = arp_map(&[("172.20.5.9", "AA:BB:CC:DD:EE:01")]);
+        assert!(is_local(&scanned, &locals, &arp));
+    }
+
+    #[test]
+    fn proxy_arp_entries_do_not_prove_locality() {
+        // A router answering ARP for the whole range with one MAC is not
+        // evidence of real devices, so it must not flip a remote scan to local.
+        let scanned: Vec<Ipv4Addr> = (1..=64u8).map(|n| Ipv4Addr::new(203, 0, 113, n)).collect();
+        let pairs: Vec<(String, String)> = scanned
+            .iter()
+            .map(|ip| (ip.to_string(), "AA:BB:CC:DD:EE:FF".to_string()))
+            .collect();
+        let arp: HashMap<Ipv4Addr, String> = pairs
+            .iter()
+            .map(|(ip, mac)| (ip.parse().unwrap(), mac.clone()))
+            .collect();
+        let locals: [(u32, u32); 0] = [];
+        assert!(!is_local(&scanned, &locals, &arp));
+    }
+
+    #[test]
+    fn proxy_arp_masks_only_the_shared_mac() {
+        // The proxy responder is ignored, but a genuine device on the same
+        // segment keeps its MAC.
+        let scanned: Vec<Ipv4Addr> = (1..=64u8).map(|n| Ipv4Addr::new(10, 1, 1, n)).collect();
+        let mut arp: HashMap<Ipv4Addr, String> = scanned
+            .iter()
+            .map(|ip| (*ip, "AA:BB:CC:DD:EE:FF".to_string()))
+            .collect();
+        let real: Ipv4Addr = "10.1.1.7".parse().unwrap();
+        arp.insert(real, "11:22:33:44:55:66".into());
+
+        let freq = proxy_frequencies(&arp, scanned.iter().copied());
+        let threshold = proxy_threshold(scanned.len());
+        assert!(is_real_mac(&arp, &freq, threshold, &real));
+        assert!(!is_real_mac(
+            &arp,
+            &freq,
+            threshold,
+            &"10.1.1.8".parse().unwrap()
+        ));
+    }
+
+    #[test]
+    fn arp_assist_override_forces_remote_behaviour() {
+        let mut o = opts("192.168.1.0/24");
+        o.arp_assist = Some(false);
+        assert_eq!(o.arp_assist, Some(false));
+        // The plan itself is unaffected; only the liveness rule changes.
+        assert_eq!(plan(&o).unwrap().hosts.len(), 254);
+    }
+
+    #[test]
     fn parses_ttl_from_ping_output() {
-        assert_eq!(parse_ttl("Reply from 1.2.3.4: bytes=32 time=1ms TTL=128"), Some(128));
-        assert_eq!(parse_ttl("64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=0.4 ms"), Some(64));
+        assert_eq!(
+            parse_ttl("Reply from 1.2.3.4: bytes=32 time=1ms TTL=128"),
+            Some(128)
+        );
+        assert_eq!(
+            parse_ttl("64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=0.4 ms"),
+            Some(64)
+        );
         assert_eq!(parse_ttl("no ttl here"), None);
+    }
+
+    #[test]
+    fn parses_reported_rtt_across_platforms() {
+        // Windows
+        assert_eq!(
+            parse_rtt_ms("Reply from 10.0.0.1: bytes=32 time=3ms TTL=64"),
+            Some(3.0)
+        );
+        // Windows sub-millisecond
+        assert_eq!(
+            parse_rtt_ms("Reply from 10.0.0.1: bytes=32 time<1ms TTL=64"),
+            Some(1.0)
+        );
+        // Linux
+        assert_eq!(
+            parse_rtt_ms("64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.443 ms"),
+            Some(0.443)
+        );
+        // macOS
+        assert_eq!(
+            parse_rtt_ms("64 bytes from 10.0.1.1: icmp_seq=0 ttl=64 time=2.104 ms"),
+            Some(2.104)
+        );
+        // Unparseable / localised output falls back to the measured duration.
+        assert_eq!(parse_rtt_ms("Antwort von 10.0.0.1: Bytes=32 TTL=64"), None);
+        assert_eq!(parse_rtt_ms(""), None);
     }
 
     #[test]
@@ -681,24 +1332,180 @@ mod tests {
     }
 
     #[test]
-    fn parses_macos_unpadded_mac() {
-        // macOS `arp -a` prints unpadded octets.
-        let sample = "gateway.lan (10.0.1.1) at a0:ce:c8:d:cf:d1 on en0 ifscope [ethernet]\n";
-        let map = parse_arp(sample);
-        assert_eq!(
-            map.get(&"10.0.1.1".parse().unwrap()).map(String::as_str),
-            Some("A0:CE:C8:0D:CF:D1")
-        );
+    fn response_ms_is_the_fastest_of_both_measurements() {
+        let probe = Probe {
+            up: true,
+            open_ports: vec![443],
+            icmp_ms: Some(4.2),
+            tcp_ms: Some(1.4),
+            ttl: Some(64),
+        };
+        let host = HostResult::new("10.0.0.5".parse().unwrap(), &probe, "now");
+        assert_eq!(host.icmp_ms, Some(4.2));
+        assert_eq!(host.tcp_ms, Some(1.4));
+        assert_eq!(host.response_ms, Some(2));
     }
 
     #[test]
-    fn parses_unix_arp() {
-        let sample = "router.lan (192.168.0.1) at 3c:37:86:aa:bb:cc [ether] on eth0\n? (192.168.0.44) at 00:1a:2b:3c:4d:5e [ether] on eth0\n";
-        let map = parse_arp(sample);
+    fn sub_millisecond_response_never_reads_as_zero() {
+        let probe = Probe {
+            up: true,
+            open_ports: vec![],
+            icmp_ms: Some(0.21),
+            tcp_ms: None,
+            ttl: None,
+        };
+        let host = HostResult::new("10.0.0.6".parse().unwrap(), &probe, "now");
+        assert_eq!(host.response_ms, Some(1));
+    }
+
+    #[test]
+    fn plan_dedupes_and_validates_ports() {
+        let mut o = opts("10.0.0.1");
+        o.ports = vec![443, 80, 443, 80];
+        assert_eq!(plan(&o).unwrap().ports, vec![80, 443]);
+
+        o.ports = vec![0];
+        assert!(plan(&o).is_err());
+    }
+
+    #[test]
+    fn plan_enforces_the_port_limit_in_rust() {
+        let mut o = opts("10.0.0.1");
+        o.ports = (1..=3000u16).collect();
+        let err = plan(&o).unwrap_err();
+        assert!(err.contains("2048"), "{err}");
+    }
+
+    #[test]
+    fn plan_rejects_unreasonable_workloads() {
+        let mut o = opts("10.0.0.0/16");
+        o.ports = (1..=2000u16).collect();
+        let err = plan(&o).unwrap_err();
+        assert!(err.contains("connection attempts"), "{err}");
+        // The message explains the arithmetic instead of silently truncating.
+        assert!(err.contains("65,534"), "{err}");
+    }
+
+    #[test]
+    fn plan_warns_but_allows_large_legitimate_scans() {
+        let mut o = opts("10.0.0.0/24");
+        o.ports = (1..=2048u16).collect();
+        let p = plan(&o).unwrap();
+        assert_eq!(p.workload, 254 * 2048);
+        assert!(p.warning.is_some());
+    }
+
+    #[test]
+    fn plan_does_not_warn_about_an_ordinary_lan_sweep() {
+        let p = plan(&opts("192.168.1.0/24")).unwrap();
+        assert_eq!(p.hosts.len(), 254);
+        assert_eq!(p.ports.len(), ports::DEFAULT_PORTS.len());
+        assert!(p.warning.is_none());
+    }
+
+    #[test]
+    fn limits_are_clamped_into_sustainable_ranges() {
+        let mut o = opts("10.0.0.1");
+        o.concurrency = 100_000;
+        o.tcp_concurrency = Some(0);
+        o.ping_concurrency = Some(9_999);
+        let limits = o.limits();
+        assert_eq!(limits.host_concurrency, 1_024);
+        assert_eq!(limits.tcp_concurrency, 8);
+        assert_eq!(limits.ping_concurrency, 128);
+    }
+
+    #[test]
+    fn per_host_fanout_stays_bounded_and_useful() {
+        let limits = ScanLimits::default();
+        // A wide sweep keeps the pending-future count proportional to the
+        // global ceiling rather than to the port count.
+        assert_eq!(limits.per_host_fanout(254), 8);
+        // A single host may use the whole TCP budget.
+        assert_eq!(limits.per_host_fanout(1), 256);
+    }
+
+    #[test]
+    fn cancellation_is_scoped_to_one_scan() {
+        ACTIVE_SCAN.store(7, Ordering::Relaxed);
+        CANCEL_SCAN.store(0, Ordering::Relaxed);
+        assert!(!cancelled(7));
+        request_cancel();
+        assert!(cancelled(7));
+        // A newer scan is unaffected by the older cancel request.
+        assert!(!cancelled(8));
+        ACTIVE_SCAN.store(0, Ordering::Relaxed);
+        CANCEL_SCAN.store(0, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn cancelled_scan_returns_partial_results_and_reports_progress() {
+        // 203.0.113.0/24 is the reserved TEST-NET-3 documentation range, so this
+        // never reaches a real host; cancelling immediately means almost nothing
+        // is probed and the scan must still return a well-formed result.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut o = opts("203.0.113.0/24");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        let scan_id = next_scan_id();
+
+        let handle = tokio::spawn(async move { run(o, scan_id, Some(tx)).await });
+        // Give the sweep a moment to start, then stop it.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        request_cancel();
+
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.scan_id, scan_id);
+        assert!(result.cancelled);
+        assert_eq!(result.scanned, 254);
+        assert!(result.probed <= result.scanned);
+
+        let mut saw_started = false;
+        let mut saw_cancelled_phase = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                ScanEvent::Started(s) => {
+                    saw_started = true;
+                    assert_eq!(s.scan_id, scan_id);
+                    assert_eq!(s.total, 254);
+                }
+                ScanEvent::Progress(p) => {
+                    assert_eq!(p.scan_id, scan_id);
+                    if p.phase == ScanPhase::Cancelled {
+                        saw_cancelled_phase = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_started, "a scan must announce itself before probing");
+        assert!(saw_cancelled_phase, "the final phase must report cancelled");
+    }
+
+    #[tokio::test]
+    async fn invalid_target_fails_before_any_probe() {
+        let scan_id = next_scan_id();
+        let err = run(opts("not-an-ip"), scan_id, None).await.unwrap_err();
+        assert!(err.contains("not a valid IPv4 address"), "{err}");
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(65_534), "65,534");
+        assert_eq!(thousands(4_000_000), "4,000,000");
+    }
+
+    #[test]
+    fn normalizes_mac_separators() {
         assert_eq!(
-            map.get(&"192.168.0.1".parse().unwrap()).map(String::as_str),
-            Some("3C:37:86:AA:BB:CC")
+            normalize_mac("aa-bb-cc-dd-ee-ff").as_deref(),
+            Some("AA:BB:CC:DD:EE:FF")
         );
-        assert_eq!(map.len(), 2);
+        assert_eq!(normalize_mac("aabbccddeeff"), None);
+        assert_eq!(normalize_mac("ff:ff:ff:ff:ff:ff"), None);
     }
 }

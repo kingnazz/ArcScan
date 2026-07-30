@@ -1,8 +1,10 @@
 mod commands;
 mod db;
+mod inventory;
 mod ipparse;
 mod netinfo;
 mod oui;
+mod ports;
 mod scanner;
 
 use tauri::Manager;
@@ -37,10 +39,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_network,
             commands::cancel_scan,
+            commands::preview_scan,
+            commands::parse_port_spec,
+            commands::service_catalog,
             commands::save_scan,
             commands::list_scans,
             commands::get_scan,
+            commands::compare_scan,
             commands::delete_scan,
+            commands::prune_history,
+            commands::list_devices,
+            commands::device_detail,
+            commands::set_device_name,
+            commands::set_device_status,
+            commands::set_device_notes,
+            commands::import_device_labels,
             commands::last_scan_ips,
             commands::detect_networks,
             commands::open_releases,
