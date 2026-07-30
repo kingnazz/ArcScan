@@ -1,34 +1,43 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import type { ThemePref } from "../lib/prefs";
 
-export type Theme = "light" | "dark";
+export type ResolvedTheme = "light" | "dark";
 
-const KEY = "arcscan-theme";
-
-function current(): Theme {
-  if (typeof document !== "undefined" && document.documentElement.classList.contains("dark")) {
-    return "dark";
-  }
-  return "light";
-}
-
-// Light is the default; dark is opt-in and persisted to localStorage.
-export function useTheme(): { theme: Theme; toggle: () => void } {
-  const [theme, setTheme] = useState<Theme>(current);
+/**
+ * Apply the theme preference to the document.
+ *
+ * "system" follows the OS and keeps following it, which is what a desktop utility
+ * should do by default. The resolved value is returned so the toggle can show the
+ * theme actually in effect rather than the word "system".
+ */
+export function useTheme(preference: ThemePref): ResolvedTheme {
+  const [systemDark, setSystemDark] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches),
+  );
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") root.classList.add("dark");
-    else root.classList.remove("dark");
-    try {
-      localStorage.setItem(KEY, theme);
-    } catch {
-      /* ignore */
-    }
-  }, [theme]);
-
-  const toggle = useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!query) return;
+    const onChange = (event: MediaQueryListEvent) => setSystemDark(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
   }, []);
 
-  return { theme, toggle };
+  const resolved: ResolvedTheme =
+    preference === "system" ? (systemDark ? "dark" : "light") : preference;
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", resolved === "dark");
+    // Mirrored into localStorage so the inline script in index.html can apply the
+    // theme before first paint and avoid a flash of the wrong one.
+    try {
+      localStorage.setItem("arcscan-theme", preference);
+    } catch {
+      // Storage unavailable. The theme still applies for this session.
+    }
+  }, [resolved, preference]);
+
+  return resolved;
 }

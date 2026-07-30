@@ -1,88 +1,132 @@
-import { Globe, Wifi, WifiOff } from "lucide-react";
-import type { DashboardStats, ScanProgress } from "../types";
-import { api } from "../lib/api";
+// The bottom status bar.
+//
+// Doubles as the scan progress display, which keeps the progress indicator out of
+// the results area. While a scan runs it reads like a sentence: "14 devices found
+// · 172 of 254 checked · Resolving names and vendors · 8.1 s".
 
-interface StatusBarProps {
-  stats: DashboardStats;
-  meta: { target: string; duration: number; scanned: number } | null;
+import { CircleSlash, Wifi } from "lucide-react";
+import { formatCount, formatDuration, phaseLabel } from "../lib/format";
+import type { ScanMeta, ScanMode } from "../hooks/useLiveScan";
+import type { ScanProgress } from "../types";
+
+export interface StatusBarProps {
+  mode: ScanMode;
+  progress: ScanProgress | null;
+  meta: ScanMeta | null;
+  deviceCount: number;
+  version: string;
+  native: boolean;
+}
+
+export function StatusBar({ mode, progress, meta, deviceCount, version, native }: StatusBarProps) {
+  return (
+    <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-border bg-surface-raised px-3 text-xs text-text-secondary">
+      <span
+        // Polite, so a screen reader hears the counts without every progress tick
+        // interrupting.
+        aria-live="polite"
+        aria-atomic="true"
+        className="min-w-0 flex-1 truncate"
+      >
+        {mode === "scanning" && progress ? (
+          <>
+            <span className="font-medium text-text">{formatCount(progress.found)}</span>{" "}
+            {progress.found === 1 ? "device" : "devices"} found
+            {progress.total > 0 ? (
+              <>
+                {" · "}
+                <span className="text-text">{formatCount(progress.done)}</span> of{" "}
+                {formatCount(progress.total)} checked
+                <span className="text-text-muted">
+                  {" "}
+                  ({Math.min(100, Math.round((progress.done / progress.total) * 100))}%)
+                </span>
+              </>
+            ) : null}
+            {" · "}
+            {phaseLabel(progress.phase)}
+            {" · "}
+            <span className="text-text-muted">{formatDuration(progress.elapsed_ms)}</span>
+          </>
+        ) : meta ? (
+          <>
+            <span className="font-medium text-text">{formatCount(deviceCount)}</span>{" "}
+            {deviceCount === 1 ? "device" : "devices"}
+            {" · "}
+            <span className="mono">{meta.target}</span>
+            {" · "}
+            {meta.cancelled
+              ? `stopped after ${formatCount(meta.probed)} of ${formatCount(meta.scanned)} addresses`
+              : `${formatCount(meta.scanned)} addresses in ${formatDuration(meta.durationMs)}`}
+            {mode === "history" ? " · viewing a saved scan" : ""}
+          </>
+        ) : (
+          "Ready"
+        )}
+      </span>
+
+      {native ? (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 text-text-muted"
+          title="Scanning runs locally on this computer"
+        >
+          <Wifi className="h-3 w-3" aria-hidden />
+          Local
+        </span>
+      ) : (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 text-warning"
+          title="Running in a browser with a built-in demo network. Install the desktop app to scan a real network."
+        >
+          <CircleSlash className="h-3 w-3" aria-hidden />
+          Demo data
+        </span>
+      )}
+
+      <span className="shrink-0 text-text-muted">v{version}</span>
+    </footer>
+  );
+}
+
+/**
+ * The thin progress strip under the command bar.
+ *
+ * Determinate while addresses are being probed, and a small travelling bar for the
+ * phases with no countable unit of work. Nothing else on screen animates during a
+ * scan, so a streaming table stays readable.
+ */
+export function ProgressStrip({
+  scanning,
+  progress,
+}: {
   scanning: boolean;
   progress: ScanProgress | null;
-  native: boolean;
-  version: string;
-  publicIp: string | null;
-}
-
-function Sep() {
-  return <span className="h-3.5 w-px bg-line" aria-hidden />;
-}
-
-// Slim bottom status bar with live counters — the commercial-scanner
-// replacement for a card dashboard.
-export function StatusBar({ stats, meta, scanning, progress, native, version, publicIp }: StatusBarProps) {
-  const pct =
-    progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : null;
+}) {
+  const determinate =
+    scanning && progress != null && progress.total > 0 && progress.phase === "probing";
+  const percent = determinate
+    ? Math.min(100, Math.round((progress.done / progress.total) * 100))
+    : 0;
 
   return (
-    <footer className="flex items-center gap-3 border-t border-line bg-surface px-3 py-1.5 text-xs text-muted">
-      <span>
-        <span className="font-semibold tabular-nums text-fg">{stats.total}</span> devices
-      </span>
-      <Sep />
-      <span title="No vendor identified">
-        <span className="tabular-nums text-fg">{stats.unknown}</span> unknown
-      </span>
-      <Sep />
-      <span title="Port 3389 open" className={stats.openRdp > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
-        RDP <span className="tabular-nums">{stats.openRdp}</span>
-      </span>
-      <Sep />
-      <span title="Port 445 open" className={stats.openSmb > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
-        SMB <span className="tabular-nums">{stats.openSmb}</span>
-      </span>
-      {stats.newDevices > 0 && (
-        <>
-          <Sep />
-          <span className="text-brand-700 dark:text-brand-300" title="Not seen in the previous scan">
-            <span className="tabular-nums">{stats.newDevices}</span> new
-          </span>
-        </>
-      )}
-
-      <span className="min-w-0 flex-1 truncate text-center text-muted">
-        {scanning && progress
-          ? progress.phase === "resolving"
-            ? "Resolving names, MACs & vendors…"
-            : pct != null
-              ? `Scanning ${pct}% (${progress.done}/${progress.total})`
-              : "Scanning…"
-          : meta
-            ? `${meta.target} — ${meta.scanned} scanned in ${(meta.duration / 1000).toFixed(1)}s`
-            : "Ready"}
-      </span>
-
-      {publicIp && (
-        <>
-          <button
-            className="inline-flex items-center gap-1.5 hover:text-fg"
-            title="Your public IP address (click to copy)"
-            onClick={() => api.copyIp(publicIp)}
-          >
-            <Globe className="h-3.5 w-3.5" />
-            Public IP <span className="font-mono text-fg">{publicIp}</span>
-          </button>
-          <Sep />
-        </>
-      )}
-
-      <span
-        className={`inline-flex items-center gap-1.5 ${native ? "text-muted" : "text-amber-600 dark:text-amber-400"}`}
-        title={native ? "Native backend active" : "Running in browser demo mode with mock data"}
-      >
-        {native ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-        {native ? "Live" : "Demo"}
-      </span>
-      <Sep />
-      <span className="text-faint">v{version}</span>
-    </footer>
+    <div
+      className="h-[2px] w-full shrink-0 overflow-hidden bg-surface-sunken"
+      role={scanning ? "progressbar" : undefined}
+      aria-valuenow={determinate ? percent : undefined}
+      aria-valuemin={determinate ? 0 : undefined}
+      aria-valuemax={determinate ? 100 : undefined}
+      aria-label={scanning ? "Scan progress" : undefined}
+    >
+      {scanning ? (
+        determinate ? (
+          <div
+            className="h-full bg-accent transition-[width] duration-slow ease-out"
+            style={{ width: `${percent}%` }}
+          />
+        ) : (
+          <div className="animate-indeterminate h-full w-1/4 bg-accent" />
+        )
+      ) : null}
+    </div>
   );
 }

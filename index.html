@@ -7,14 +7,20 @@
     <meta name="color-scheme" content="light dark" />
     <title>ArcScan</title>
     <script>
-      // Apply the saved theme before first paint to avoid a flash.
-      // Default is light; dark is opt-in.
+      // Apply the saved theme before first paint so the window never flashes the
+      // wrong one. "system" is the default and follows the operating system.
       (function () {
         try {
-          if (localStorage.getItem("arcscan-theme") === "dark") {
-            document.documentElement.classList.add("dark");
-          }
-        } catch (e) {}
+          var pref = localStorage.getItem("arcscan-theme") || "system";
+          var dark =
+            pref === "dark" ||
+            (pref === "system" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (e) {
+          /* storage unavailable; the app applies the theme when it mounts */
+        }
       })();
     </script>
   </head>

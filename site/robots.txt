@@ -1,0 +1,5 @@
+# ArcScan website
+User-agent: *
+Allow: /
+
+Sitemap: https://kingnazz.github.io/ArcScan/sitemap.xml

@@ -1,12 +1,17 @@
 //! Tauri command surface exposed to the frontend.
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use tauri::State;
 
-use crate::db::{Db, ScanDetail, ScanSummary};
+use serde::Serialize;
+
+use crate::db::{Db, DeviceDetail, SavedScan, ScanDetail, ScanSummary};
+use crate::inventory::{Device, DeviceStatus, ScanComparison};
 use crate::netinfo::{self, LocalNetwork};
-use crate::scanner::{self, ScanOptions, ScanResult};
+use crate::ports;
+use crate::scanner::{self, ScanEvent, ScanOptions, ScanResult};
 
 /// Reject anything that is not a bare, well-formed IPv4 address before it is
 /// ever handed to a shell/launcher, to avoid argument injection.
@@ -16,18 +21,119 @@ fn validated_ipv4(ip: &str) -> Result<Ipv4Addr, String> {
         .map_err(|_| format!("`{ip}` is not a valid IPv4 address."))
 }
 
+/// What a scan would do, so the UI can show the workload and any warning before
+/// the operator commits to it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanPreview {
+    pub total: usize,
+    pub port_count: usize,
+    pub workload: u64,
+    pub warning: Option<String>,
+}
+
+/// Validate a scan request without running it. The same code path the scan
+/// itself uses, so the preview can never disagree with what happens next.
+#[tauri::command]
+pub fn preview_scan(opts: ScanOptions) -> Result<ScanPreview, String> {
+    let plan = scanner::plan(&opts)?;
+    Ok(ScanPreview {
+        total: plan.hosts.len(),
+        port_count: plan.ports.len(),
+        workload: plan.workload,
+        warning: plan.warning,
+    })
+}
+
+/// Parse a human-written port specification. The backend is the source of truth
+/// for ports, so the UI asks it rather than reimplementing the rules.
+#[tauri::command]
+pub fn parse_port_spec(spec: String) -> Result<Vec<u16>, String> {
+    ports::parse_spec(&spec)
+}
+
+/// One known TCP service.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceInfo {
+    pub port: u16,
+    pub name: String,
+    /// True for remote-control and file-sharing surfaces the UI marks as worth
+    /// a second look.
+    pub sensitive: bool,
+}
+
+/// The service-name table, fetched once at startup so the UI does not keep a
+/// second copy of it that can drift out of sync with the scanner.
+#[tauri::command]
+pub fn service_catalog() -> Vec<ServiceInfo> {
+    ports::catalog()
+        .into_iter()
+        .map(|(port, name, sensitive)| ServiceInfo {
+            port,
+            name: name.to_string(),
+            sensitive,
+        })
+        .collect()
+}
+
+/// Run a scan, streaming structured events to the window as they happen so
+/// devices appear while the scan is still running.
+///
+/// Every event carries the scan id, and the UI drops events whose id is not the
+/// scan it is currently showing. That is what keeps a slow event from a
+/// previous scan out of the current one's table.
 #[tauri::command]
 pub async fn scan_network(window: tauri::Window, opts: ScanOptions) -> Result<ScanResult, String> {
     use tauri::Emitter;
-    // Forward streamed scan progress to the UI as `scan:progress` events.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let scan_id = scanner::next_scan_id();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ScanEvent>();
     let win = window.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            let _ = win.emit("scan:progress", progress);
+    let bridge = tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let _ = match event {
+                ScanEvent::Started(payload) => win.emit("scan:started", payload),
+                ScanEvent::Progress(payload) => win.emit("scan:progress", payload),
+                ScanEvent::HostDiscovered { scan_id, host } => {
+                    win.emit("scan:host-discovered", HostEvent { scan_id, host })
+                }
+                ScanEvent::HostUpdated { scan_id, host } => {
+                    win.emit("scan:host-updated", HostEvent { scan_id, host })
+                }
+                ScanEvent::HostRemoved { scan_id, ip } => {
+                    win.emit("scan:host-removed", RemovedEvent { scan_id, ip })
+                }
+            };
         }
     });
-    scanner::run(opts, Some(tx)).await
+
+    let result = scanner::run(opts, scan_id, Some(tx)).await;
+    // Draining the bridge before returning guarantees the UI has every host
+    // event in hand by the time the promise resolves, so the streamed table and
+    // the returned result cannot disagree.
+    let _ = bridge.await;
+
+    match &result {
+        Ok(scan) if scan.cancelled => {
+            let _ = window.emit("scan:cancelled", scan);
+        }
+        Ok(scan) => {
+            let _ = window.emit("scan:completed", scan);
+        }
+        Err(_) => {}
+    }
+    result
+}
+
+#[derive(Serialize, Clone)]
+struct HostEvent {
+    scan_id: u64,
+    host: Box<crate::scanner::HostResult>,
+}
+
+#[derive(Serialize, Clone)]
+struct RemovedEvent {
+    scan_id: u64,
+    ip: String,
 }
 
 /// Ask the in-flight scan to stop. It finishes early and still returns whatever
@@ -37,8 +143,10 @@ pub fn cancel_scan() {
     scanner::request_cancel();
 }
 
+/// Save a scan and return its change summary in the same call, so the UI never
+/// has to ask twice for the state it shows right after a scan finishes.
 #[tauri::command]
-pub fn save_scan(db: State<'_, Db>, result: ScanResult) -> Result<i64, String> {
+pub fn save_scan(db: State<'_, Db>, result: ScanResult) -> Result<SavedScan, String> {
     db.save_scan(&result)
 }
 
@@ -52,9 +160,57 @@ pub fn get_scan(db: State<'_, Db>, id: i64) -> Result<ScanDetail, String> {
     db.get_scan(id)
 }
 
+/// Compare a saved scan with the most recent earlier scan of the same target and
+/// profile.
+#[tauri::command]
+pub fn compare_scan(db: State<'_, Db>, id: i64) -> Result<ScanComparison, String> {
+    db.compare_scan(id)
+}
+
 #[tauri::command]
 pub fn delete_scan(db: State<'_, Db>, id: i64) -> Result<(), String> {
     db.delete_scan(id)
+}
+
+/// Apply the history retention setting, keeping the newest `keep` scans.
+#[tauri::command]
+pub fn prune_history(db: State<'_, Db>, keep: i64) -> Result<usize, String> {
+    db.prune_history(keep)
+}
+
+#[tauri::command]
+pub fn list_devices(db: State<'_, Db>) -> Result<Vec<Device>, String> {
+    db.list_devices()
+}
+
+#[tauri::command]
+pub fn device_detail(db: State<'_, Db>, id: i64) -> Result<DeviceDetail, String> {
+    db.device_detail(id)
+}
+
+#[tauri::command]
+pub fn set_device_name(db: State<'_, Db>, id: i64, name: Option<String>) -> Result<(), String> {
+    db.set_device_name(id, name)
+}
+
+#[tauri::command]
+pub fn set_device_status(db: State<'_, Db>, id: i64, status: String) -> Result<(), String> {
+    db.set_device_status(id, DeviceStatus::parse(&status))
+}
+
+#[tauri::command]
+pub fn set_device_notes(db: State<'_, Db>, id: i64, notes: Option<String>) -> Result<(), String> {
+    db.set_device_notes(id, notes)
+}
+
+/// One-time adoption of the device labels v1.6 kept in browser local storage, so
+/// upgrading to v1.7 does not lose the names an operator already gave devices.
+#[tauri::command]
+pub fn import_device_labels(
+    db: State<'_, Db>,
+    labels: HashMap<String, String>,
+) -> Result<usize, String> {
+    db.import_device_labels(labels)
 }
 
 #[tauri::command]
@@ -209,12 +365,12 @@ pub async fn open_ssh(ip: String) -> Result<(), String> {
         // Open Terminal and run an interactive ssh session. `ip` is a validated
         // bare IPv4 (digits and dots only), so interpolating it into the
         // AppleScript string cannot inject additional commands.
-        let script = format!(
-            "tell application \"Terminal\"\nactivate\ndo script \"ssh {ip}\"\nend tell"
-        );
+        let script =
+            format!("tell application \"Terminal\"\nactivate\ndo script \"ssh {ip}\"\nend tell");
         let mut cmd = std::process::Command::new("osascript");
         cmd.args(["-e", &script]);
-        cmd.spawn().map_err(|e| format!("Failed to launch SSH: {e}"))?;
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch SSH: {e}"))?;
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
