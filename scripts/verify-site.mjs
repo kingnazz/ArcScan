@@ -128,13 +128,17 @@ await step("mobile menu opens, stays in the viewport, and closes predictably", a
   if (box.height > 800 * 0.75) {
     throw new Error(`menu takes ${Math.round((box.height / 800) * 100)}% of the screen`);
   }
-  // The page must still scroll behind an open menu.
+  // The page must still scroll behind an open menu, i.e. opening it must not
+  // lock the body. The scroll is forced to "instant" because the site sets
+  // scroll-behavior: smooth, which would make scrollTo animate and leave
+  // window.scrollY still at 0 on the next line. What is under test is whether
+  // the document can scroll at all, not how it animates.
   const scrolled = await page.evaluate(() => {
-    window.scrollTo(0, 400);
+    window.scrollTo({ top: 400, behavior: "instant" });
     return window.scrollY;
   });
   if (scrolled < 300) throw new Error("the page cannot scroll while the menu is open");
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
 
   await page.keyboard.press("Escape");
   await page.waitForTimeout(150);
@@ -150,7 +154,10 @@ await step("mobile menu opens, stays in the viewport, and closes predictably", a
 
 await step("mobile menu is reachable by keyboard", async () => {
   await page.setViewportSize({ width: 375, height: 800 });
-  await page.evaluate(() => window.scrollTo(0, 0));
+  // A reload, so this measures a visitor pressing Enter on a closed menu rather
+  // than whatever state the previous step happened to leave behind. Enter is a
+  // toggle: inheriting an open menu would read as "Enter did not open it".
+  await page.goto(BASE, { waitUntil: "networkidle" });
   await page.locator("#nav-toggle").focus();
   await page.keyboard.press("Enter");
   await page.waitForTimeout(150);
