@@ -379,7 +379,6 @@
   .segmented-item:hover {
     color: var(--text);
   }
-  .segmented-item[aria-selected="true"],
   .segmented-item[aria-current="page"] {
     background: var(--surface);
     color: var(--text);

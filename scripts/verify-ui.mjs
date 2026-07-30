@@ -21,7 +21,10 @@ const errors = [];
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH;
 const browser = await chromium.launch(executablePath ? { executablePath } : {});
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+// An explicit context, because axe-core/playwright refuses a page created
+// directly on the browser.
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+const page = await context.newPage();
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });
@@ -214,6 +217,43 @@ await step("dark theme applies", async () => {
   await page.waitForTimeout(200);
   const dark = await page.evaluate(() => document.documentElement.classList.contains("dark"));
   if (!dark) throw new Error("dark class not applied");
+});
+
+await step("axe-core finds no violations in either theme", async () => {
+  let AxeBuilder;
+  try {
+    AxeBuilder = (await import("@axe-core/playwright")).default;
+  } catch {
+    throw new Error("@axe-core/playwright is not installed; run npm i --no-save @axe-core/playwright");
+  }
+  const summary = [];
+  for (const theme of ["dark", "light"]) {
+    // Set the theme the way the app itself stores it, then reload.
+    await page.evaluate((value) => {
+      const raw = localStorage.getItem("arcscan-settings");
+      const settings = raw ? JSON.parse(raw) : {};
+      settings.theme = value;
+      localStorage.setItem("arcscan-settings", JSON.stringify(settings));
+      localStorage.setItem("arcscan-theme", value);
+    }, theme);
+    await page.reload({ waitUntil: "networkidle" });
+    // Scan a populated table rather than the empty state, so the results grid,
+    // the badges and the toolbar are all in the tree.
+    await page.getByRole("button", { name: /^Scan 192\.168\.10\.0\/24$/ }).click();
+    await page.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout: 30000 });
+    await page.waitForTimeout(700);
+
+    const scan = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    if (scan.violations.length > 0) {
+      throw new Error(
+        scan.violations.map((v) => `${theme} ${v.id} (${v.nodes.length}): ${v.help}`).join("; "),
+      );
+    }
+    summary.push(`${theme}: ${scan.passes.length} checks passed`);
+  }
+  return summary.join(", ");
 });
 
 if (errors.length > 0) {

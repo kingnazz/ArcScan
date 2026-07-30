@@ -2,203 +2,188 @@
 
 # ArcScan
 
-**A fast, lightweight network & port scanner**
+**A fast, private network inventory and scanner for IT professionals**
 
-A polished, read-only network scanner in the spirit of Angry IP Scanner,
-Advanced IP Scanner, and Advanced Port Scanner — discover live hosts, identify
-vendors and open services, and export the results. Light and dark themes.
+See every device on your network, keep a local inventory of them, and know
+exactly what changed since the last scan.
 
 Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
+
+[Download](https://github.com/kingnazz/ArcScan/releases/latest) ·
+[Website](https://kingnazz.github.io/ArcScan/) ·
+[User guide](docs/USER-GUIDE.md) ·
+[Privacy](https://kingnazz.github.io/ArcScan/privacy.html)
 
 </div>
 
 ---
 
-## Features
+ArcScan discovers the devices on a network, records them in a local inventory,
+and reports what is different from the previous scan. It is a desktop
+application: everything runs on your own computer, there is no account, no cloud
+service and no subscription, and nothing it finds is uploaded anywhere.
 
-- **Auto-detects your network** — on launch ArcScan fills the target with your
-  own subnet (and shows this device's IP); a **Detect** button re-runs it.
-- **Flexible targets** — CIDR (`192.168.1.0/24`), dashed ranges
-  (`10.0.0.1-10.0.0.50` or the short `10.0.0.1-50`), and single IPs.
-- **Robust liveness detection** — ICMP echo via the OS `ping` binary (no
-  raw-socket/administrator privileges required), plus a TCP fallback across a
-  curated set of common ports (FTP, SSH, Telnet, DNS, HTTP/S, SMB, RDP, VNC,
-  and more). A host counts as **up** if it answers ICMP, accepts a TCP
-  connection, actively refuses one (RST), **or appears in the ARP cache** — so
-  devices that silently drop pings/probes (phones, IoT, printers, firewalled
-  hosts) are still found on the local segment, the way Advanced IP / Angry IP
-  do it.
-- **Port & service detection** — the default port set fingerprints most hosts
-  at a glance; enter single ports **and ranges** (`1-1024`, `80,443,8000-8100`)
-  in the advanced options.
-- **OS guess** — an Angry-IP-style TTL fetcher labels each host
-  Windows / Linux-Unix-macOS / network device.
-- **Fast, modern results table** — IP, hostname, MAC, vendor, OS, open ports,
-  response time, and last-seen, with column sorting and instant
-  filtering/search.
-- **Per-host actions** — copy IP, open web interface, open shared folders
-  (SMB), open RDP, open SSH, and send a **Wake-on-LAN** magic packet.
-- **Known devices** — star a host to save it and give it a friendly label
-  (keyed by MAC, stored locally); filter to **Saved** devices only.
-- **Remembered ranges & one-click rescan** — recent scan targets are suggested
-  in the target box, and **Rescan** re-runs the last scan.
-- **In-app auto-update** — checks a signed release feed on launch and offers a
-  one-click "Update now" (download → install → relaunch). See
-  [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md) to enable it.
-- **Multi-format export** — export the whole result set to **CSV, JSON, or
-  XML** via a native save dialog.
-- **Scan history** — every scan is saved to a local SQLite database and is
-  browsable, re-openable, and deletable.
-- **Dashboard** — total devices, unknown devices, open RDP count, open SMB
-  count, and **new devices since the last scan**.
-- **Light & dark themes** — a clean modern light theme by default, with a
-  one-click dark mode.
-- **Full IEEE OUI vendor registry** — ~39,000 MA-L prefixes embedded for real
-  vendor identification, loaded once into an in-memory map for O(1) lookups.
-- **Tunable performance** — per-host timeout and max concurrency are exposed as
-  advanced options (defaults: 128 concurrent probes, 600 ms timeout).
+It is deliberately **not** a vulnerability scanner, a penetration-testing tool or
+a monitoring platform. It performs read-only discovery and reports what is
+reachable.
 
-## How it works
+## What it does
 
-ArcScan is **read-only discovery only** — it sends ICMP pings and attempts TCP
-connections to detect live hosts and open ports. There is no exploit,
-brute-force, credential, or vulnerability-exploitation logic in the codebase.
-When launching RDP/SSH/a browser for a host, the backend accepts only a
-well-formed bare IPv4 address, so there's no room for argument injection.
+**Know what is connected.** Every device that answers, with its IP address, MAC
+address, manufacturer (from the full IEEE OUI registry), hostname, open services,
+operating-system estimate, TTL and both ICMP and TCP response times.
 
-As with any network scanner (nmap, Angry IP Scanner, …), only scan networks you
-own or have permission to scan.
+**See what changed.** New devices, missing devices, address changes, hostname and
+manufacturer changes, and ports that opened or closed since the previous scan of
+the same target and profile.
 
-## Architecture
+**Keep an inventory.** Devices persist across scans, matched by MAC address first
+so a DHCP lease change reads as a device that moved rather than a new one. Give
+them names, a status and notes; all of it survives reinstalls.
 
-```
-ArcScan/
-├── src/                      React + TypeScript frontend
-│   ├── lib/
-│   │   ├── api.ts            Single API surface — detects Tauri, falls back to mock
-│   │   ├── mock.ts           Pure-TS mock scanner (runs in a plain browser)
-│   │   └── format.ts         Formatting + service helpers
-│   ├── components/           Dashboard, ScanControls, HostsTable, ScanHistory, …
-│   ├── types.ts              Types mirrored from the Rust serde structs
-│   └── App.tsx               Orchestration + dashboard stats
-├── src-tauri/                Rust backend
-│   └── src/
-│       ├── ipparse.rs        Target parsing + host-count guard (+ unit tests)
-│       ├── netinfo.rs        Local interface/subnet detection (auto-fill)
-│       ├── scanner.rs        Ping / TCP probes, TTL/OS, ARP, DNS (+ tests)
-│       ├── oui.rs            Embedded IEEE OUI vendor lookup
-│       ├── db.rs             SQLite persistence (bundled rusqlite)
-│       ├── commands.rs       Tauri command surface + CSV + launch helpers
-│       └── oui_data.tsv      Compact embedded vendor table (generated)
-├── scripts/
-│   ├── generate_icon.py      Pure-stdlib PNG/ICO icon generator
-│   └── generate_oui.py       Compresses the IEEE OUI CSV into oui_data.tsv
-└── .github/workflows/        CI (checks) + Windows x64/ARM64 installer builds
-```
+**Investigate without leaving.** Open a device's web interface, SMB shares, SSH or
+Remote Desktop from the inventory, or send a Wake-on-LAN packet. Only the actions
+the open services support are enabled.
 
-The frontend talks to exactly one module (`src/lib/api.ts`). When running
-inside Tauri it calls the native Rust commands; in a plain browser it
-transparently falls back to `src/lib/mock.ts`, so the entire UI can be
-developed and demoed with **no native backend**.
+**Find the quiet devices.** ARP-assisted discovery finds printers, phones, access
+points, cameras and firewalled hosts that ignore ICMP entirely, and a second
+confirmation pass keeps results consistent between scans.
+
+**Control the scan.** Five profiles from a quick sweep to a full port range, plus
+your own ports, timeout and all three concurrency limits. The workload is shown
+before the scan starts, and Stop keeps whatever was found.
+
+## Install
+
+Download the installer for your platform from the
+[latest release](https://github.com/kingnazz/ArcScan/releases/latest).
+
+| System | Architectures | Installer |
+| --- | --- | --- |
+| Windows 10 and 11 | x64, ARM64 | NSIS setup (`.exe`) |
+| macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) |
+
+Scanning needs no administrator or root privileges. ArcScan is not code-signed
+with a paid publisher certificate and the macOS builds are not notarised, so both
+systems warn on first launch; the
+[user guide](docs/USER-GUIDE.md#installation) explains what to do. SHA-256
+checksums are published with every release.
+
+## Network requests
+
+Scanning is entirely local. Scan results, the device inventory, your names and
+your notes are written to a SQLite file on your computer and are never sent
+anywhere.
+
+ArcScan makes exactly two optional outbound requests:
+
+- **Update check**, on launch, against GitHub. It sends only the version being
+  checked. Switchable off in Settings.
+- **Public IP lookup**, which is **off by default** and only runs when you press
+  the button. It contacts `api64.ipify.org`, then `icanhazip.com`, sends nothing
+  but the request, and keeps the answer for the session only.
+
+There is no telemetry, no analytics and no account. The
+[privacy page](https://kingnazz.github.io/ArcScan/privacy.html) states all of
+this precisely, including what GitHub sees when you download a release.
+
+## Documentation
+
+The [user guide](docs/USER-GUIDE.md) covers profiles, targets, live results, the
+inventory, change detection, history, exporting, device actions, keyboard
+shortcuts, where the database lives, upgrading, uninstalling, troubleshooting,
+known limitations, and responsible scanning.
+
+- [Auto-update setup](docs/AUTO_UPDATE.md)
+- [Website](site/README.md)
 
 ## Development
 
-### Prerequisites
+Requires [Node 20+](https://nodejs.org) and a
+[Rust toolchain](https://rustup.rs), plus
+[Tauri's system dependencies](https://tauri.app/start/prerequisites/) on Linux.
 
-- **Node.js** 20+
-- **Rust** (stable) + the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)
-  for your platform. On Windows that means the MSVC build tools and WebView2
-  (preinstalled on Windows 11).
-
-### Frontend-only (browser, mock data)
-
-```bash
+```sh
 npm install
-npm run dev        # http://localhost:1420 — full UI with the mock scanner
+npm run tauri:dev        # the desktop application
+npm run dev              # the interface alone, in a browser, with demo data
 ```
 
-### Full desktop app (native scanning)
+The interface falls back to a built-in demo network when it is not running inside
+Tauri, so the whole UI is developable and reviewable without a Rust build.
 
-```bash
-npm install
-npm run tauri:dev  # launches the native window with the real Rust backend
+### Checks
+
+```sh
+npm run typecheck        # TypeScript
+npm test                 # Vitest
+npm run build            # production bundle
+npm run check-version    # the version matches everywhere
+
+cd src-tauri
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
-### Useful commands
+Both are run by [CI](.github/workflows/ci.yml) on every pull request, along with
+a dependency audit.
 
-```bash
-npm run typecheck              # TypeScript
-npm run build                  # frontend production build
-cd src-tauri && cargo test     # Rust unit tests (IP parsing, ARP, OUI)
-cd src-tauri && cargo clippy --all-targets -- -D warnings
+Two browser-driven verification scripts are not in CI, because the hosted runners
+have no browser. Run them locally against a preview build:
+
+```sh
+npm run build && npm run preview &
+npm i --no-save playwright @axe-core/playwright
+node scripts/verify-ui.mjs      # 20 checks against the application
+cd site && python3 -m http.server 4174 &
+node scripts/verify-site.mjs    # 22 checks against the website, including axe-core
 ```
 
-## Platform support
+`scripts/capture-screenshots.mjs` regenerates the website's product screenshots
+from the real application, so no published image can show an older interface.
 
-ArcScan is Windows-first but fully cross-platform. It runs on:
+### Versioning
 
-- **Windows** — Intel/AMD (x64) **and** Windows-on-ARM (ARM64) devices
-- **macOS** — Apple Silicon (arm64) **and** Intel (x86_64), shipped as a single
-  universal binary
+`package.json` is the single source of truth. Bump it, then:
 
-The scanner adapts its `ping`/`arp` invocations per OS, suppresses child console
-windows on Windows (`CREATE_NO_WINDOW`), and adapts the RDP/SSH launch helpers
-(e.g. macOS RDP via the `rdp://` scheme, SSH via a Terminal session).
-
-The Windows installers stay lightweight: they rely on the WebView2 runtime that
-ships with Windows 11 and modern Windows 10, and only fetch it (a small
-Microsoft bootstrapper, `webviewInstallMode: embedBootstrapper`) on the rare
-machine that lacks it.
-
-## Packaging
-
-Build native installers locally:
-
-```bash
-npm run tauri:build                                  # host-arch installer(s)
-npm run tauri:build -- --target universal-apple-darwin --bundles dmg   # macOS universal DMG
+```sh
+npm run sync-version
 ```
 
-Artifacts land in `src-tauri/target/<target>/release/bundle/` — `msi/*.msi` and
-`nsis/*-setup.exe` on Windows, `dmg/*.dmg` on macOS.
+which writes the same version into `Cargo.toml`, the Tauri config and the
+website. CI fails if any of them drift.
 
-### CI / releases
+## Project layout
 
-`.github/workflows/build.yml` builds all supported platforms in one matrix.
-`windows-latest` ships the MSVC ARM64 cross tools (so no dedicated ARM runner is
-needed), and `macos-latest` produces a single universal binary covering both Mac
-architectures:
-
-| Runner | Target | Artifact |
-| --- | --- | --- |
-| `windows-latest` | `x86_64-pc-windows-msvc` | `ArcScan-windows-x64` (MSI + NSIS `.exe`) |
-| `windows-latest` | `aarch64-pc-windows-msvc` | `ArcScan-windows-arm64` (MSI + NSIS `.exe`) |
-| `macos-latest` | `universal-apple-darwin` | `ArcScan-macos-universal` (`.dmg`) |
-
-Each is uploaded as a separate downloadable artifact. Pushing a `v*` tag also
-drafts a GitHub Release with every installer attached.
-
-> **Version bumps matter.** Windows Installer treats installing the *same*
-> version as a no-op and will **not** replace an installed binary. Any change
-> meant to reach an already-installed machine must bump the version in all
-> three of `package.json`, `src-tauri/Cargo.toml`, and
-> `src-tauri/tauri.conf.json` (keep them in sync).
-
-## Regenerating assets
-
-Both are one-time generation steps; the outputs are committed to the repo so
-builds are reproducible offline.
-
-```bash
-# App icon set (PNG sizes + Windows .ico + macOS .icns) — pure Python stdlib
-python3 scripts/generate_icon.py
-
-# Vendor table from the live IEEE MA-L registry (downloads ~4 MB CSV)
-python3 scripts/generate_oui.py
-# or, from a local copy:
-python3 scripts/generate_oui.py path/to/oui.csv
 ```
+src/                    React interface
+  lib/                  pure logic: live merging, table, profiles, export, actions
+  ui/                   design-system primitives
+  components/           application surfaces
+  hooks/                scanning, settings, theme, shortcuts
+src-tauri/src/
+  scanner.rs            discovery, probing, concurrency limits
+  inventory.rs          device identity and change detection
+  db.rs                 SQLite schema, migrations and queries
+  ports.rs              port parsing, validation and the service table
+  ipparse.rs            target parsing and normalisation
+site/                   the GitHub Pages website
+scripts/                version sync, screenshots, verification
+```
+
+## Contributing
+
+Issues and pull requests are welcome. Please run the checks above before opening
+one.
+
+Contributions that add exploitation, credential guessing, brute force, payload
+execution, persistence, evasion, stealth scanning or internet-wide scanning will
+not be accepted. ArcScan is a network administration tool, and that is the whole
+of its scope.
 
 ## License
 
-MIT
+[MIT](LICENSE).
+
+Scan only networks you own or are authorised to inspect.

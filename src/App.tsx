@@ -620,7 +620,6 @@ export default function App() {
                     setDrawerOpen(true);
                   }}
                   density={settings.density}
-                  scanning={scan.scanning}
                 />
               )}
             </>

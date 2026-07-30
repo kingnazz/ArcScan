@@ -60,8 +60,9 @@ export function TitleBar({
             key={tab.id}
             type="button"
             className="segmented-item"
+            // aria-current is the right signal inside a nav, and aria-selected
+            // is not a valid attribute on a plain button.
             aria-current={view === tab.id ? "page" : undefined}
-            aria-selected={view === tab.id}
             disabled={tab.disabled}
             onClick={() => onViewChange(tab.id)}
             title={

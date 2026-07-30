@@ -64,7 +64,14 @@
         other.setAttribute("aria-selected", other === tab ? "true" : "false");
         other.tabIndex = other === tab ? 0 : -1;
       });
-      shotImage.src = "assets/shots/" + tab.getAttribute("data-shot") + ".webp";
+      var shot = tab.getAttribute("data-shot");
+      // srcset has to move with src, or a high-density screen would keep
+      // painting the previous view's 2x file.
+      shotImage.srcset =
+        "assets/shots/" + shot + "-800.webp 800w, " +
+        "assets/shots/" + shot + ".webp 1440w, " +
+        "assets/shots/" + shot + "@2x.webp 2880w";
+      shotImage.src = "assets/shots/" + shot + ".webp";
       shotImage.alt = tab.getAttribute("data-caption");
       shotCaption.textContent = tab.getAttribute("data-caption");
       shotPanel.setAttribute("aria-labelledby", tab.id);

@@ -23,12 +23,19 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'"
     />
 
     <link rel="stylesheet" href="arcscan.v4.css" />
     <!-- The hero screenshot is the largest paint on the page, so it is preloaded. -->
-    <link rel="preload" as="image" href="assets/shots/results-dark.webp" fetchpriority="high" />
+    <link
+      rel="preload"
+      as="image"
+      href="assets/shots/results-dark.webp"
+      imagesrcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w, assets/shots/results-dark@2x.webp 2880w"
+      imagesizes="(max-width: 76rem) 100vw, 71rem"
+      fetchpriority="high"
+    />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ArcScan" />
@@ -305,8 +312,10 @@
             <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
             <img
               src="assets/shots/results-dark.webp"
-              width="2880"
-              height="1800"
+              srcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w, assets/shots/results-dark@2x.webp 2880w"
+              sizes="(max-width: 76rem) 100vw, 71rem"
+              width="1440"
+              height="900"
               alt="The ArcScan device list showing fourteen discovered devices on a small office network, each with its name, IP address, open services, manufacturer, MAC address, operating system guess and response time. One device is marked new and another is marked changed."
               fetchpriority="high"
               decoding="async"
@@ -352,8 +361,10 @@
             <img
               id="shot-image"
               src="assets/shots/results-dark.webp"
-              width="2880"
-              height="1800"
+              srcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w, assets/shots/results-dark@2x.webp 2880w"
+              sizes="(max-width: 76rem) 100vw, 71rem"
+              width="1440"
+              height="900"
               alt="The ArcScan device list showing the completed inventory of a small office network."
               loading="lazy"
               decoding="async"
@@ -814,8 +825,10 @@
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
                 src="assets/shots/history-light.webp"
-                width="2880"
-                height="1800"
+                srcset="assets/shots/history-light-800.webp 800w, assets/shots/history-light.webp 1440w, assets/shots/history-light@2x.webp 2880w"
+              sizes="(max-width: 76rem) 100vw, 71rem"
+                width="1440"
+                height="900"
                 alt="ArcScan scan history in the light theme, listing saved scans with their target, profile, date, device count and change counts."
                 loading="lazy"
                 decoding="async"

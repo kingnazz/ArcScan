@@ -144,9 +144,23 @@ try {
   const sharp = (await import("sharp")).default;
   console.log("Writing WebP versions");
   for (const file of shots) {
-    const webp = file.replace(/\.png$/, ".webp");
-    const info = await sharp(file).webp({ quality: 82, effort: 6 }).toFile(webp);
-    console.log(`  ${webp} (${Math.round(info.size / 1024)} kB)`);
+    // Three widths, so a phone is not sent a 2,880px screenshot. The browser
+    // picks from the srcset: 800 for phones, 1440 for ordinary desktops, and
+    // the full capture only for high-density screens.
+    const variants = [
+      { suffix: "-800.webp", width: 800, quality: 78 },
+      { suffix: ".webp", width: 1440, quality: 80 },
+      { suffix: "@2x.webp", width: null, quality: 82 },
+    ];
+    const written = [];
+    for (const variant of variants) {
+      const out = file.replace(/\.png$/, variant.suffix);
+      const pipeline = sharp(file);
+      if (variant.width) pipeline.resize({ width: variant.width });
+      const info = await pipeline.webp({ quality: variant.quality, effort: 6 }).toFile(out);
+      written.push(`${variant.suffix} ${Math.round(info.size / 1024)} kB`);
+    }
+    console.log(`  ${file.replace(/\.png$/, "")}: ${written.join(", ")}`);
   }
 } catch {
   console.log("sharp is not installed, so only PNGs were written.");

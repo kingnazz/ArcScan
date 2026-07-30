@@ -101,10 +101,6 @@ export default {
           from: { transform: "translateX(12px)", opacity: "0" },
           to: { transform: "translateX(0)", opacity: "1" },
         },
-        "row-in": {
-          from: { opacity: "0.35" },
-          to: { opacity: "1" },
-        },
         indeterminate: {
           "0%": { transform: "translateX(-100%)" },
           "100%": { transform: "translateX(400%)" },
@@ -114,9 +110,6 @@ export default {
         "fade-in": "fade-in var(--duration-base) ease-out",
         "slide-up": "slide-up var(--duration-slow) ease-out",
         "slide-in-right": "slide-in-right var(--duration-slow) ease-out",
-        // Rows fade in without moving, so a streaming table never reflows
-        // under the pointer while the operator is trying to click a row.
-        "row-in": "row-in var(--duration-slow) ease-out",
         indeterminate: "indeterminate 1.1s ease-in-out infinite",
       },
     },

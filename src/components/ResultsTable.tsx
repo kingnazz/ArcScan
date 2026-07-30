@@ -32,7 +32,6 @@ export interface ResultsTableProps {
   /** Enter or a double click opens the device panel. */
   onOpen: (ip: string) => void;
   density: Density;
-  scanning: boolean;
 }
 
 export function ResultsTable({
@@ -45,7 +44,6 @@ export function ResultsTable({
   onSelect,
   onOpen,
   density,
-  scanning,
 }: ResultsTableProps) {
   const bodyRef = useRef<HTMLTableSectionElement>(null);
   const columns = useMemo(
@@ -146,7 +144,6 @@ export function ResultsTable({
               selected={row.host.ip === selectedIp}
               onSelect={onSelect}
               onOpen={onOpen}
-              animate={scanning}
             />
           ))}
         </tbody>
@@ -161,14 +158,12 @@ function Row({
   selected,
   onSelect,
   onOpen,
-  animate,
 }: {
   row: DeviceRow;
   columns: SortKey[];
   selected: boolean;
   onSelect: (ip: string) => void;
   onOpen: (ip: string) => void;
-  animate: boolean;
 }) {
   const { host } = row;
   const show = (key: SortKey) => columns.includes(key);
@@ -179,9 +174,11 @@ function Row({
       aria-selected={selected}
       onClick={() => onSelect(host.ip)}
       onDoubleClick={() => onOpen(host.ip)}
-      // Only new rows fade in, and only while a scan is running, so a settled
-      // table never animates under the pointer.
-      className={`cursor-default ${animate ? "animate-row-in" : ""}`}
+      // No entrance animation. Fading a row in animates the opacity of its text,
+      // which puts it below the contrast floor while it runs, and a table that
+      // moves under the pointer while results stream is worse than one that does
+      // not. New rows simply appear.
+      className="cursor-default"
     >
       {show("state") ? (
         <td className="!px-2">
