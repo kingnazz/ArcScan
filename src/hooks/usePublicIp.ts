@@ -1,59 +1,55 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "../lib/api";
 
-// A public IP looks like an IPv4 dotted quad or an IPv6 (contains a colon).
-function looksLikeIp(s: string): boolean {
-  return /^(\d{1,3}\.){3}\d{1,3}$/.test(s) || (/:/.test(s) && /^[0-9a-fA-F:.]+$/.test(s));
-}
+export type PublicIpState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "ready"; ip: string }
+  | { status: "error"; message: string };
 
 /**
- * Look up this machine's public IP address from a CORS-enabled service, but
- * only if the internet is reachable. Returns null while loading or when the
- * lookup fails (e.g. offline) — the UI simply hides the field in that case.
- * This makes a single outbound request to fetch the address; no scan data or
- * other information is ever sent.
+ * The machine's public address, looked up only when asked.
+ *
+ * v1.6 fetched this from a third-party service on every launch, which meant
+ * ArcScan made an outbound request before the operator had done anything. Now
+ * nothing happens until [`check`] is called from the explicit action, the result
+ * is held in memory for the session only, and closing the app forgets it.
  */
-export function usePublicIp(): string | null {
-  const [ip, setIp] = useState<string | null>(null);
+export function usePublicIp() {
+  const [state, setState] = useState<PublicIpState>({ status: "idle" });
+  const controller = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+  const check = useCallback(async () => {
+    controller.current?.abort();
+    const next = new AbortController();
+    controller.current = next;
+    setState({ status: "checking" });
 
-    const sources: Array<() => Promise<string>> = [
-      async () => {
-        const r = await fetch("https://api64.ipify.org?format=json", { signal: controller.signal });
-        if (!r.ok) throw new Error(String(r.status));
-        return String((await r.json()).ip ?? "").trim();
-      },
-      async () => {
-        const r = await fetch("https://icanhazip.com", { signal: controller.signal });
-        if (!r.ok) throw new Error(String(r.status));
-        return (await r.text()).trim();
-      },
-    ];
-
-    (async () => {
-      for (const source of sources) {
-        try {
-          const value = await source();
-          if (looksLikeIp(value)) {
-            if (!cancelled) setIp(value);
-            break;
-          }
-        } catch {
-          // Try the next source, or give up silently (most likely offline).
-        }
+    // A hung request must not leave the button spinning forever.
+    const timer = setTimeout(() => next.abort(), 8_000);
+    try {
+      const ip = await api.publicIp(next.signal);
+      setState({ status: "ready", ip });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setState({ status: "idle" });
+        return;
       }
+      setState({
+        status: "error",
+        message: error instanceof Error ? error.message : "The lookup failed.",
+      });
+    } finally {
       clearTimeout(timer);
-    })();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      clearTimeout(timer);
-    };
+    }
   }, []);
 
-  return ip;
+  const clear = useCallback(() => {
+    controller.current?.abort();
+    setState({ status: "idle" });
+  }, []);
+
+  useEffect(() => () => controller.current?.abort(), []);
+
+  return { state, check, clear };
 }

@@ -5,36 +5,53 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Semantic tokens backed by CSS variables (see index.css). These flip
-        // automatically between the light (default) and dark themes.
+        // Every colour is a token declared in index.css, so the two themes are
+        // guaranteed to stay in step and nothing hardcodes a hex value.
         bg: "var(--bg)",
-        surface: "var(--surface)",
-        surface2: "var(--surface-2)",
-        line: "var(--line)",
-        fg: "var(--fg)",
-        muted: "var(--muted)",
-        faint: "var(--faint)",
-        stripe: "var(--stripe)",
-        // Brand accent — cyan/teal arc. Static so opacity modifiers work.
-        brand: {
-          50: "#e6fbff",
-          100: "#b8f3ff",
-          200: "#7ce7fb",
-          300: "#38d4f0",
-          400: "#12b8db",
-          500: "#0898b8",
-          600: "#0a7896",
-          700: "#0f5f78",
-          800: "#154d61",
-          900: "#163f50",
+        surface: {
+          DEFAULT: "var(--surface)",
+          raised: "var(--surface-raised)",
+          sunken: "var(--surface-sunken)",
+          hover: "var(--surface-hover)",
+          active: "var(--surface-active)",
         },
+        border: {
+          DEFAULT: "var(--border)",
+          strong: "var(--border-strong)",
+        },
+        text: {
+          DEFAULT: "var(--text)",
+          secondary: "var(--text-secondary)",
+          muted: "var(--text-muted)",
+        },
+        accent: {
+          DEFAULT: "var(--accent)",
+          hover: "var(--accent-hover)",
+          fg: "var(--accent-fg)",
+          text: "var(--accent-text)",
+          subtle: "var(--accent-subtle)",
+        },
+        online: "var(--online)",
+        new: "var(--new)",
+        changed: "var(--changed)",
+        missing: "var(--missing)",
+        warning: "var(--warning)",
+        danger: "var(--danger)",
+        unknown: "var(--unknown)",
+      },
+      borderColor: {
+        DEFAULT: "var(--border)",
       },
       fontFamily: {
+        // System stacks, prioritising how Windows and macOS actually render.
+        // No web font is downloaded, so first paint never waits on the network.
         sans: [
-          "Inter",
-          "system-ui",
+          "ui-sans-serif",
           "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI Variable Text",
           "Segoe UI",
+          "Inter",
           "Roboto",
           "Helvetica Neue",
           "Arial",
@@ -43,30 +60,64 @@ export default {
         mono: [
           "ui-monospace",
           "SFMono-Regular",
+          "SF Mono",
+          "Cascadia Mono",
           "Menlo",
           "Consolas",
           "Liberation Mono",
           "monospace",
         ],
       },
+      height: {
+        control: "var(--control-md)",
+        "control-sm": "var(--control-sm)",
+        "control-lg": "var(--control-lg)",
+      },
+      borderRadius: {
+        sm: "var(--radius-sm)",
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+      },
       boxShadow: {
-        glow: "0 0 0 1px rgba(8,152,184,0.15), 0 8px 30px -8px rgba(8,152,184,0.35)",
-        panel: "var(--shadow-panel)",
-        soft: "var(--shadow-soft)",
+        sm: "var(--shadow-sm)",
+        md: "var(--shadow-md)",
+        lg: "var(--shadow-lg)",
+      },
+      transitionDuration: {
+        fast: "var(--duration-fast)",
+        base: "var(--duration-base)",
+        slow: "var(--duration-slow)",
       },
       keyframes: {
         "fade-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        "slide-up": {
           from: { opacity: "0", transform: "translateY(4px)" },
           to: { opacity: "1", transform: "translateY(0)" },
         },
-        "pulse-ring": {
-          "0%": { transform: "scale(0.8)", opacity: "0.8" },
-          "100%": { transform: "scale(2.2)", opacity: "0" },
+        "slide-in-right": {
+          from: { transform: "translateX(12px)", opacity: "0" },
+          to: { transform: "translateX(0)", opacity: "1" },
+        },
+        "row-in": {
+          from: { opacity: "0.35" },
+          to: { opacity: "1" },
+        },
+        indeterminate: {
+          "0%": { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(400%)" },
         },
       },
       animation: {
-        "fade-in": "fade-in 0.25s ease-out",
-        "pulse-ring": "pulse-ring 1.4s ease-out infinite",
+        "fade-in": "fade-in var(--duration-base) ease-out",
+        "slide-up": "slide-up var(--duration-slow) ease-out",
+        "slide-in-right": "slide-in-right var(--duration-slow) ease-out",
+        // Rows fade in without moving, so a streaming table never reflows
+        // under the pointer while the operator is trying to click a row.
+        "row-in": "row-in var(--duration-slow) ease-out",
+        indeterminate: "indeterminate 1.1s ease-in-out infinite",
       },
     },
   },
