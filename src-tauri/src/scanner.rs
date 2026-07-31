@@ -24,13 +24,14 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::Semaphore;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{Notify, Semaphore};
 use tokio::time::timeout;
 
 use crate::ipparse;
@@ -59,14 +60,92 @@ pub fn next_scan_id() -> u64 {
     NEXT_SCAN_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Wakes every cancellation-aware wait the moment a cancel is requested, so
+/// Stop interrupts settle delays instead of waiting them out.
+fn cancel_notify() -> &'static Notify {
+    static NOTIFY: OnceLock<Notify> = OnceLock::new();
+    NOTIFY.get_or_init(Notify::new)
+}
+
 /// Ask the running scan to stop as soon as it can. It finishes early and still
 /// returns the hosts discovered so far, so the user keeps partial results.
 pub fn request_cancel() {
     CANCEL_SCAN.store(ACTIVE_SCAN.load(Ordering::Relaxed), Ordering::Relaxed);
+    cancel_notify().notify_waiters();
 }
 
 fn cancelled(scan_id: u64) -> bool {
     scan_id != 0 && CANCEL_SCAN.load(Ordering::Relaxed) == scan_id
+}
+
+/// Sleep that ends early when this scan is cancelled. Returns true if the scan
+/// is cancelled, whether that happened before, during or right after the wait.
+/// Waits on a notification rather than polling, so Stop lands immediately.
+async fn cancellable_sleep(scan_id: u64, dur: Duration) -> bool {
+    if cancelled(scan_id) {
+        return true;
+    }
+    let sleep = tokio::time::sleep(dur);
+    tokio::pin!(sleep);
+    loop {
+        // Register interest in the notification before re-checking the flag, so
+        // a cancel arriving between the check and the wait cannot be missed.
+        let notified = cancel_notify().notified();
+        tokio::pin!(notified);
+        if cancelled(scan_id) {
+            return true;
+        }
+        tokio::select! {
+            _ = &mut sleep => return cancelled(scan_id),
+            _ = &mut notified => {
+                if cancelled(scan_id) {
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+/// Resolves once this scan is cancelled. Used to keep a blocked event send from
+/// pinning a cancelled scan forever.
+async fn cancel_requested(scan_id: u64) {
+    loop {
+        let notified = cancel_notify().notified();
+        tokio::pin!(notified);
+        if cancelled(scan_id) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// The phase boundaries where a scan re-evaluates cancellation. Tests register a
+/// hook on these to trigger a cancel at an exact, deterministic point instead of
+/// racing a timer against real network waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checkpoint {
+    BeforeProbing,
+    AfterProbing,
+    BeforeArpSettle,
+    BeforeConfirm,
+    BeforeSecondSettle,
+    BeforeDns,
+    BeforeFinish,
+}
+
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static CHECKPOINT_HOOK: std::sync::Mutex<Option<Box<dyn Fn(Checkpoint) + Send>>> =
+    std::sync::Mutex::new(None);
+
+fn checkpoint(cp: Checkpoint) {
+    let _ = cp;
+    #[cfg(test)]
+    {
+        if let Some(hook) = CHECKPOINT_HOOK.lock().unwrap().as_ref() {
+            hook(cp);
+        }
+    }
 }
 
 /// How many simultaneous operations of each kind a scan may run.
@@ -165,6 +244,56 @@ pub struct ScanStarted {
     pub port_count: usize,
     /// Non-blocking advisory, e.g. a large but legal workload.
     pub warning: Option<String>,
+}
+
+/// How many events the scanner-to-UI channel buffers before applying
+/// backpressure. Large enough to absorb a burst of discoveries, small enough
+/// that a stalled consumer bounds memory instead of growing a queue forever.
+pub const EVENT_CHANNEL_CAPACITY: usize = 512;
+
+/// The scanner's side of the bounded event channel.
+///
+/// Events fall into two classes. *Critical* events (started, host discovered,
+/// host removed, final host update, final phase) must arrive for the streamed
+/// table to end up identical to the saved result, so the sink waits for channel
+/// capacity — that wait is the backpressure that bounds memory. *Advisory*
+/// events (intermediate progress) may be dropped when the channel is full,
+/// because a newer progress event supersedes a lost one.
+///
+/// Two situations must never wedge the scan: the receiver disappearing (the
+/// window closed), which makes sends fail immediately and is ignored, and a
+/// receiver that stops consuming after the scan was cancelled, which is handled
+/// by abandoning the send once cancellation is requested — the returned
+/// `ScanResult` remains the source of truth.
+#[derive(Clone)]
+struct EventSink {
+    tx: Option<Sender<ScanEvent>>,
+    scan_id: u64,
+}
+
+impl EventSink {
+    /// Send an event the UI must see, waiting for capacity if the channel is
+    /// full. Gives up only when the receiver is gone or the scan is cancelled.
+    async fn critical(&self, event: ScanEvent) {
+        let Some(tx) = &self.tx else { return };
+        match tx.try_send(event) {
+            Ok(()) | Err(TrySendError::Closed(_)) => {}
+            Err(TrySendError::Full(event)) => {
+                tokio::select! {
+                    result = tx.send(event) => { let _ = result; }
+                    _ = cancel_requested(self.scan_id) => {}
+                }
+            }
+        }
+    }
+
+    /// Send a droppable event. Never waits: when the channel is full the event
+    /// is discarded, because a later one carries fresher information.
+    fn advisory(&self, event: ScanEvent) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.try_send(event);
+        }
+    }
 }
 
 /// Everything the scanner streams to the command layer while running.
@@ -394,10 +523,16 @@ fn thousands(n: u64) -> String {
 
 /// Run a full scan, streaming events to `events` as hosts are discovered and
 /// enriched. `scan_id` tags every event and scopes cancellation.
+///
+/// Cancellation is re-evaluated before every phase, during every wait, and once
+/// more immediately before the result is built, so the returned `cancelled`
+/// flag reflects the scan's true final state rather than a value captured after
+/// probing. A scan stopped mid-way keeps every host discovered so far, along
+/// with whatever MAC, vendor and hostname data had already resolved.
 pub async fn run(
     opts: ScanOptions,
     scan_id: u64,
-    events: Option<UnboundedSender<ScanEvent>>,
+    events: Option<Sender<ScanEvent>>,
 ) -> Result<ScanResult, String> {
     let ScanPlan {
         hosts,
@@ -415,20 +550,21 @@ pub async fn run(
 
     let started = Instant::now();
     let scanned = hosts.len();
-    let emit = |event: ScanEvent| {
-        if let Some(tx) = &events {
-            let _ = tx.send(event);
-        }
+    let sink = EventSink {
+        tx: events,
+        scan_id,
     };
 
-    emit(ScanEvent::Started(ScanStarted {
+    sink.critical(ScanEvent::Started(ScanStarted {
         scan_id,
         target: opts.target.clone(),
         profile: opts.profile.clone(),
         total: scanned,
         port_count: ports.len(),
         warning,
-    }));
+    }))
+    .await;
+    checkpoint(Checkpoint::BeforeProbing);
 
     // Detect our own local segments up front: they decide whether ARP is
     // authoritative for this target, and therefore whether the re-prime pass is
@@ -463,7 +599,7 @@ pub async fn run(
             let tcp_sem = Arc::clone(&tcp_sem);
             let ping_sem = Arc::clone(&ping_sem);
             let counters = Arc::clone(&counters);
-            let events = events.clone();
+            let sink = sink.clone();
             async move {
                 // Once cancelled, drain the remaining addresses without probing
                 // so the stream finishes immediately instead of running to the
@@ -483,28 +619,25 @@ pub async fn run(
                     counters.probed.fetch_add(1, Ordering::Relaxed);
                     if probe.up {
                         counters.found.fetch_add(1, Ordering::Relaxed);
-                        if let Some(tx) = &events {
-                            let now = chrono::Local::now().to_rfc3339();
-                            let _ = tx.send(ScanEvent::HostDiscovered {
-                                scan_id,
-                                host: Box::new(HostResult::new(ip, &probe, &now)),
-                            });
-                        }
+                        let now = chrono::Local::now().to_rfc3339();
+                        sink.critical(ScanEvent::HostDiscovered {
+                            scan_id,
+                            host: Box::new(HostResult::new(ip, &probe, &now)),
+                        })
+                        .await;
                     }
                     probe
                 };
                 let done = counters.done.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(tx) = &events {
-                    if counters.should_report(done, scanned) {
-                        let _ = tx.send(ScanEvent::Progress(ScanProgress {
-                            scan_id,
-                            done,
-                            total: scanned,
-                            found: counters.found.load(Ordering::Relaxed),
-                            phase: ScanPhase::Probing,
-                            elapsed_ms: probe_started.elapsed().as_millis() as u64,
-                        }));
-                    }
+                if counters.should_report(done, scanned) {
+                    sink.advisory(ScanEvent::Progress(ScanProgress {
+                        scan_id,
+                        done,
+                        total: scanned,
+                        found: counters.found.load(Ordering::Relaxed),
+                        phase: ScanPhase::Probing,
+                        elapsed_ms: probe_started.elapsed().as_millis() as u64,
+                    }));
                 }
                 (ip, probe)
             }
@@ -513,7 +646,7 @@ pub async fn run(
         .collect()
         .await;
 
-    let was_cancelled = cancelled(scan_id);
+    checkpoint(Checkpoint::AfterProbing);
     let probed = counters.probed.load(Ordering::Relaxed);
     let progress_at = |phase: ScanPhase| ScanProgress {
         scan_id,
@@ -532,12 +665,12 @@ pub async fn run(
     //
     // A cancelled scan skips the settle delay so Stop feels immediate; the cache
     // is still read so whatever was found keeps its MAC and vendor.
-    emit(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
-    if !was_cancelled {
-        // Let late ARP replies from slow devices settle before reading, so one
-        // scan captures them instead of trickling across repeated scans.
-        tokio::time::sleep(Duration::from_millis(700)).await;
-    }
+    sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
+    checkpoint(Checkpoint::BeforeArpSettle);
+    // Let late ARP replies from slow devices settle before reading, so one scan
+    // captures them instead of trickling across repeated scans. The wait ends
+    // the moment Stop is pressed.
+    cancellable_sleep(scan_id, Duration::from_millis(700)).await;
     let mut arp = read_arp_cache().await;
 
     // Is ARP authoritative for *this* target? Two pieces of evidence count:
@@ -569,15 +702,17 @@ pub async fn run(
     // still lacks an entry, let it settle, then read and merge the cache again.
     //
     // Routed targets never get here: they have no ARP entries to repair, so the
-    // pass would be pure wasted traffic.
-    if arp_authoritative && !was_cancelled {
+    // pass would be pure wasted traffic. A cancelled scan skips the pass
+    // entirely — confirmation is expensive follow-up work, not preservation.
+    checkpoint(Checkpoint::BeforeConfirm);
+    if arp_authoritative && !cancelled(scan_id) {
         let needs_prime: Vec<Ipv4Addr> = probe_results
             .iter()
             .map(|(ip, _)| *ip)
             .filter(|ip| !own_ips.contains(ip) && !arp.contains_key(ip))
             .collect();
         if !needs_prime.is_empty() {
-            emit(ScanEvent::Progress(progress_at(ScanPhase::Confirming)));
+            sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Confirming)));
             stream::iter(needs_prime)
                 .map(|ip| {
                     let ports = Arc::clone(&ports);
@@ -592,13 +727,12 @@ pub async fn run(
                 .buffer_unordered(limits.host_concurrency)
                 .collect::<Vec<()>>()
                 .await;
-            if !cancelled(scan_id) {
-                tokio::time::sleep(Duration::from_millis(600)).await;
-            }
+            checkpoint(Checkpoint::BeforeSecondSettle);
+            cancellable_sleep(scan_id, Duration::from_millis(600)).await;
             // Union the two reads (latest wins) so entries that resolved in
             // either pass are kept, even if one expired between reads.
             arp.extend(read_arp_cache().await);
-            emit(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
+            sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Resolving)));
         }
     }
 
@@ -634,13 +768,18 @@ pub async fn run(
         keep
     });
     for ip in removed {
-        emit(ScanEvent::HostRemoved { scan_id, ip });
+        sink.critical(ScanEvent::HostRemoved { scan_id, ip }).await;
     }
 
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
     // Resolve hostnames for the live hosts concurrently (bounded, with a short
     // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
+    // A cancelled scan launches no lookups at all: each queued lookup re-checks
+    // cancellation first, so lookups already in flight finish within their own
+    // short timeout while the rest are skipped. Hostnames that resolved before
+    // the cancel are kept.
+    checkpoint(Checkpoint::BeforeDns);
     let dns_concurrency = limits.tcp_concurrency.min(128);
     let dns_sem = Arc::new(Semaphore::new(dns_concurrency));
     let hostnames: HashMap<Ipv4Addr, String> =
@@ -648,7 +787,13 @@ pub async fn run(
             .map(|ip| {
                 let dns_sem = Arc::clone(&dns_sem);
                 async move {
+                    if cancelled(scan_id) {
+                        return None;
+                    }
                     let _permit = dns_sem.acquire().await.ok()?;
+                    if cancelled(scan_id) {
+                        return None;
+                    }
                     resolve_hostname(ip).await.map(|name| (ip, name))
                 }
             })
@@ -657,29 +802,37 @@ pub async fn run(
             .collect()
             .await;
 
+    // Final enrichment works from data already in memory (the ARP cache read and
+    // the resolved hostnames), so it runs even for a cancelled scan: partial
+    // results keep every MAC, vendor and hostname that had already resolved.
     let now = chrono::Local::now().to_rfc3339();
-    let hosts_out: Vec<HostResult> = probe_results
-        .into_iter()
-        .map(|(ip, probe)| {
-            let mut host = HostResult::new(ip, &probe, &now);
-            // Never label a host with a proxy MAC: it is the router's, not the
-            // device's, and would be misleading.
-            host.mac = arp.get(&ip).filter(|_| has_real_mac(&ip)).cloned();
-            host.vendor = host.mac.as_deref().and_then(oui::lookup);
-            host.hostname = hostnames.get(&ip).cloned();
-            emit(ScanEvent::HostUpdated {
-                scan_id,
-                host: Box::new(host.clone()),
-            });
-            host
+    let mut hosts_out: Vec<HostResult> = Vec::with_capacity(probe_results.len());
+    for (ip, probe) in probe_results {
+        let mut host = HostResult::new(ip, &probe, &now);
+        // Never label a host with a proxy MAC: it is the router's, not the
+        // device's, and would be misleading.
+        host.mac = arp.get(&ip).filter(|_| has_real_mac(&ip)).cloned();
+        host.vendor = host.mac.as_deref().and_then(oui::lookup);
+        host.hostname = hostnames.get(&ip).cloned();
+        sink.critical(ScanEvent::HostUpdated {
+            scan_id,
+            host: Box::new(host.clone()),
         })
-        .collect();
+        .await;
+        hosts_out.push(host);
+    }
 
-    emit(ScanEvent::Progress(progress_at(if was_cancelled {
+    // The final cancellation state is decided here, at the very end, so a Stop
+    // pressed during any later phase is honoured rather than a stale value
+    // captured after probing.
+    checkpoint(Checkpoint::BeforeFinish);
+    let was_cancelled = cancelled(scan_id);
+    sink.critical(ScanEvent::Progress(progress_at(if was_cancelled {
         ScanPhase::Cancelled
     } else {
         ScanPhase::Done
-    })));
+    })))
+    .await;
 
     ACTIVE_SCAN.store(0, Ordering::Relaxed);
 
@@ -1426,8 +1579,47 @@ mod tests {
         assert_eq!(limits.per_host_fanout(1), 256);
     }
 
+    /// Serializes tests that touch the global cancellation state, so one test's
+    /// cancel request can never leak into another running in parallel. A tokio
+    /// mutex, because the guard is held across awaits.
+    fn cancel_test_mutex() -> &'static tokio::sync::Mutex<()> {
+        static GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        &GUARD
+    }
+
+    /// Register a hook that requests a cancel exactly when the scan reaches the
+    /// given checkpoint, making phase-specific cancellation deterministic.
+    fn cancel_at(target: Checkpoint) {
+        *CHECKPOINT_HOOK.lock().unwrap() = Some(Box::new(move |cp| {
+            if cp == target {
+                request_cancel();
+            }
+        }));
+    }
+
+    fn clear_checkpoint_hook() {
+        *CHECKPOINT_HOOK.lock().unwrap() = None;
+    }
+
+    /// Run a short scan of a TEST-NET range, cancelling at `cp`.
+    async fn run_cancelled_at(
+        cp: Checkpoint,
+        target: &str,
+        arp_assist: Option<bool>,
+    ) -> ScanResult {
+        cancel_at(cp);
+        let mut o = opts(target);
+        o.timeout_ms = 50;
+        o.arp_assist = arp_assist;
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, None).await.unwrap();
+        clear_checkpoint_hook();
+        result
+    }
+
     #[test]
     fn cancellation_is_scoped_to_one_scan() {
+        let _guard = cancel_test_mutex().blocking_lock();
         ACTIVE_SCAN.store(7, Ordering::Relaxed);
         CANCEL_SCAN.store(0, Ordering::Relaxed);
         assert!(!cancelled(7));
@@ -1440,11 +1632,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellable_sleep_ends_early_when_cancelled() {
+        let _guard = cancel_test_mutex().lock().await;
+        ACTIVE_SCAN.store(41, Ordering::Relaxed);
+        CANCEL_SCAN.store(0, Ordering::Relaxed);
+        let begun = Instant::now();
+        let waiter = tokio::spawn(cancellable_sleep(41, Duration::from_secs(30)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        request_cancel();
+        assert!(waiter.await.unwrap(), "the wait must report the cancel");
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "a 30s wait must end promptly after the cancel"
+        );
+        ACTIVE_SCAN.store(0, Ordering::Relaxed);
+        CANCEL_SCAN.store(0, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn cancellable_sleep_runs_to_completion_without_a_cancel() {
+        let _guard = cancel_test_mutex().lock().await;
+        ACTIVE_SCAN.store(42, Ordering::Relaxed);
+        CANCEL_SCAN.store(0, Ordering::Relaxed);
+        assert!(!cancellable_sleep(42, Duration::from_millis(20)).await);
+        ACTIVE_SCAN.store(0, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_initial_probing_stops_the_sweep() {
+        let _guard = cancel_test_mutex().lock().await;
+        let result =
+            run_cancelled_at(Checkpoint::BeforeProbing, "203.0.113.1-8", Some(false)).await;
+        assert!(result.cancelled);
+        assert_eq!(result.probed, 0, "no address may be probed after Stop");
+        assert_eq!(result.scanned, 8);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_arp_settle_is_honoured() {
+        let _guard = cancel_test_mutex().lock().await;
+        let result =
+            run_cancelled_at(Checkpoint::BeforeArpSettle, "203.0.113.1-4", Some(false)).await;
+        assert!(result.cancelled);
+        assert_eq!(result.probed, 4, "probing had already finished");
+    }
+
+    #[tokio::test]
+    async fn cancel_before_quiet_device_confirmation_skips_the_pass() {
+        let _guard = cancel_test_mutex().lock().await;
+        // arp_assist on, so the confirmation pass would run for every address
+        // lacking an ARP entry — unless the cancel stops it first.
+        let begun = Instant::now();
+        let result = run_cancelled_at(Checkpoint::BeforeConfirm, "203.0.113.1-4", Some(true)).await;
+        assert!(result.cancelled);
+        assert!(
+            begun.elapsed() < Duration::from_secs(10),
+            "the confirm pass and second settle must be skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_the_second_settle_is_honoured() {
+        let _guard = cancel_test_mutex().lock().await;
+        let result =
+            run_cancelled_at(Checkpoint::BeforeSecondSettle, "203.0.113.1-4", Some(true)).await;
+        assert!(result.cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_hostname_resolution_launches_no_lookups() {
+        let _guard = cancel_test_mutex().lock().await;
+        // 127.0.0.1 is deterministically alive (a connect to a closed loopback
+        // port is refused, which proves liveness), so the scan has a host to
+        // resolve when the cancel lands.
+        let result = run_cancelled_at(Checkpoint::BeforeDns, "127.0.0.1", Some(false)).await;
+        assert!(result.cancelled);
+        assert_eq!(result.hosts.len(), 1, "partial hosts must be preserved");
+        assert_eq!(result.hosts[0].ip, "127.0.0.1");
+        assert!(
+            result.hosts[0].hostname.is_none(),
+            "no reverse-DNS lookup may be launched after Stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_immediately_before_completion_is_still_recorded() {
+        let _guard = cancel_test_mutex().lock().await;
+        // Every phase ran to the end; the final flag must still say cancelled,
+        // which proves it is decided at the end rather than captured earlier.
+        let result = run_cancelled_at(Checkpoint::BeforeFinish, "203.0.113.1-2", Some(false)).await;
+        assert!(result.cancelled);
+        assert_eq!(result.probed, 2);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_from_an_older_scan_does_not_affect_the_next_one() {
+        let _guard = cancel_test_mutex().lock().await;
+        let first = run_cancelled_at(Checkpoint::BeforeFinish, "203.0.113.1-2", Some(false)).await;
+        assert!(first.cancelled);
+
+        // The next scan starts with the stale cancel request still stored and
+        // must clear it rather than aborting immediately.
+        let mut o = opts("203.0.113.1-2");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        let scan_id = next_scan_id();
+        let second = run(o, scan_id, None).await.unwrap();
+        assert!(!second.cancelled);
+        assert_eq!(second.probed, 2);
+    }
+
+    #[tokio::test]
     async fn cancelled_scan_returns_partial_results_and_reports_progress() {
+        let _guard = cancel_test_mutex().lock().await;
         // 203.0.113.0/24 is the reserved TEST-NET-3 documentation range, so this
         // never reaches a real host; cancelling immediately means almost nothing
         // is probed and the scan must still return a well-formed result.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let mut o = opts("203.0.113.0/24");
         o.timeout_ms = 50;
         o.arp_assist = Some(false);
@@ -1481,6 +1785,88 @@ mod tests {
         }
         assert!(saw_started, "a scan must announce itself before probing");
         assert!(saw_cancelled_phase, "the final phase must report cancelled");
+    }
+
+    #[tokio::test]
+    async fn scan_completes_when_the_event_receiver_disappears() {
+        let _guard = cancel_test_mutex().lock().await;
+        // Simulates the window closing mid-scan: the receiver is dropped before
+        // the scan even starts, and every send must fail fast instead of
+        // wedging the scanner.
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        drop(rx);
+        let mut o = opts("203.0.113.1-4");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, Some(tx)).await.unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(result.probed, 4);
+    }
+
+    #[tokio::test]
+    async fn cancellation_unblocks_a_scan_stuck_on_a_congested_channel() {
+        let _guard = cancel_test_mutex().lock().await;
+        // Capacity one and a receiver that never reads: the Started event fills
+        // the channel and the first discovery blocks on it. Stop must free the
+        // scan; the returned result is the source of truth for what was found.
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut o = opts("127.0.0.1");
+        o.timeout_ms = 200;
+        o.arp_assist = Some(false);
+        let scan_id = next_scan_id();
+        let handle = tokio::spawn(async move { run(o, scan_id, Some(tx)).await });
+
+        // Wait until this scan owns the cancellation slot, then cancel.
+        let begun = Instant::now();
+        while ACTIVE_SCAN.load(Ordering::Relaxed) != scan_id {
+            assert!(
+                begun.elapsed() < Duration::from_secs(10),
+                "scan never started"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        request_cancel();
+
+        let result = timeout(Duration::from_secs(15), handle)
+            .await
+            .expect("a cancelled scan must not deadlock on a full event channel")
+            .unwrap()
+            .unwrap();
+        assert!(result.cancelled);
+        assert_eq!(result.hosts.len(), 1, "the discovered host is preserved");
+        drop(rx);
+    }
+
+    #[tokio::test]
+    async fn slow_event_consumer_still_receives_every_critical_event() {
+        let _guard = cancel_test_mutex().lock().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut o = opts("127.0.0.1");
+        o.timeout_ms = 200;
+        o.arp_assist = Some(false);
+        let scan_id = next_scan_id();
+        let handle = tokio::spawn(async move { run(o, scan_id, Some(tx)).await });
+
+        let mut discovered = 0;
+        let mut updated = 0;
+        let mut final_phase = None;
+        while let Some(event) = rx.recv().await {
+            // Draining slowly forces the scanner through the backpressure path.
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            match event {
+                ScanEvent::HostDiscovered { .. } => discovered += 1,
+                ScanEvent::HostUpdated { .. } => updated += 1,
+                ScanEvent::Progress(p) => final_phase = Some(p.phase),
+                _ => {}
+            }
+        }
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(discovered, 1);
+        assert_eq!(updated, 1, "the final enrichment update is critical");
+        assert_eq!(final_phase, Some(ScanPhase::Done));
+        assert_eq!(result.hosts.len(), 1);
     }
 
     #[tokio::test]

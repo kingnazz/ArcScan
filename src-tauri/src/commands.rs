@@ -86,7 +86,10 @@ pub async fn scan_network(window: tauri::Window, opts: ScanOptions) -> Result<Sc
     use tauri::Emitter;
 
     let scan_id = scanner::next_scan_id();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ScanEvent>();
+    // Bounded: if the bridge cannot keep up, the scanner waits for capacity
+    // (dropping only advisory progress events), so event memory cannot grow
+    // without limit during a wide scan.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(scanner::EVENT_CHANNEL_CAPACITY);
     let win = window.clone();
     let bridge = tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
