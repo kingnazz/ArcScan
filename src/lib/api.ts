@@ -12,6 +12,7 @@ import type {
   HostEvent,
   HostRemovedEvent,
   LocalNetwork,
+  NetworkScope,
   SavedScan,
   ScanComparison,
   ScanDetail,
@@ -143,6 +144,16 @@ export const api = {
   async listDevices(): Promise<Device[]> {
     if (isTauri()) return invoke<Device[]>("list_devices");
     return mock.listDevices();
+  },
+
+  async listNetworkScopes(): Promise<NetworkScope[]> {
+    if (isTauri()) return invoke<NetworkScope[]>("list_network_scopes");
+    return mock.listNetworkScopes();
+  },
+
+  async renameNetworkScope(id: number, name: string): Promise<void> {
+    if (isTauri()) return invoke<void>("rename_network_scope", { id, name });
+    mock.renameNetworkScope(id, name);
   },
 
   async deviceDetail(id: number): Promise<DeviceDetail> {

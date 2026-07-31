@@ -111,6 +111,38 @@ describe("stale event rejection", () => {
   });
 });
 
+describe("wide scans", () => {
+  it("keeps the table bounded and correct through thousands of events", () => {
+    // A /20-scale sweep: 4,000 discovery events plus an enrichment event per
+    // host, applied through the same path the live queue flushes into. The
+    // table must end at one row per device, fully merged, in address order.
+    let list: DeviceRow[] = [];
+    const ips: string[] = [];
+    for (let block = 0; block < 16; block++) {
+      for (let n = 1; n <= 250; n++) ips.push(`10.0.${block}.${n}`);
+    }
+    for (const ip of ips) list = upsertHost(list, host(ip, { open_ports: [80] }), true);
+    for (const ip of ips) {
+      list = upsertHost(list, host(ip, { mac: "AA:BB:CC:00:00:01", hostname: "h" }), false);
+    }
+
+    expect(list).toHaveLength(ips.length);
+    expect(list.every((r) => !r.pending && r.host.hostname === "h")).toBe(true);
+    expect(list.every((r) => r.host.open_ports.length === 1)).toBe(true);
+    expect(list[0].host.ip).toBe("10.0.0.1");
+    expect(list[list.length - 1].host.ip).toBe("10.0.15.250");
+  });
+
+  it("collapses repeated updates for one address into a single row", () => {
+    let list: DeviceRow[] = [];
+    for (let round = 0; round < 500; round++) {
+      list = upsertHost(list, host("10.0.0.5", { icmp_ms: round }), round % 2 === 0);
+    }
+    expect(list).toHaveLength(1);
+    expect(list[0].host.icmp_ms).toBe(499);
+  });
+});
+
 describe("comparison folding", () => {
   const comparison: ScanComparison = {
     scan_id: 2,
@@ -198,6 +230,9 @@ describe("rows from a saved scan", () => {
       changed_count: 0,
       status: "completed",
       baseline_scan_id: null,
+      network_scope_id: 1,
+      scope_name: "Office network",
+      coverage_key: "v1|arp:auto|ports:22,80,443",
       hosts: [host("10.0.0.30"), host("10.0.0.4")],
       devices: [
         { ip: "10.0.0.30", device_id: 2, custom_name: null, status: "unclassified", first_seen: null },
