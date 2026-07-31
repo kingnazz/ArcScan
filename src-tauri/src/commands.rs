@@ -7,7 +7,7 @@ use tauri::State;
 
 use serde::Serialize;
 
-use crate::db::{Db, DeviceDetail, SavedScan, ScanDetail, ScanSummary};
+use crate::db::{Db, DeviceDetail, NetworkScope, SavedScan, ScanDetail, ScanSummary};
 use crate::inventory::{Device, DeviceStatus, ScanComparison};
 use crate::netinfo::{self, LocalNetwork};
 use crate::ports;
@@ -184,6 +184,18 @@ pub fn prune_history(db: State<'_, Db>, keep: i64) -> Result<usize, String> {
 #[tauri::command]
 pub fn list_devices(db: State<'_, Db>) -> Result<Vec<Device>, String> {
     db.list_devices()
+}
+
+/// Every known network scope, for display and naming.
+#[tauri::command]
+pub fn list_network_scopes(db: State<'_, Db>) -> Result<Vec<NetworkScope>, String> {
+    db.list_network_scopes()
+}
+
+/// Give a network scope an operator-chosen name, e.g. `Office LAN`.
+#[tauri::command]
+pub fn rename_network_scope(db: State<'_, Db>, id: i64, name: String) -> Result<(), String> {
+    db.rename_network_scope(id, name)
 }
 
 #[tauri::command]

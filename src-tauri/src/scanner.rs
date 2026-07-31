@@ -439,6 +439,39 @@ pub struct ScanResult {
     /// True when the operator stopped the scan before it finished.
     #[serde(default)]
     pub cancelled: bool,
+    /// The sanitized port set the scan actually probed, recorded so the saved
+    /// scan carries its coverage rather than inferring it from the profile name.
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    /// The ARP-assist strategy the scan ran with, part of its coverage.
+    #[serde(default)]
+    pub arp_assist: Option<bool>,
+    /// Performance tuning, recorded for transparency only.
+    #[serde(default)]
+    pub execution: Option<crate::signature::ExecutionSettings>,
+    /// Evidence about which physical network was scanned, used to resolve the
+    /// scan's network scope when it is saved.
+    #[serde(default)]
+    pub scope_hint: Option<ScopeHint>,
+}
+
+/// What the scanner learned about the network a scan ran against, for scope
+/// resolution. All fields are best-effort.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScopeHint {
+    /// Canonical CIDR of the local subnet containing the target, when the scan
+    /// ran against one of this machine's own networks.
+    #[serde(default)]
+    pub local_network: Option<String>,
+    #[serde(default)]
+    pub gateway_ip: Option<String>,
+    /// The default gateway's MAC address, when it was resolvable and belongs to
+    /// the scanned local subnet. The strongest available signal for telling two
+    /// identical private subnets apart.
+    #[serde(default)]
+    pub gateway_mac: Option<String>,
+    #[serde(default)]
+    pub interface: Option<String>,
 }
 
 /// Build a `tokio::process::Command` that never pops a console window on
@@ -584,6 +617,20 @@ pub async fn run(
         })
         .collect();
     let overlaps_local_subnet = hosts.iter().any(|ip| ip_in_ranges(*ip, &local_ranges));
+    // Which of our own networks contains the target, for scope resolution.
+    let containing_local = locals.iter().find_map(|n| {
+        let ip: Ipv4Addr = n.ip.parse().ok()?;
+        let mask = if n.prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - n.prefix)
+        };
+        let range = (u32::from(ip) & mask, mask);
+        hosts
+            .iter()
+            .any(|h| ip_in_ranges(*h, &[range]))
+            .then(|| (n.clone(), range))
+    });
 
     let tcp_sem = Arc::new(Semaphore::new(limits.tcp_concurrency));
     let ping_sem = Arc::new(Semaphore::new(limits.ping_concurrency));
@@ -822,6 +869,25 @@ pub async fn run(
         hosts_out.push(host);
     }
 
+    // Evidence about which physical network this scan ran against. The gateway
+    // MAC comes from the ARP cache already read above; only a gateway inside
+    // the scanned local subnet identifies that subnet's network.
+    let scope_hint = match &containing_local {
+        Some((net, range)) => {
+            let gateway_ip = netinfo::default_gateway_ip()
+                .await
+                .filter(|gw| ip_in_ranges(*gw, &[*range]));
+            let gateway_mac = gateway_ip.and_then(|gw| arp.get(&gw).cloned());
+            Some(ScopeHint {
+                local_network: Some(net.cidr.clone()),
+                gateway_ip: gateway_ip.map(|ip| ip.to_string()),
+                gateway_mac,
+                interface: Some(net.interface.clone()),
+            })
+        }
+        None => None,
+    };
+
     // The final cancellation state is decided here, at the very end, so a Stop
     // pressed during any later phase is honoured rather than a stale value
     // captured after probing.
@@ -845,6 +911,15 @@ pub async fn run(
         probed,
         hosts: hosts_out,
         cancelled: was_cancelled,
+        ports: ports.as_ref().clone(),
+        arp_assist: opts.arp_assist,
+        execution: Some(crate::signature::ExecutionSettings {
+            timeout_ms: per_probe.as_millis() as u64,
+            host_concurrency: limits.host_concurrency,
+            tcp_concurrency: limits.tcp_concurrency,
+            ping_concurrency: limits.ping_concurrency,
+        }),
+        scope_hint,
     })
 }
 
