@@ -12,6 +12,7 @@ import type {
   HostEvent,
   HostRemovedEvent,
   LocalNetwork,
+  NetworkScope,
   SavedScan,
   ScanComparison,
   ScanDetail,
@@ -145,6 +146,16 @@ export const api = {
     return mock.listDevices();
   },
 
+  async listNetworkScopes(): Promise<NetworkScope[]> {
+    if (isTauri()) return invoke<NetworkScope[]>("list_network_scopes");
+    return mock.listNetworkScopes();
+  },
+
+  async renameNetworkScope(id: number, name: string): Promise<void> {
+    if (isTauri()) return invoke<void>("rename_network_scope", { id, name });
+    mock.renameNetworkScope(id, name);
+  },
+
   async deviceDetail(id: number): Promise<DeviceDetail> {
     if (isTauri()) return invoke<DeviceDetail>("device_detail", { id });
     return mock.deviceDetail(id);
@@ -178,6 +189,16 @@ export const api = {
   async openReleases(): Promise<void> {
     if (isTauri()) return invoke<void>("open_releases");
     window.open("https://github.com/kingnazz/ArcScan/releases", "_blank", "noopener");
+  },
+
+  /**
+   * Open the privacy notes in the system browser. Routed through a Rust
+   * command with a fixed URL: the strict CSP means the webview itself cannot
+   * navigate to external origins.
+   */
+  async openPrivacy(): Promise<void> {
+    if (isTauri()) return invoke<void>("open_privacy");
+    window.open("https://kingnazz.github.io/ArcScan/privacy.html", "_blank", "noopener");
   },
 
   /**

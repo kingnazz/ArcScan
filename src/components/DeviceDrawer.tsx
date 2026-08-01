@@ -5,7 +5,7 @@
 // only the ones the open services support are enabled, and the one the operator
 // most likely wants is emphasised.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Copy,
   Eye,
@@ -27,6 +27,7 @@ import {
   serviceWithPort,
 } from "../lib/format";
 import { deviceActions, primaryAction, type ActionId } from "../lib/actions";
+import { EMPTY_DRAFT, notesFromDetail, reconcileDraft } from "../lib/drawerDraft";
 import { rowName, type DeviceRow } from "../lib/live";
 import type { DeviceDetail, DeviceStatus, FieldChange } from "../types";
 
@@ -57,6 +58,8 @@ export interface DeviceDrawerProps {
   onRename: (deviceId: number, name: string | null) => void;
   onStatusChange: (deviceId: number, status: DeviceStatus) => void;
   onNotesChange: (deviceId: number, notes: string | null) => void;
+  /** Identity of the scan being shown, scoping drafts for rows not yet saved. */
+  scanKey: number | string | null;
 }
 
 export function DeviceDrawer({
@@ -72,34 +75,28 @@ export function DeviceDrawer({
   onRename,
   onStatusChange,
   onNotesChange,
+  scanKey,
 }: DeviceDrawerProps) {
-  const [nameDraft, setNameDraft] = useState("");
-  const [notesDraft, setNotesDraft] = useState("");
-  const editingIp = useRef<string | null>(null);
-
-  // Reset the drafts when the panel moves to a different device, but not on every
-  // re-render, or typing would be wiped by an incoming scan event.
+  // Drafts are keyed by persistent device id (see lib/drawerDraft): they
+  // survive IP changes, renames and incoming enrichment, reset when the panel
+  // moves to a different device, and are never overwritten while dirty — so a
+  // failed save keeps what the operator typed.
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
   useEffect(() => {
-    if (!row) return;
-    if (editingIp.current === row.host.ip) return;
-    editingIp.current = row.host.ip;
-    setNameDraft(row.custom_name ?? "");
-    setNotesDraft(detail?.device.notes ?? "");
-  }, [row, detail]);
-
-  useEffect(() => {
-    if (detail && editingIp.current === detail.device.last_ip) {
-      setNotesDraft((current) => current || (detail.device.notes ?? ""));
-    }
-  }, [detail]);
+    setDraft((current) => reconcileDraft(current, row, detail, scanKey));
+  }, [row, detail, scanKey]);
 
   const actions = useMemo(() => (row ? deviceActions(row.host) : []), [row]);
   const primary = useMemo(() => (row ? primaryAction(row.host) : null), [row]);
-  const deviceId = row?.device_id ?? detail?.device.id ?? null;
+  const deviceId = row?.device_id ?? null;
 
   if (!open || !row) return null;
 
-  const status = detail?.device.status ?? row.status;
+  // Only trust a detail that belongs to this row's device; it loads
+  // asynchronously and can briefly describe the previous selection.
+  const rowDetail = detail && detail.device.id === row.device_id ? detail : null;
+  const status = rowDetail?.device.status ?? row.status;
+  const storedNotes = notesFromDetail(row, detail);
 
   return (
     <Drawer
@@ -155,13 +152,15 @@ export function DeviceDrawer({
           <input
             id="device-name"
             className="field"
-            value={nameDraft}
+            value={draft.name}
             placeholder={row.host.hostname ?? "Give this device a name"}
             disabled={deviceId == null}
-            onChange={(event) => setNameDraft(event.target.value)}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, name: event.target.value, nameDirty: true }))
+            }
             onBlur={() => {
               if (deviceId == null) return;
-              const next = nameDraft.trim();
+              const next = draft.name.trim();
               if (next !== (row.custom_name ?? "")) onRename(deviceId, next || null);
             }}
             onKeyDown={(event) => {
@@ -241,17 +240,17 @@ export function DeviceDrawer({
                 <span className="font-sans text-text-muted">No reply</span>
               )}
             </DetailRow>
-            {detail ? (
+            {rowDetail ? (
               <>
                 <DetailRow label="First seen">
-                  <span title={detail.device.first_seen}>
-                    {formatDateTime(detail.device.first_seen)}
+                  <span title={rowDetail.device.first_seen}>
+                    {formatDateTime(rowDetail.device.first_seen)}
                   </span>
                 </DetailRow>
                 <DetailRow label="Observations">
-                  {detail.device.observation_count === 1
+                  {rowDetail.device.observation_count === 1
                     ? "1 scan"
-                    : `${detail.device.observation_count} scans`}
+                    : `${rowDetail.device.observation_count} scans`}
                 </DetailRow>
               </>
             ) : null}
@@ -281,13 +280,13 @@ export function DeviceDrawer({
           )}
         </section>
 
-        {detail && detail.previous_ips.length > 1 ? (
+        {rowDetail && rowDetail.previous_ips.length > 1 ? (
           <>
             <div className="divider" />
             <section>
               <SectionHeading>Previous addresses</SectionHeading>
               <ul className="mono space-y-0.5 text-[13px] text-text-secondary">
-                {detail.previous_ips.slice(1).map((ip) => (
+                {rowDetail.previous_ips.slice(1).map((ip) => (
                   <li key={ip}>{ip}</li>
                 ))}
               </ul>
@@ -295,12 +294,12 @@ export function DeviceDrawer({
           </>
         ) : null}
 
-        {detail && detail.recent_changes.length > 0 ? (
+        {rowDetail && rowDetail.recent_changes.length > 0 ? (
           <>
             <div className="divider" />
             <section>
               <SectionHeading>Recent changes</SectionHeading>
-              <ChangeList changes={detail.recent_changes} />
+              <ChangeList changes={rowDetail.recent_changes} />
             </section>
           </>
         ) : null}
@@ -311,25 +310,27 @@ export function DeviceDrawer({
           <SectionHeading>Notes</SectionHeading>
           <textarea
             className="field field-textarea min-h-[4.5rem]"
-            value={notesDraft}
+            value={draft.notes}
             placeholder="Anything worth remembering about this device"
             disabled={deviceId == null}
-            onChange={(event) => setNotesDraft(event.target.value)}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, notes: event.target.value, notesDirty: true }))
+            }
             onBlur={() => {
               if (deviceId == null) return;
-              const next = notesDraft.trim();
-              if (next !== (detail?.device.notes ?? "")) onNotesChange(deviceId, next || null);
+              const next = draft.notes.trim();
+              if (next !== (storedNotes ?? "")) onNotesChange(deviceId, next || null);
             }}
           />
         </section>
 
-        {detail && detail.observations.length > 0 ? (
+        {rowDetail && rowDetail.observations.length > 0 ? (
           <>
             <div className="divider" />
             <section>
               <SectionHeading>Scan history</SectionHeading>
               <ul className="space-y-1.5">
-                {detail.observations.slice(0, 12).map((observation) => (
+                {rowDetail.observations.slice(0, 12).map((observation) => (
                   <li
                     key={`${observation.scan_id}-${observation.ip}`}
                     className="flex items-baseline justify-between gap-3 text-[13px]"
@@ -341,9 +342,9 @@ export function DeviceDrawer({
                   </li>
                 ))}
               </ul>
-              {detail.observations.length > 12 ? (
+              {rowDetail.observations.length > 12 ? (
                 <p className="mt-1.5 text-xs text-text-muted">
-                  Showing the 12 most recent of {detail.observations.length} sightings.
+                  Showing the 12 most recent of {rowDetail.observations.length} sightings.
                 </p>
               ) : null}
             </section>

@@ -7,12 +7,21 @@
 //!
 //! 1. **MAC address** — the only stable hardware identifier a read-only scan can
 //!    see. Normalized so `a0:ce:c8:d:cf:d1`, `A0-CE-C8-0D-CF-D1` and
-//!    `a0cec80dcfd1` all resolve to the same device.
+//!    `a0cec80dcfd1` all resolve to the same device. Highest confidence.
 //! 2. **Hostname plus vendor** — for routed targets, where ARP gives us nothing.
-//!    Both together, because `printer` on its own collides across sites.
+//!    Both together, because `printer` on its own collides across sites. Medium
+//!    confidence. When the vendor is absent the hostname stands alone, which is
+//!    lower confidence still, so *generic* hostnames (`printer`, `router`,
+//!    `localhost`, `unknown`, …) are refused as identities: an ambiguous name
+//!    falls through to the IP rule and creates a separate device rather than
+//!    silently merging two unrelated ones.
 //! 3. **IP address** — last resort, and the only case where a DHCP change still
 //!    reads as a new device. Nothing better exists for a host that answers with
 //!    no MAC, no name and no vendor.
+//!
+//! Every identity is additionally scoped to a network scope (see
+//! [`crate::db`]): matching never crosses scope boundaries, so the same key on
+//! two different client networks is two different devices.
 //!
 //! Everything in this module is pure so the matching and diff rules can be
 //! tested without a database or a network.
@@ -69,7 +78,33 @@ pub struct Identity {
     pub mac: Option<String>,
 }
 
-/// Resolve the identity of one observation.
+/// Hostnames too generic to identify a device on their own. Any of these
+/// without a vendor to disambiguate falls through to IP identity, because two
+/// unrelated devices called `printer` are far more likely than one printer.
+const GENERIC_HOSTNAMES: &[&str] = &[
+    "localhost",
+    "localhost.localdomain",
+    "printer",
+    "router",
+    "switch",
+    "gateway",
+    "server",
+    "nas",
+    "camera",
+    "device",
+    "host",
+    "default",
+    "unknown",
+];
+
+/// True when a hostname is too generic to stand alone as a device identity.
+pub fn is_generic_hostname(hostname: &str) -> bool {
+    let lower = hostname.trim().to_ascii_lowercase();
+    GENERIC_HOSTNAMES.contains(&lower.as_str())
+}
+
+/// Resolve the identity of one observation, applying the confidence rules
+/// documented at the top of this module.
 pub fn identify(host: &HostResult) -> Identity {
     if let Some(mac) = host.mac.as_deref().and_then(normalize_mac) {
         return Identity {
@@ -83,17 +118,26 @@ pub fn identify(host: &HostResult) -> Identity {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let vendor = host
+        .vendor
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(hostname) = hostname {
-        let vendor = host.vendor.as_deref().map(str::trim).unwrap_or("");
-        return Identity {
-            key: format!(
-                "hv:{}|{}",
-                hostname.to_ascii_lowercase(),
-                vendor.to_ascii_lowercase()
-            ),
-            source: IdentitySource::HostnameVendor,
-            mac: None,
-        };
+        // Without a vendor, a generic hostname is refused: it is not evidence
+        // of identity, and merging on it would mix unrelated devices.
+        let usable = vendor.is_some() || !is_generic_hostname(hostname);
+        if usable {
+            return Identity {
+                key: format!(
+                    "hv:{}|{}",
+                    hostname.to_ascii_lowercase(),
+                    vendor.unwrap_or("").to_ascii_lowercase()
+                ),
+                source: IdentitySource::HostnameVendor,
+                mac: None,
+            };
+        }
     }
     Identity {
         key: format!("ip:{}", host.ip.trim()),
@@ -141,6 +185,9 @@ impl DeviceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
     pub id: i64,
+    /// The network scope this device belongs to; identity never crosses it.
+    #[serde(default)]
+    pub network_scope_id: Option<i64>,
     pub identity_key: String,
     pub identity_source: IdentitySource,
     pub mac: Option<String>,

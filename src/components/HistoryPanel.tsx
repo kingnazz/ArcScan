@@ -4,11 +4,13 @@
 // when, and what was different. The change counts come from the scan row itself,
 // so listing a thousand scans is still one query.
 
+import { useRef, useState } from "react";
 import { Download, FolderOpen, GitCompare, Trash2 } from "lucide-react";
 import { Badge, EmptyState, IconButton } from "../ui/primitives";
+import { Popover } from "../ui/Popover";
 import { formatCount, formatDateTime, formatDuration } from "../lib/format";
 import { profileName } from "../lib/profiles";
-import type { ScanSummary } from "../types";
+import type { ExportFormat, ScanSummary } from "../types";
 
 export interface HistoryPanelProps {
   scans: ScanSummary[];
@@ -16,7 +18,18 @@ export interface HistoryPanelProps {
   onOpen: (id: number) => void;
   onCompare: (id: number) => void;
   onDelete: (id: number) => void;
-  onExport: (id: number) => void;
+  onExport: (id: number, format: ExportFormat) => void;
+}
+
+/** Why a scan cannot be compared, for the disabled compare button's tooltip. */
+export function compareUnavailableReason(scan: ScanSummary): string | null {
+  if (scan.status === "cancelled") {
+    return "This scan was stopped early, so it cannot be compared reliably";
+  }
+  if (scan.baseline_scan_id == null) {
+    return "No earlier completed scan checked the same target and ports";
+  }
+  return null;
 }
 
 export function HistoryPanel({
@@ -31,7 +44,7 @@ export function HistoryPanel({
     return (
       <EmptyState
         title="No saved scans yet"
-        description="Every completed scan is saved here automatically, along with what changed since the previous scan of the same target."
+        description="Every scan is saved here automatically, along with what changed since the previous completed scan of the same target."
       />
     );
   }
@@ -42,6 +55,7 @@ export function HistoryPanel({
         {scans.map((scan) => {
           const active = scan.id === activeId;
           const changes = scan.new_count + scan.missing_count + scan.changed_count;
+          const noCompare = compareUnavailableReason(scan);
           return (
             <li
               key={scan.id}
@@ -58,9 +72,15 @@ export function HistoryPanel({
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="mono text-[13px] font-medium text-text">{scan.target}</span>
                   <Badge>{profileName(scan.profile)}</Badge>
+                  {scan.scope_name ? (
+                    <Badge title={`Network: ${scan.scope_name}`}>{scan.scope_name}</Badge>
+                  ) : null}
                   {scan.status === "cancelled" ? (
-                    <Badge tone="warning" title="Stopped before it finished">
-                      Stopped
+                    <Badge
+                      tone="warning"
+                      title="Stopped before every address was checked, so changes are unavailable"
+                    >
+                      Partial scan
                     </Badge>
                   ) : null}
                   {scan.new_count > 0 ? <Badge tone="new">{scan.new_count} new</Badge> : null}
@@ -93,20 +113,14 @@ export function HistoryPanel({
                   <FolderOpen className="h-3.5 w-3.5" />
                 </IconButton>
                 <IconButton
-                  label={
-                    scan.baseline_scan_id == null
-                      ? "No earlier compatible scan to compare with"
-                      : "Compare with the previous scan"
-                  }
+                  label={noCompare ?? "Compare with the previous scan"}
                   size="sm"
-                  disabled={scan.baseline_scan_id == null}
+                  disabled={noCompare != null}
                   onClick={() => onCompare(scan.id)}
                 >
                   <GitCompare className="h-3.5 w-3.5" />
                 </IconButton>
-                <IconButton label="Export this scan" size="sm" onClick={() => onExport(scan.id)}>
-                  <Download className="h-3.5 w-3.5" />
-                </IconButton>
+                <ExportMenu scanId={scan.id} onExport={onExport} />
                 <IconButton
                   label="Delete this scan"
                   size="sm"
@@ -120,6 +134,62 @@ export function HistoryPanel({
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+const EXPORT_FORMATS: ExportFormat[] = ["csv", "json", "xml"];
+
+/** A per-row export button with a small format picker. The export always uses
+ * the scan's own saved rows, never the currently displayed table. */
+function ExportMenu({
+  scanId,
+  onExport,
+}: {
+  scanId: number;
+  onExport: (id: number, format: ExportFormat) => void;
+}) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <IconButton
+        ref={anchor}
+        label="Export this scan"
+        size="sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Download className="h-3.5 w-3.5" />
+      </IconButton>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={anchor}
+        align="end"
+        label="Export format"
+        className="w-28 p-1"
+      >
+        <ul role="menu" aria-label="Export format">
+          {EXPORT_FORMATS.map((format) => (
+            <li key={format}>
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded-md px-2.5 py-1.5 text-left text-[13px] text-text transition-colors duration-fast hover:bg-surface-hover"
+                onClick={() => {
+                  setOpen(false);
+                  onExport(scanId, format);
+                }}
+              >
+                {format.toUpperCase()}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Popover>
     </div>
   );
 }

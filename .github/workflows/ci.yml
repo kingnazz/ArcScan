@@ -36,6 +36,36 @@ jobs:
       - name: Build
         run: npm run build
 
+  browser:
+    name: Browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx --yes playwright install --with-deps chromium
+      - name: Install the browser-test helpers
+        run: npm i --no-save playwright @axe-core/playwright
+
+      - name: Build
+        run: npm run build
+      # The demo backend runs entirely in the browser, so the preview server is
+      # all the suite needs: no Rust build and no real network access.
+      - name: Serve the built app
+        run: npm run preview &
+      - name: Wait for the preview server
+        run: npx --yes wait-on http://localhost:4173/ --timeout 60000
+      - name: Verify the interface
+        run: node scripts/verify-ui.mjs
+      # A policy that is too strict breaks the packaged app while leaving the
+      # preview (which serves no policy) working, so it is checked explicitly.
+      - name: Verify the Content Security Policy
+        run: node scripts/verify-csp.mjs
+
   backend:
     name: Rust
     runs-on: ubuntu-latest

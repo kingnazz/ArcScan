@@ -17,6 +17,7 @@ Everything ArcScan does, in one document. For a shorter overview see the
 - [The device inventory](#the-device-inventory)
 - [Names, status and notes](#names-status-and-notes)
 - [Change detection](#change-detection)
+- [Networks](#networks)
 - [History and comparison](#history-and-comparison)
 - [Device actions](#device-actions)
 - [Exporting](#exporting)
@@ -148,9 +149,11 @@ current phase and elapsed time. The phases are:
 Sorting and filtering keep working during a scan, and your sort is preserved as
 rows arrive.
 
-**Stop** ends the scan early and keeps everything found so far, which is saved to
-history like any other scan and marked as stopped. Escape does the same when
-nothing else is open.
+**Stop** ends the scan early, in whatever phase it has reached, and keeps
+everything found so far — including manufacturer and hostname details that had
+already resolved. The results are saved to history like any other scan and marked
+as a partial scan; see [Scans you stopped early](#scans-you-stopped-early).
+Escape does the same when nothing else is open.
 
 ## Reading the results table
 
@@ -207,8 +210,8 @@ Renaming and reclassifying offer **Undo** for a few seconds.
 
 ## Change detection
 
-After each scan, ArcScan compares it with the most recent earlier scan of the
-same target and profile and reports:
+After each scan, ArcScan compares it with the most recent earlier scan that
+covered the same ground and reports:
 
 - New devices, and known devices that returned after being absent
 - Devices that have gone missing
@@ -218,6 +221,54 @@ same target and profile and reports:
 
 Response times and timestamps are never treated as changes, since they differ on
 every scan by nature.
+
+### When two scans are compared
+
+A comparison is only meaningful between scans that looked for the same things in
+the same place, so ArcScan requires all four of these to match:
+
+- **The same network.** See [Networks](#networks) below.
+- **The same target**, normalised — `192.168.1.0/24` and `192.168.1.37/24` are
+  the same subnet.
+- **The same ports and discovery mode.** A scan that checked port 22 cannot tell
+  you that ports 80 and 443 closed; it never looked at them. Two Custom scans
+  with different port lists are therefore not compared, and neither are a local
+  ARP-assisted scan and a Remote subnet scan of the same addresses.
+- **A completed baseline.** A scan you stopped early is never used as the
+  comparison point for another scan.
+
+When ArcScan does not compare two scans it says why rather than implying nothing
+changed.
+
+### Scans you stopped early
+
+Stopping a scan saves everything it found, and the scan appears in History marked
+**Partial scan** with how many addresses it managed to check. You can open it,
+look through it and export it exactly like any other scan.
+
+What a partial scan will never do is report changes. It did not reach every
+address, so a device it did not see is not necessarily gone, and a port it did
+not probe is not necessarily closed. The Changes tab explains this instead of
+showing a comparison, the compare action in History is disabled, and the next
+completed scan compares against the last *completed* scan, skipping the partial
+one entirely.
+
+## Networks
+
+ArcScan keeps a separate inventory for each network you scan. This matters
+because private address ranges repeat: a great many offices use
+`192.168.1.0/24`, and without separating them, one client's printer at
+`192.168.1.20` and another's could be treated as the same device — mixing names,
+notes, status and history between unrelated clients.
+
+Networks are identified by the address range together with the default gateway's
+hardware address where ArcScan can see it, which is what distinguishes two
+different networks that use the same addresses. Device matching, names, notes and
+status never cross between them.
+
+Open **Settings → Networks** to give each one a name — `Head office`,
+`Client VPN`, `Warehouse` — and History will show which network each scan
+belongs to.
 
 The **Changes** tab shows the full comparison with added, missing and changed
 devices kept separate and field-level differences for each change. Every entry
@@ -230,10 +281,14 @@ block stay distinct even when they cover the same addresses.
 
 ## History and comparison
 
-The **History** tab lists every saved scan with its target, profile, date,
-duration, address count, device count and change counts. From each entry you can
-open the scan, compare it with the preceding compatible one, export it, or delete
-it. Deleting asks first.
+The **History** tab lists every saved scan with its target, profile, network,
+date, duration, address count, device count and change counts. From each entry
+you can open the scan, compare it with the preceding compatible one, export it,
+or delete it. Deleting asks first.
+
+Comparing is disabled when there is nothing safe to compare against — for a
+partial scan, or when no earlier completed scan checked the same target with the
+same ports — and the button says which it is.
 
 History retention defaults to the newest 100 scans and is set in Settings. Pruning
 removes scans only: device names, notes and first-seen dates are always kept.
@@ -263,6 +318,11 @@ or operating system settings, and it does not cross a router.
 **Export** in the results toolbar, or Ctrl/Cmd + E, writes CSV, JSON or XML
 through the native save dialog. The export contains the devices currently shown,
 so a filter narrows it.
+
+Exporting from **History** is different, and deliberately so: it writes exactly
+the scan whose row you used, in the format you pick from that row, regardless of
+which scan is currently displayed or how the table is filtered. The filename
+carries that scan's own target. Your current view is left as it was.
 
 Columns: name, IP, hostname, MAC, vendor, OS, TTL, open ports, response,
 ICMP, TCP, status and last seen. The v1.6 columns are all still there in the same
@@ -322,16 +382,25 @@ separately by the application window and are not in this file.
 
 ## Upgrading
 
-Install v1.7 over v1.6.4 without deleting anything. On first launch ArcScan
-migrates the database in place:
+Install v1.7.1 over v1.6.x or v1.7.0 without deleting anything. On first launch
+ArcScan migrates the database in place:
 
 - Every scan and every observation it already held is kept.
 - The device inventory is built from those existing observations, oldest scan
   first, so first-seen dates are truthful from day one.
 - Scan targets are normalised so older scans become comparable.
 - Device labels from v1.6's browser storage are imported.
+- Existing devices and scans are placed into networks, keeping their ids, names,
+  notes, status and dates. Networks are refined as you scan: ArcScan learns each
+  one's gateway on the next scan of it, and you can name them in Settings.
+- Every scan is given a coverage signature. For the fixed profiles this is known
+  exactly. For Custom and Full TCP scans recorded by earlier versions it is not —
+  those versions never saved which ports were checked — so those scans are kept
+  and readable but are not compared. A missing comparison is better than a wrong
+  one.
 
-Migrations are idempotent: opening the same database repeatedly changes nothing.
+Migrations are idempotent and transactional: opening the same database repeatedly
+changes nothing, and an interrupted upgrade leaves it exactly as it was.
 
 ArcScan checks for updates on launch and offers a one-click install. The update
 package is cryptographically signed and the signature is verified before
