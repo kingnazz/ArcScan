@@ -247,10 +247,47 @@ pub async fn open_releases(app: tauri::AppHandle) -> Result<(), String> {
     open_external(&app, "https://github.com/kingnazz/ArcScan/releases")
 }
 
+/// Open the privacy notes in the system browser. A fixed trusted destination —
+/// the frontend cannot pass a URL, so this surface cannot be redirected.
+#[tauri::command]
+pub async fn open_privacy(app: tauri::AppHandle) -> Result<(), String> {
+    open_external(&app, "https://kingnazz.github.io/ArcScan/privacy.html")
+}
+
+/// Extensions an export may be written under, matching the formats the UI
+/// offers. Everything else is refused, so this command cannot be used to drop
+/// arbitrary file types even from a compromised webview.
+const EXPORT_EXTENSIONS: [&str; 3] = ["csv", "json", "xml"];
+
+/// Largest export accepted, as a plain sanity bound. A full /16 of devices is
+/// far below this; anything larger is not an export ArcScan produced.
+const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+
+fn validate_export_path(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return Err("Exports can only be written to an absolute path from the save dialog.".into());
+    }
+    let ok = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| EXPORT_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if !ok {
+        return Err("Exports can only be saved as .csv, .json or .xml files.".into());
+    }
+    Ok(())
+}
+
 /// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to
-/// an operator-chosen path from the native save dialog.
+/// an operator-chosen path from the native save dialog. The path is validated
+/// to look like an export destination before anything touches the disk.
 #[tauri::command]
 pub fn save_text(path: String, contents: String) -> Result<(), String> {
+    validate_export_path(&path)?;
+    if contents.len() > MAX_EXPORT_BYTES {
+        return Err("This export is unreasonably large and was not written.".into());
+    }
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write {path}: {e}"))
 }
 
@@ -308,18 +345,23 @@ pub async fn open_smb(app: tauri::AppHandle, ip: String) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub async fn open_web(app: tauri::AppHandle, ip: String, port: Option<u16>) -> Result<(), String> {
-    let ip = validated_ipv4(&ip)?;
+/// Build the URL the Web action opens: a validated bare IPv4 plus an optional
+/// port, so nothing the frontend sends can smuggle a different host or scheme.
+fn web_url(ip: Ipv4Addr, port: Option<u16>) -> String {
     let scheme = match port {
         Some(443) | Some(8443) => "https",
         _ => "http",
     };
-    let url = match port {
+    match port {
         Some(p) if p != 80 && p != 443 => format!("{scheme}://{ip}:{p}"),
         _ => format!("{scheme}://{ip}"),
-    };
-    open_external(&app, &url)
+    }
+}
+
+#[tauri::command]
+pub async fn open_web(app: tauri::AppHandle, ip: String, port: Option<u16>) -> Result<(), String> {
+    let ip = validated_ipv4(&ip)?;
+    open_external(&app, &web_url(ip, port))
 }
 
 #[tauri::command]
@@ -407,4 +449,88 @@ fn open_external(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| format!("Failed to open {url}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_everything_that_is_not_a_bare_ipv4() {
+        // Anything that could smuggle arguments, hosts or schemes into a
+        // launcher must be refused before it reaches one.
+        for bad in [
+            "",
+            "example.com",
+            "10.0.0.1; rm -rf /",
+            "10.0.0.1 --flag",
+            "10.0.0.1/24",
+            "10.0.0.1:8080",
+            "::1",
+            "fe80::1",
+            "10.0.0",
+            "10.0.0.256",
+            "http://10.0.0.1",
+            "10.0.0.1\nevil",
+            "$(reboot)",
+            "10.0.0.1&calc",
+            "\"10.0.0.1\"",
+        ] {
+            assert!(validated_ipv4(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_ordinary_addresses_with_surrounding_whitespace() {
+        assert_eq!(
+            validated_ipv4(" 192.168.1.20 ").unwrap(),
+            "192.168.1.20".parse::<Ipv4Addr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn web_urls_never_carry_anything_but_the_validated_address() {
+        let ip: Ipv4Addr = "10.0.0.9".parse().unwrap();
+        assert_eq!(web_url(ip, None), "http://10.0.0.9");
+        assert_eq!(web_url(ip, Some(80)), "http://10.0.0.9");
+        assert_eq!(web_url(ip, Some(443)), "https://10.0.0.9");
+        assert_eq!(web_url(ip, Some(8443)), "https://10.0.0.9:8443");
+        assert_eq!(web_url(ip, Some(3000)), "http://10.0.0.9:3000");
+    }
+
+    #[test]
+    fn rejects_malformed_macs_for_wake_on_lan() {
+        for bad in [
+            "",
+            "not-a-mac",
+            "AA:BB:CC:DD:EE",
+            "AA:BB:CC:DD:EE:FF:00",
+            "zz:zz:zz:zz:zz:zz",
+        ] {
+            assert!(parse_mac(bad).is_err(), "accepted {bad:?}");
+        }
+        assert_eq!(
+            parse_mac("aa-bb-cc-00-11-22").unwrap(),
+            [0xAA, 0xBB, 0xCC, 0x00, 0x11, 0x22]
+        );
+    }
+
+    #[test]
+    fn export_paths_are_restricted_to_export_files() {
+        let root = if cfg!(windows) {
+            "C:\\exports\\"
+        } else {
+            "/exports/"
+        };
+        assert!(validate_export_path(&format!("{root}scan.csv")).is_ok());
+        assert!(validate_export_path(&format!("{root}scan.JSON")).is_ok());
+        assert!(validate_export_path(&format!("{root}scan.xml")).is_ok());
+
+        // Relative paths and non-export file types are refused.
+        assert!(validate_export_path("scan.csv").is_err());
+        assert!(validate_export_path(&format!("{root}scan")).is_err());
+        assert!(validate_export_path(&format!("{root}scan.exe")).is_err());
+        assert!(validate_export_path(&format!("{root}scan.sh")).is_err());
+        assert!(validate_export_path(&format!("{root}.bashrc")).is_err());
+    }
 }

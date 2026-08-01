@@ -41,7 +41,6 @@ import type { ActionId } from "./lib/actions";
 import { changeCount, type DeviceDetail, type DeviceStatus, type ExportFormat, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
 import { APP_VERSION } from "./version";
 
-const PRIVACY_URL = "https://kingnazz.github.io/ArcScan/privacy.html";
 /** Below this the drawer becomes an overlay rather than a second pane. */
 const OVERLAY_BREAKPOINT = 1100;
 
@@ -714,7 +713,7 @@ export default function App() {
             void api.copyText(ip);
             toast.success("Public IP copied.");
           }}
-          onOpenPrivacy={() => window.open(PRIVACY_URL, "_blank", "noopener")}
+          onOpenPrivacy={() => void api.openPrivacy()}
           scopes={scopes}
           onRenameScope={(id, name) => void renameScope(id, name)}
         />

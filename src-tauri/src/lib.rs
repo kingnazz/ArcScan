@@ -60,6 +60,7 @@ pub fn run() {
             commands::last_scan_ips,
             commands::detect_networks,
             commands::open_releases,
+            commands::open_privacy,
             commands::save_text,
             commands::wake_on_lan,
             commands::open_smb,

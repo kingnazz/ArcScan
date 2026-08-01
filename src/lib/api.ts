@@ -192,6 +192,16 @@ export const api = {
   },
 
   /**
+   * Open the privacy notes in the system browser. Routed through a Rust
+   * command with a fixed URL: the strict CSP means the webview itself cannot
+   * navigate to external origins.
+   */
+  async openPrivacy(): Promise<void> {
+    if (isTauri()) return invoke<void>("open_privacy");
+    window.open("https://kingnazz.github.io/ArcScan/privacy.html", "_blank", "noopener");
+  },
+
+  /**
    * Look up this machine's public address.
    *
    * Only ever called from the explicit "Check public IP" action. It contacts a
