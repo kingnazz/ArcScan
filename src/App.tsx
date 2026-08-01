@@ -596,7 +596,7 @@ export default function App() {
             ) : (
               <EmptyState
                 title="No comparison yet"
-                description="Run a scan, and ArcScan will compare it with the most recent earlier scan of the same target and profile."
+                description="Run a scan, and ArcScan will compare it with the most recent earlier completed scan that covered the same target with the same ports."
                 action={<Button onClick={() => setView("results")}>Back to devices</Button>}
               />
             )
