@@ -2780,6 +2780,154 @@ mod tests {
     }
 
     #[test]
+    fn upgrades_a_large_history_intact() {
+        // A realistic long-lived inventory: 200 scans across two targets with
+        // 25 devices each. Guards the v3 migration against losing rows at scale
+        // and against the per-row work becoming quadratic.
+        let dir = std::env::temp_dir().join(format!("arcscan-mig-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("large.db");
+        let _ = std::fs::remove_file(&path);
+        seed_v170(&path);
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            for scan in 4..=203i64 {
+                let target = if scan % 2 == 0 {
+                    ("10.0.0.0/24", "cidr:10.0.0.0/24")
+                } else {
+                    ("192.168.4.0/24", "cidr:192.168.4.0/24")
+                };
+                tx.execute(
+                    "INSERT INTO scans (id, target, created_at, duration_ms, scanned, target_key,
+                                        profile, probed, status)
+                     VALUES (?1, ?2, ?3, 4000, 254, ?4, 'quick-lan', 254, 'completed')",
+                    params![
+                        scan,
+                        target.0,
+                        format!("2026-06-{:02}T09:00:00+00:00", scan % 28 + 1),
+                        target.1
+                    ],
+                )
+                .unwrap();
+                for device in 0..25i64 {
+                    tx.execute(
+                        "INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports,
+                                            response_ms, last_seen)
+                         VALUES (?1, ?2, ?3, ?4, 'Acme', '80', 2, '2026-06-15T09:00:00+00:00')",
+                        params![
+                            scan,
+                            format!("{}.{}", target.0.rsplit_once('.').unwrap().0, device + 10),
+                            format!("host-{device}"),
+                            format!(
+                                "AA:BB:CC:{:02X}:{:02X}:{:02X}",
+                                scan % 2,
+                                device / 256,
+                                device % 256
+                            ),
+                        ],
+                    )
+                    .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+
+        let began = std::time::Instant::now();
+        let db = Db::open(&path).unwrap();
+        let elapsed = began.elapsed();
+
+        let scans = db.list_scans().unwrap();
+        assert_eq!(scans.len(), 203);
+        assert!(scans.iter().all(|s| s.network_scope_id.is_some()));
+        assert!(scans.iter().all(|s| !s.coverage_key.is_empty()));
+        // Two targets, so two scopes; the v1.7.0 seed shares one of them.
+        assert_eq!(db.list_network_scopes().unwrap().len(), 2);
+        // Every observation kept its device link.
+        let orphaned: i64 = {
+            let conn = db.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM hosts WHERE device_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(orphaned, 0);
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "migrating 200 scans took {elapsed:?}"
+        );
+
+        drop(db);
+        // Re-opening a migrated large history must do no work at all.
+        let reopened = std::time::Instant::now();
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.list_scans().unwrap().len(), 203);
+        assert!(
+            reopened.elapsed() < std::time::Duration::from_secs(5),
+            "re-opening re-ran the migration"
+        );
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_device_whose_scans_were_pruned_keeps_its_name_and_notes() {
+        // Retention can remove every scan that observed a device while the
+        // device itself survives. Migration has no scan to infer its network
+        // from, so it must keep it rather than drop it or guess.
+        let dir = std::env::temp_dir().join(format!("arcscan-mig-orphan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orphan.db");
+        let _ = std::fs::remove_file(&path);
+        seed_v170(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO devices (id, identity_key, identity_source, mac, custom_name,
+                                      hostname, vendor, last_ip, first_seen, last_seen,
+                                      status, notes)
+                 VALUES (99, 'mac:AA:BB:CC:00:00:99', 'mac', 'AA:BB:CC:00:00:99',
+                         'Retired Server', 'srv-old', 'Dell', '10.0.0.99',
+                         '2025-01-01T00:00:00+00:00', '2025-06-01T00:00:00+00:00',
+                         'watched', 'Decommissioned, kept for the audit trail')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        let devices = db.list_devices().unwrap();
+        let orphan = devices
+            .iter()
+            .find(|d| d.id == 99)
+            .expect("the observation-less device survived the migration");
+        assert_eq!(orphan.custom_name.as_deref(), Some("Retired Server"));
+        assert_eq!(
+            orphan.notes.as_deref(),
+            Some("Decommissioned, kept for the audit trail")
+        );
+        assert_eq!(orphan.status, DeviceStatus::Watched);
+        assert_eq!(orphan.first_seen, "2025-01-01T00:00:00+00:00");
+        assert_eq!(orphan.observation_count, 0);
+        // It is placed in a clearly-labelled scope rather than guessed into one.
+        assert!(orphan.network_scope_id.is_some());
+        let scope = db
+            .list_network_scopes()
+            .unwrap()
+            .into_iter()
+            .find(|s| Some(s.id) == orphan.network_scope_id)
+            .unwrap();
+        assert_eq!(scope.stable_key, "legacy");
+        assert_eq!(scope.display_name, "Earlier inventory");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn adopts_v16_device_labels_from_local_storage() {
         let db = Db::open_in_memory().unwrap();
         db.save_scan(&result(
