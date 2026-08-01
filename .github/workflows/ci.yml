@@ -61,6 +61,10 @@ jobs:
         run: npx --yes wait-on http://localhost:4173/ --timeout 60000
       - name: Verify the interface
         run: node scripts/verify-ui.mjs
+      # A policy that is too strict breaks the packaged app while leaving the
+      # preview (which serves no policy) working, so it is checked explicitly.
+      - name: Verify the Content Security Policy
+        run: node scripts/verify-csp.mjs
 
   backend:
     name: Rust

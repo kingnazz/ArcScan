@@ -853,8 +853,9 @@ fn resolve_scope(
         .and_then(inventory::normalize_mac);
     let interface = hint.and_then(|h| h.interface.clone());
 
-    // Oldest first, so which scope adopts a newly learned gateway or gets
-    // reused without evidence is deterministic.
+    // Most recently used first, with the id breaking ties, so which scope
+    // adopts a newly learned gateway — or gets reused when there is no gateway
+    // evidence at all — is both deterministic and the one still in active use.
     let existing: Vec<(i64, Option<String>)> = {
         let mut stmt = tx
             .prepare(
