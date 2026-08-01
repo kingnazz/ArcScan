@@ -713,13 +713,16 @@ export const mock = {
   },
 
   listScans(): ScanSummary[] {
-    return scans.map(({ hosts: _hosts, ...summary }) => summary).sort((a, b) => b.id - a.id);
+    return scans
+      .map(({ hosts: _hosts, ...summary }) => withScopeName(summary))
+      .sort((a, b) => b.id - a.id);
   },
 
   getScan(id: number): ScanDetail {
     const scan = scans.find((s) => s.id === id);
     if (!scan) throw new Error(`Scan ${id} is no longer in the history.`);
-    const { hosts, ...summary } = scan;
+    const { hosts, ...rest } = scan;
+    const summary = withScopeName(rest);
     const rows = observations.get(id) ?? [];
     return {
       ...summary,
@@ -869,6 +872,16 @@ function requireDevice(id: number): Device {
   const device = devices.get(id);
   if (!device) throw new Error(`Device ${id} is no longer in the inventory.`);
   return device;
+}
+
+/**
+ * Resolve a scan's scope name at read time, mirroring the backend's join
+ * against `network_scopes`. Reading it live rather than trusting the copy
+ * stored with the scan is what makes a rename show up across existing history.
+ */
+function withScopeName<T extends ScanSummary>(summary: T): T {
+  if (summary.network_scope_id !== DEMO_SCOPE.id) return summary;
+  return { ...summary, scope_name: DEMO_SCOPE.display_name };
 }
 
 /** Address count for a target, used by the mock's scan preview. */
