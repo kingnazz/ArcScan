@@ -71,7 +71,7 @@
         "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, stores the inventory on your own computer, and reports what changed since the previous scan.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
-        "softwareVersion": "1.7.0",
+        "softwareVersion": "1.7.1",
         "license": "https://github.com/kingnazz/ArcScan/blob/main/LICENSE",
         "isAccessibleForFree": true,
         "screenshot": "https://kingnazz.github.io/ArcScan/assets/shots/results-dark.png",
@@ -171,7 +171,7 @@
             "name": "Can ArcScan detect network changes?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. Every scan is compared with the most recent earlier scan of the same target and profile, and ArcScan reports new devices, devices that have gone missing, IP address changes, hostname and manufacturer changes, and ports that opened or closed. Devices are matched by MAC address first, so a DHCP lease change is reported as a changed device rather than as a new one."
+              "text": "Yes. Every scan is compared with the most recent earlier completed scan that covered the same target with the same ports, and ArcScan reports new devices, devices that have gone missing, IP address changes, hostname and manufacturer changes, and ports that opened or closed. Devices are matched by MAC address first, so a DHCP lease change is reported as a changed device rather than as a new one. A scan you stopped early is never compared, since it did not check every address."
             }
           },
           {
@@ -286,7 +286,7 @@
           </div>
 
           <p class="release-line">
-            <span id="version-fallback">v1.7.0</span><span id="release-meta"></span>
+            <span id="version-fallback">v1.7.1</span><span id="release-meta"></span>
           </p>
 
           <ul class="hero-facts">
@@ -559,8 +559,9 @@
             <li>
               <h3>It builds and compares an inventory</h3>
               <p>
-                Devices are folded into a local inventory keyed by MAC address, and the scan is
-                compared with the most recent earlier scan of the same target and profile.
+                Devices are folded into a local inventory keyed by MAC address and scoped to the
+                network they were seen on, and the scan is compared with the most recent earlier
+                completed scan that covered the same target with the same ports.
               </p>
             </li>
           </ol>
@@ -728,7 +729,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.7.0</dd>
+                <dd data-field="version">1.7.1</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -753,7 +754,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.7.0</dd>
+                <dd data-field="version">1.7.1</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -778,7 +779,7 @@
                 <dt>Installer</dt>
                 <dd>Disk image (.dmg)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.7.0</dd>
+                <dd data-field="version">1.7.1</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>

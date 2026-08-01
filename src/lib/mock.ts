@@ -19,6 +19,7 @@ import type {
   FieldChange,
   HostResult,
   LocalNetwork,
+  NetworkScope,
   SavedScan,
   ScanComparison,
   ScanDetail,
@@ -33,6 +34,24 @@ import { DEFAULT_PORTS } from "./profiles";
 import { parsePorts, serviceWithPort } from "./format";
 
 const DEMO_CIDR = "192.168.10.0/24";
+
+/** Mirrors the backend's partial-scan comparison reason. */
+export const PARTIAL_SCAN_REASON =
+  "This scan was stopped before every address was checked, so missing devices and complete network changes cannot be determined reliably.";
+
+/** The demo network's single scope, mirroring the backend's network scoping. */
+const DEMO_SCOPE: NetworkScope = {
+  id: 1,
+  stable_key: `target:cidr:${DEMO_CIDR}`,
+  display_name: "Office network",
+  canonical_target: `cidr:${DEMO_CIDR}`,
+  gateway_mac: "F4:92:BF:1A:0C:31",
+  interface_hint: "Ethernet",
+  created_at: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(),
+  updated_at: new Date().toISOString(),
+  device_count: 0,
+  scan_count: 0,
+};
 
 /** One device on the fictional demo network. */
 interface DemoDevice {
@@ -299,6 +318,7 @@ function upsertDevice(
   const id = nextDeviceId++;
   devices.set(id, {
     id,
+    network_scope_id: DEMO_SCOPE.id,
     identity_key: key,
     identity_source: mac ? "mac" : host.hostname ? "hostname-vendor" : "ip",
     mac,
@@ -386,23 +406,33 @@ function toDiff(
   };
 }
 
+function emptyComparison(scanId: number, reason: string): ScanComparison {
+  return {
+    scan_id: scanId,
+    baseline_scan_id: null,
+    baseline_created_at: null,
+    baseline_target: null,
+    reason,
+    added: [],
+    removed: [],
+    changed: [],
+  };
+}
+
 function compareScans(scanId: number, baselineId: number | null): ScanComparison {
-  const baseline = baselineId != null ? scans.find((s) => s.id === baselineId) : undefined;
-  if (!baseline) {
-    return {
-      scan_id: scanId,
-      baseline_scan_id: null,
-      baseline_created_at: null,
-      baseline_target: null,
-      reason:
-        "No earlier scan of this target and profile exists, so there is nothing to compare against.",
-      added: [],
-      removed: [],
-      changed: [],
-    };
-  }
   const current = scans.find((s) => s.id === scanId);
   if (!current) throw new Error(`Scan ${scanId} is no longer in the history.`);
+  // A cancelled scan did not observe its whole target: no comparison, ever.
+  if (current.status === "cancelled") {
+    return emptyComparison(scanId, PARTIAL_SCAN_REASON);
+  }
+  const baseline = baselineId != null ? scans.find((s) => s.id === baselineId) : undefined;
+  if (!baseline) {
+    return emptyComparison(
+      scanId,
+      "No earlier completed scan with this target and coverage exists, so there is nothing to compare against.",
+    );
+  }
 
   const deviceIdFor = (scan: number, ip: string): number | null =>
     observations.get(scan)?.find((o) => o.host.ip === ip)?.deviceId ?? null;
@@ -454,8 +484,14 @@ function recordScan(
   cancelled = false,
 ): MockScanRow {
   const id = nextScanId++;
-  const baseline =
-    [...scans].reverse().find((s) => s.target === target && s.profile === profile)?.id ?? null;
+  // Mirrors the backend baseline rule: only a *completed* scan with matching
+  // target and coverage can anchor a comparison, and a cancelled scan gets none.
+  const baseline = cancelled
+    ? null
+    : ([...scans]
+        .reverse()
+        .find((s) => s.target === target && s.profile === profile && s.status === "completed")
+        ?.id ?? null);
 
   observations.set(
     id,
@@ -480,6 +516,9 @@ function recordScan(
     changed_count: 0,
     status: cancelled ? "cancelled" : "completed",
     baseline_scan_id: baseline,
+    network_scope_id: DEMO_SCOPE.id,
+    scope_name: DEMO_SCOPE.display_name,
+    coverage_key: `v1|arp:auto|ports:demo:${profile ?? "custom"}`,
     hosts,
   };
   scans.push(scan);
@@ -624,6 +663,8 @@ export const mock = {
       probed: done,
       hosts: found,
       cancelled,
+      ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
+      arp_assist: opts.arp_assist,
     };
   },
 
@@ -672,13 +713,16 @@ export const mock = {
   },
 
   listScans(): ScanSummary[] {
-    return scans.map(({ hosts: _hosts, ...summary }) => summary).sort((a, b) => b.id - a.id);
+    return scans
+      .map(({ hosts: _hosts, ...summary }) => withScopeName(summary))
+      .sort((a, b) => b.id - a.id);
   },
 
   getScan(id: number): ScanDetail {
     const scan = scans.find((s) => s.id === id);
     if (!scan) throw new Error(`Scan ${id} is no longer in the history.`);
-    const { hosts, ...summary } = scan;
+    const { hosts, ...rest } = scan;
+    const summary = withScopeName(rest);
     const rows = observations.get(id) ?? [];
     return {
       ...summary,
@@ -717,6 +761,23 @@ export const mock = {
 
   listDevices(): Device[] {
     return [...devices.values()].sort((a, b) => b.last_seen.localeCompare(a.last_seen));
+  },
+
+  listNetworkScopes(): NetworkScope[] {
+    return [
+      {
+        ...DEMO_SCOPE,
+        device_count: devices.size,
+        scan_count: scans.length,
+      },
+    ];
+  },
+
+  renameNetworkScope(id: number, name: string): void {
+    if (id !== DEMO_SCOPE.id) throw new Error(`Network ${id} no longer exists.`);
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("A network name cannot be empty.");
+    DEMO_SCOPE.display_name = trimmed;
   },
 
   deviceDetail(id: number): DeviceDetail {
@@ -811,6 +872,16 @@ function requireDevice(id: number): Device {
   const device = devices.get(id);
   if (!device) throw new Error(`Device ${id} is no longer in the inventory.`);
   return device;
+}
+
+/**
+ * Resolve a scan's scope name at read time, mirroring the backend's join
+ * against `network_scopes`. Reading it live rather than trusting the copy
+ * stored with the scan is what makes a rename show up across existing history.
+ */
+function withScopeName<T extends ScanSummary>(summary: T): T {
+  if (summary.network_scope_id !== DEMO_SCOPE.id) return summary;
+  return { ...summary, scope_name: DEMO_SCOPE.display_name };
 }
 
 /** Address count for a target, used by the mock's scan preview. */

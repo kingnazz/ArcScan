@@ -14,6 +14,7 @@ import { COLUMNS, type SortKey } from "../lib/table";
 import { formatCount, parsePorts } from "../lib/format";
 import type { Settings } from "../lib/prefs";
 import type { PublicIpState } from "../hooks/usePublicIp";
+import type { NetworkScope } from "../types";
 
 export interface SettingsPanelProps {
   open: boolean;
@@ -31,6 +32,9 @@ export interface SettingsPanelProps {
   onClearPublicIp: () => void;
   onCopyPublicIp: (ip: string) => void;
   onOpenPrivacy: () => void;
+  /** Known network scopes; empty until a scan has been saved. */
+  scopes: NetworkScope[];
+  onRenameScope: (id: number, name: string) => void;
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
@@ -240,6 +244,24 @@ export function SettingsPanel(props: SettingsPanelProps) {
             />
           </section>
 
+          {props.scopes.length > 0 ? (
+            <>
+              <div className="divider" />
+              <section>
+                <SectionHeading>Networks</SectionHeading>
+                <p className="mb-2 text-xs leading-relaxed text-text-muted">
+                  ArcScan keeps each network's devices, names and notes separate, so two sites that
+                  reuse the same addresses can never mix. Name them here to tell them apart.
+                </p>
+                <ul className="space-y-2">
+                  {props.scopes.map((scope) => (
+                    <ScopeRow key={scope.id} scope={scope} onRename={props.onRenameScope} />
+                  ))}
+                </ul>
+              </section>
+            </>
+          ) : null}
+
           <div className="divider" />
 
           <section>
@@ -353,6 +375,40 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
 function version(v: string): string {
   return v.startsWith("v") ? v : `v${v}`;
+}
+
+/** One network scope with an inline rename field, saved on blur or Enter. */
+function ScopeRow({
+  scope,
+  onRename,
+}: {
+  scope: NetworkScope;
+  onRename: (id: number, name: string) => void;
+}) {
+  const [draft, setDraft] = useState(scope.display_name);
+  return (
+    <li className="rounded-md border border-border bg-surface-sunken px-2.5 py-2">
+      <Field
+        aria-label={`Name for ${scope.canonical_target ?? scope.display_name}`}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const next = draft.trim();
+          if (next && next !== scope.display_name) onRename(scope.id, next);
+          else setDraft(scope.display_name);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+      />
+      <p className="mono mt-1 text-xs text-text-muted">
+        {scope.canonical_target?.replace(/^(cidr|range|host):/, "") ?? "Earlier inventory"}
+        {scope.gateway_mac ? ` · gateway ${scope.gateway_mac}` : ""}
+        {" · "}
+        {scope.device_count} {scope.device_count === 1 ? "device" : "devices"}
+      </p>
+    </li>
+  );
 }
 
 /** A labelled switch. A real button with role="switch", not a styled checkbox. */

@@ -34,12 +34,17 @@ address, manufacturer (from the full IEEE OUI registry), hostname, open services
 operating-system estimate, TTL and both ICMP and TCP response times.
 
 **See what changed.** New devices, missing devices, address changes, hostname and
-manufacturer changes, and ports that opened or closed since the previous scan of
-the same target and profile.
+manufacturer changes, and ports that opened or closed since the previous scan.
+Scans are only compared when they covered the same ground: the same network, the
+same target, and the same ports and discovery mode. A scan you stopped early is
+never compared, because it did not see the whole target, so it can never report a
+device as missing that it simply never reached.
 
 **Keep an inventory.** Devices persist across scans, matched by MAC address first
 so a DHCP lease change reads as a device that moved rather than a new one. Give
-them names, a status and notes; all of it survives reinstalls.
+them names, a status and notes; all of it survives reinstalls. Each network keeps
+its own inventory, so two client sites using the same private addresses never mix
+their devices, names or notes.
 
 **Investigate without leaving.** Open a device's web interface, SMB shares, SSH or
 Remote Desktop from the inventory, or send a Wake-on-LAN packet. Only the actions
@@ -51,7 +56,8 @@ confirmation pass keeps results consistent between scans.
 
 **Control the scan.** Five profiles from a quick sweep to a full port range, plus
 your own ports, timeout and all three concurrency limits. The workload is shown
-before the scan starts, and Stop keeps whatever was found.
+before the scan starts. Stop takes effect in every phase of a scan and keeps
+whatever was found, saved and labelled as a partial scan.
 
 ## Install
 

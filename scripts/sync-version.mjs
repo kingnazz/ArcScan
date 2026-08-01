@@ -60,6 +60,15 @@ const targets = [
     replace: (m, a, b) => `${a}${version}${b}`,
   },
   {
+    file: "site/index.html",
+    // The version on each download card. These are filled in from the GitHub
+    // release at runtime, but they are what a visitor sees until that answers,
+    // so a stale number here still ships a wrong version to real people.
+    // Global: one card per platform.
+    pattern: /(<dd data-field="version">)[^<]+(<\/dd>)/g,
+    replace: (m, a, b) => `${a}${version}${b}`,
+  },
+  {
     file: "site/privacy.html",
     pattern: /(<span id="privacy-version">v)[^<]+(<\/span>)/,
     replace: (m, a, b) => `${a}${version}${b}`,

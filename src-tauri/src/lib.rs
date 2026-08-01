@@ -6,6 +6,7 @@ mod netinfo;
 mod oui;
 mod ports;
 mod scanner;
+mod signature;
 
 use tauri::Manager;
 
@@ -49,6 +50,8 @@ pub fn run() {
             commands::delete_scan,
             commands::prune_history,
             commands::list_devices,
+            commands::list_network_scopes,
+            commands::rename_network_scope,
             commands::device_detail,
             commands::set_device_name,
             commands::set_device_status,
@@ -57,6 +60,7 @@ pub fn run() {
             commands::last_scan_ips,
             commands::detect_networks,
             commands::open_releases,
+            commands::open_privacy,
             commands::save_text,
             commands::wake_on_lan,
             commands::open_smb,

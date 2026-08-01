@@ -3,7 +3,102 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.7.0] - unreleased
+## [1.7.1] - unreleased
+
+A correctness, reliability and security hardening release. No new product
+surface: v1.7.1 fixes the ways v1.7.0 could tell you something untrue about a
+network, and tightens what the application is allowed to do.
+
+Install over 1.6.x or 1.7.0 without losing anything. The database migrates in
+place, in one transaction, and keeps every scan, device, name, note, status and
+date it already held.
+
+### Fixed
+
+- **Stop now stops the scan, in every phase.** Cancellation was captured once,
+  after the address sweep. A scan stopped during ARP settling, quiet-device
+  confirmation or hostname resolution carried on doing that expensive work and
+  was then recorded as *completed*. Cancellation is re-checked before every
+  phase, during both settle waits — which now end the moment Stop is pressed,
+  rather than running out a fixed delay — and before each reverse-DNS lookup is
+  launched. The final `cancelled` state is decided at the end of the scan, so a
+  stopped scan is never saved as a complete one. Hosts already found, and any
+  MAC, manufacturer and hostname already resolved, are kept.
+- **A stopped scan no longer invents missing devices or closed ports.** A
+  cancelled scan has not seen its whole target, so absence from it proves
+  nothing. Partial scans are still saved, opened and exported in full, but they
+  are never compared and never become the baseline for another scan. A completed
+  scan skips any newer cancelled scan and compares against the last completed
+  one instead. History labels them **Partial scan** and says why changes are
+  unavailable.
+- **Scans that checked different ports are no longer compared.** Compatibility
+  depended on the target and the profile *name*, so two `Custom` scans of the
+  same subnet — one probing 22, 80 and 443, the next only 22 — were compared, and
+  ports 80 and 443 were reported as having closed when they had simply not been
+  scanned. Every scan now stores a coverage signature (its normalized port set
+  and discovery mode), and comparison requires it to match.
+- **Device identity no longer crosses networks.** Identity was global, so two
+  client sites both using `192.168.1.0/24` could merge into one device when
+  neither observation had a usable MAC address — mixing names, notes, status,
+  first-seen dates and history between unrelated clients. Every scan and device
+  now belongs to a network scope, matching never crosses one, and the default
+  gateway's MAC address is used where available to tell identical private
+  subnets apart. Networks can be named in Settings.
+- **Ambiguous hostnames no longer merge devices.** A generic name such as
+  `printer`, `router` or `localhost`, with no manufacturer to disambiguate it, is
+  no longer treated as an identity; those observations stay separate devices.
+- **Exporting a scan from History exports that scan.** The export opened the
+  scan into the view and then exported whatever the table held, but React state
+  does not update synchronously — so it could write the previously displayed
+  scan, or only the rows matching the current filter, under a filename naming the
+  scan you asked for. The export now fetches the requested scan and writes
+  exactly its contents, leaving the current view, selection and filters
+  untouched. Each history row offers CSV, JSON and XML rather than silently
+  forcing CSV.
+- **Device notes load after a device changes address.** Drafts were keyed by IP,
+  so notes failed to appear when a device moved or when an older observation was
+  opened, and half-typed text could follow the wrong device. Drafts are keyed by
+  the persistent device instead. Typing survives incoming scan updates and
+  renames, and a failed save no longer discards what you wrote.
+- **The recommended profile is the profile that runs.** The first-run screen's
+  Scan button submitted whatever profile happened to be selected while
+  describing a different one. It now applies the recommendation it displays.
+
+### Changed
+
+- **The scan event channel is bounded.** Events crossed from the scanner to the
+  interface on an unbounded queue, so a wide scan whose results the window could
+  not consume fast enough grew memory without limit. The channel is now bounded:
+  discovery, removal and completion events apply backpressure, progress updates
+  are droppable, and neither a closed window nor a stalled consumer can wedge or
+  deadlock a scan.
+- **Content Security Policy is enabled.** The application shipped with CSP
+  disabled. Production now allows scripts and styles only from the application
+  bundle, connections only to Tauri IPC and — when you opt in — the two named
+  public-IP providers, and blocks objects and frames outright. No remote scripts
+  and no `eval`.
+- **Application permissions are narrower.** The webview holds only what it uses:
+  IPC, events, the save dialog, and the updater with its restart. It can no
+  longer ask the system to open a URL; external links go through fixed, trusted
+  destinations or a validated address. Export writing accepts only absolute paths
+  ending in `.csv`, `.json` or `.xml`.
+- **Native window decorations are explicit** in the window configuration rather
+  than relied upon as a default, with the reasoning and a packaged-build
+  checklist recorded in `docs/WINDOW-CHROME.md`.
+- History rows show which network a scan belongs to, and the scan's coverage.
+
+### Added
+
+- **Regression tests for every corrected issue**: 131 Rust tests and 123
+  TypeScript tests, including cancellation at each scan phase driven by
+  deterministic checkpoints rather than timing, bounded-channel behaviour under
+  a slow or vanished consumer, coverage-signature compatibility, cross-scope
+  identity collisions, and migrations exercised against real v1.6.4 and v1.7.0
+  database fixtures.
+- **The browser verification suite runs in CI**, with Playwright's Chromium
+  installed on the runner, and covers the behaviour this release fixes.
+
+## [1.7.0] - 2026-07-30
 
 ArcScan becomes a network inventory rather than a one-time scanner. Devices now
 persist across scans with your own names and notes, results stream in while the

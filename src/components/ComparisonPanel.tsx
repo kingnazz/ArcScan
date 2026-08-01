@@ -14,18 +14,22 @@ import type { DeviceDiff, ScanComparison } from "../types";
 export interface ComparisonPanelProps {
   comparison: ScanComparison;
   currentLabel: string;
+  /** True when the shown scan was stopped early, so changes cannot exist. */
+  partial?: boolean;
 }
 
-export function ComparisonPanel({ comparison, currentLabel }: ComparisonPanelProps) {
+export function ComparisonPanel({ comparison, currentLabel, partial }: ComparisonPanelProps) {
   const total = comparison.added.length + comparison.removed.length + comparison.changed.length;
 
   if (comparison.baseline_scan_id == null) {
     return (
       <EmptyState
-        title="Nothing to compare yet"
+        title={
+          partial ? "Changes unavailable for this partial scan" : "Nothing to compare yet"
+        }
         description={
           comparison.reason ??
-          "A comparison needs an earlier scan of the same target and profile. Run this scan again later and the differences will appear here."
+          "A comparison needs an earlier completed scan with the same target and coverage. Run this scan again later and the differences will appear here."
         }
       />
     );

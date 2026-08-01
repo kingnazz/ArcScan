@@ -11,17 +11,22 @@ import type { LocalNetwork } from "../types";
 
 export interface ScanStartProps {
   localNetworks: LocalNetwork[];
-  recommended: ProfileId;
+  /** Profile recommendation for a target, evaluated per displayed network. */
+  recommendFor: (target: string) => ProfileId;
   recents: string[];
   showGuidance: boolean;
-  onScanNetwork: (cidr: string) => void;
+  /**
+   * Start a scan of `cidr` with `profile` — always the recommendation shown
+   * beside the button, so the action can never disagree with its description.
+   */
+  onScanNetwork: (cidr: string, profile: ProfileId) => void;
   onPickTarget: (target: string) => void;
   onDismissGuidance: () => void;
 }
 
 export function ScanStart({
   localNetworks,
-  recommended,
+  recommendFor,
   recents,
   showGuidance,
   onScanNetwork,
@@ -29,6 +34,7 @@ export function ScanStart({
   onDismissGuidance,
 }: ScanStartProps) {
   const primary = localNetworks[0];
+  const recommended = primary ? recommendFor(primary.cidr) : "quick-lan";
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
@@ -54,7 +60,8 @@ export function ScanStart({
               variant="primary"
               className="mt-3"
               icon={<Play className="h-3.5 w-3.5" />}
-              onClick={() => onScanNetwork(primary.cidr)}
+              title={`Scan ${primary.cidr} with the ${PROFILES[recommended].name} profile`}
+              onClick={() => onScanNetwork(primary.cidr, recommended)}
             >
               Scan {primary.cidr}
             </Button>

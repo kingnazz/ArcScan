@@ -28,7 +28,7 @@ import { useTheme } from "./hooks/useTheme";
 import { useUpdater } from "./hooks/useUpdater";
 import { api } from "./lib/api";
 import { setServiceCatalog } from "./lib/format";
-import { rowName } from "./lib/live";
+import { rowName, rowsFromScanDetail } from "./lib/live";
 import {
   markLegacyLabelsImported,
   pendingLegacyLabels,
@@ -38,10 +38,9 @@ import {
 import { recommendedProfile, type ProfileId } from "./lib/profiles";
 import { EMPTY_FILTER, prepareRows, visibleColumns, type SortKey, type TableFilter } from "./lib/table";
 import type { ActionId } from "./lib/actions";
-import { changeCount, type DeviceDetail, type DeviceStatus, type ExportFormat, type LocalNetwork, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
+import { changeCount, type DeviceDetail, type DeviceStatus, type ExportFormat, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
 import { APP_VERSION } from "./version";
 
-const PRIVACY_URL = "https://kingnazz.github.io/ArcScan/privacy.html";
 /** Below this the drawer becomes an overlay rather than a second pane. */
 const OVERLAY_BREAKPOINT = 1100;
 
@@ -75,6 +74,7 @@ export default function App() {
   );
   const [pendingDelete, setPendingDelete] = useState<ScanSummary | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [scopes, setScopes] = useState<NetworkScope[]>([]);
 
   const targetInput = useRef<HTMLInputElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
@@ -134,6 +134,33 @@ export default function App() {
   useEffect(() => {
     void refreshHistory();
   }, [refreshHistory]);
+
+  // Scopes appear in Settings; refresh them whenever the panel opens so a
+  // just-created scope (first scan of a new network) is namable immediately.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    api
+      .listNetworkScopes()
+      .then(setScopes)
+      .catch(() => {
+        // Settings still works without the list; the section simply hides.
+      });
+  }, [settingsOpen]);
+
+  const renameScope = useCallback(
+    async (id: number, name: string) => {
+      try {
+        await api.renameNetworkScope(id, name);
+        setScopes(await api.listNetworkScopes());
+        void refreshHistory();
+        toast.success(`Network renamed to "${name}".`);
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not rename that network. ${message}`, technical);
+      }
+    },
+    [refreshHistory, toast, reportError],
+  );
 
   // Adopt the device labels v1.6 kept in browser storage, once.
   useEffect(() => {
@@ -306,12 +333,29 @@ export default function App() {
     [rows, scan.meta?.target, toast, reportError],
   );
 
+  // Export a historical scan by fetching it directly. Deliberately does NOT
+  // route through the view state: React state updates are asynchronous, so
+  // "open it, then export what is displayed" can silently export the previous
+  // scan or the current filter. The current view, selection and filters are
+  // left untouched, and a fetch failure exports nothing rather than falling
+  // back to whatever is on screen.
   const exportSavedScan = useCallback(
-    async (id: number) => {
-      await openSavedScan(id);
-      await exportRows("csv");
+    async (id: number, format: ExportFormat) => {
+      try {
+        const detail = await api.getScan(id);
+        const exportRowsForScan = rowsFromScanDetail(detail);
+        const written = await api.exportRows(exportRowsForScan, format, detail.target);
+        if (written) {
+          toast.success(
+            `Exported ${exportRowsForScan.length} ${exportRowsForScan.length === 1 ? "device" : "devices"} from the scan of ${detail.target}.`,
+          );
+        }
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not export that scan. ${message}`, technical);
+      }
     },
-    [openSavedScan, exportRows],
+    [toast, reportError],
   );
 
   const runDeviceAction = useCallback(
@@ -472,9 +516,10 @@ export default function App() {
   // --- Render -------------------------------------------------------------
 
   const showStart = scan.mode === "idle" && scan.rows.length === 0;
-  const recommended = recommendedProfile(
-    target,
-    localNetworks.map((n) => n.cidr),
+  const localCidrs = useMemo(() => localNetworks.map((n) => n.cidr), [localNetworks]);
+  const recommendFor = useCallback(
+    (candidate: string) => recommendedProfile(candidate, localCidrs),
+    [localCidrs],
   );
 
   return (
@@ -539,29 +584,34 @@ export default function App() {
               onOpen={(id) => void openSavedScan(id)}
               onCompare={(id) => void compareSavedScan(id)}
               onDelete={(id) => setPendingDelete(history.find((s) => s.id === id) ?? null)}
-              onExport={(id) => void exportSavedScan(id)}
+              onExport={(id, format) => void exportSavedScan(id, format)}
             />
           ) : view === "changes" ? (
             scan.comparison ? (
               <ComparisonPanel
                 comparison={scan.comparison}
                 currentLabel={scan.meta?.target ?? target}
+                partial={scan.meta?.cancelled ?? false}
               />
             ) : (
               <EmptyState
                 title="No comparison yet"
-                description="Run a scan, and ArcScan will compare it with the most recent earlier scan of the same target and profile."
+                description="Run a scan, and ArcScan will compare it with the most recent earlier completed scan that covered the same target with the same ports."
                 action={<Button onClick={() => setView("results")}>Back to devices</Button>}
               />
             )
           ) : showStart ? (
             <ScanStart
               localNetworks={localNetworks}
-              recommended={recommended}
+              recommendFor={recommendFor}
               recents={recents}
               showGuidance={settings.showFirstRunGuidance}
-              onScanNetwork={(cidr) => {
+              onScanNetwork={(cidr, profile) => {
+                // Apply the recommendation the start screen displayed, so the
+                // scan that runs is the scan that was described.
                 setTarget(cidr);
+                profileTouched.current = true;
+                setProfileId(profile);
                 // Deferred so the field shows the target before the scan starts.
                 requestAnimationFrame(() => targetInput.current?.form?.requestSubmit());
               }}
@@ -639,6 +689,7 @@ export default function App() {
           onRename={(deviceId, name) => void renameDevice(deviceId, name)}
           onStatusChange={(deviceId, status) => void changeDeviceStatus(deviceId, status)}
           onNotesChange={(deviceId, notes) => void saveDeviceNotes(deviceId, notes)}
+          scanKey={scan.meta?.savedScanId ?? scan.meta?.scanId ?? null}
         />
 
         <SettingsPanel
@@ -662,7 +713,9 @@ export default function App() {
             void api.copyText(ip);
             toast.success("Public IP copied.");
           }}
-          onOpenPrivacy={() => window.open(PRIVACY_URL, "_blank", "noopener")}
+          onOpenPrivacy={() => void api.openPrivacy()}
+          scopes={scopes}
+          onRenameScope={(id, name) => void renameScope(id, name)}
         />
       </div>
 
