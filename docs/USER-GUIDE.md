@@ -14,8 +14,10 @@ Everything ArcScan does, in one document. For a shorter overview see the
 - [Advanced scan settings](#advanced-scan-settings)
 - [Live results](#live-results)
 - [Reading the results table](#reading-the-results-table)
-- [The device inventory](#the-device-inventory)
+- [The Inventory](#the-inventory)
+- [Present, missing and unknown](#present-missing-and-unknown)
 - [Names, status and notes](#names-status-and-notes)
+- [Changes](#changes)
 - [Change detection](#change-detection)
 - [Networks](#networks)
 - [History and comparison](#history-and-comparison)
@@ -176,10 +178,38 @@ Note that **Response** is not a ping time. It is the fastest of the ICMP
 round-trip and the TCP connection time, because a device that ignores ICMP still
 has a measurable latency. The tooltip shows both.
 
-## The device inventory
+## The Inventory
 
-Every scan folds its results into a persistent inventory. A device is matched
-across scans in this order:
+The **Inventory** view is every device ArcScan has ever recorded, across every
+scan, rather than the devices one scan happened to find. It is where a device's
+name, notes, addresses and history live.
+
+Each row carries the device's name, its current address, whether the latest
+completed scan found it, its open services, its manufacturer and when it was last
+seen. Turn on the MAC, hostname, first-seen, scan-count, response and
+previous-address columns in Settings if you want them. Device and Address are
+always shown, and lower-priority columns hide themselves before the table can
+overflow a narrow window.
+
+**Search** matches the friendly name, hostname, current and previous addresses,
+MAC, manufacturer, service names, network name and the opening of your notes. It
+is case-insensitive and matches partial words, and every term you type has to
+match, so `printer 443` narrows rather than widens.
+
+**Filters** are All, Present, Missing, Unknown, Trusted, Unreviewed and Ignored.
+What a scan observed and what you decided about a device are kept apart: a device
+you trust can also be missing, and it appears under both.
+
+**Selection** ticks devices for a bulk action: mark trusted, mark unreviewed,
+ignore, copy the addresses, or export just those devices. Nothing here deletes
+anything. A bulk action over twenty-five devices asks first, and if some of them
+have since disappeared it says how many it could not update rather than reporting
+a clean success.
+
+Press Enter or double-click a row to open the device panel. The arrow keys, Home
+and End move the selection, and Space ticks the focused row.
+
+A device is matched across scans in this order:
 
 1. **MAC address**, normalised so every spelling resolves to the same device.
 2. **Hostname plus manufacturer**, for routed targets where ARP gives nothing.
@@ -190,6 +220,31 @@ device and one missing device. A device first seen without a MAC is adopted, not
 duplicated, once ARP resolves it later, so its name, notes and first-seen date
 survive.
 
+## Present, missing and unknown
+
+ArcScan scans when you ask it to. It does not watch a network, so it never says a
+device is online or offline. It reports what the most recent completed scan
+found, in one of three states.
+
+A network's **reference scan** is its most recent scan that both ran to
+completion and recorded which ports it checked. A scan you stopped early is not
+one, and neither is a scan recorded by a version of ArcScan old enough not to
+have saved its port set.
+
+- **Present** — the reference scan saw the device.
+- **Missing** — the reference scan did not see it, but an earlier completed scan
+  with the same target and the same ports did. That earlier scan is the evidence
+  the reference scan was looking in the right place.
+- **Unknown** — nothing can say. The network has no reference scan at all, or the
+  device has only ever been seen under different coverage, so its absence from
+  the reference scan proves nothing.
+
+A partial scan is excluded from both halves of that rule, which is why stopping a
+scan can never turn a device Missing.
+
+Presence is worked out from the stored scans each time the Inventory loads, so it
+is always current and never needs rebuilding.
+
 ## Names, status and notes
 
 Open a device (double click, or select it and press Enter) to get the device
@@ -197,8 +252,10 @@ panel.
 
 - **Name.** Your own name for the device, used everywhere in place of the
   hostname. It follows the device across address changes.
-- **Status.** *Not classified*, *Known*, *Trusted* or *Watched*. Status is shown
-  in the results table and can be filtered on.
+- **Status.** *Not classified*, *Known*, *Trusted*, *Watched* or *Ignored*.
+  Status is shown in both tables and can be filtered on. *Ignored* keeps the
+  device and everything about it, and takes its changes out of the review inbox;
+  they are still recorded and still reachable with the Ignored filter.
 - **Notes.** Free text, up to 4,000 characters.
 
 All three live in the database with the device, not in the browser storage v1.6
@@ -207,6 +264,49 @@ first time v1.7 starts, filling gaps only: a name you have since changed is neve
 overwritten.
 
 Renaming and reclassifying offer **Undo** for a few seconds.
+
+## Changes
+
+The **Changes** view is a list of everything later scans have turned up, kept
+until you have read it. It is not the same thing as the comparison between two
+particular scans, which lives in the Scan view and is described under
+[Change detection](#change-detection) below.
+
+Each entry says what changed, to which device, on which network and when.
+Changes to one device from one scan are shown together, because a device that
+moved address and opened a port is one thing that happened, not two.
+
+The filters are Unreviewed (the default), All changes, New devices, Missing
+devices, Returned devices, Address changes, Name changes, Service changes,
+Acknowledged and Ignored. There is a time filter, a search box and, when you have
+more than one network, a network filter.
+
+Each entry offers only the actions that would do something:
+
+- **Review** opens the device panel with the change highlighted, alongside the
+  device's addresses, notes and recorded history.
+- **Trust** marks the device trusted and acknowledges the new-device entry it was
+  offered on, and nothing else about the device.
+- **Rename** opens the panel with the name field, and renames the persistent
+  device without rewriting anything already recorded.
+- **Ignore** marks the device ignored: it stays in the Inventory with its whole
+  history, and its changes leave the default inbox.
+- **Acknowledge** records that you have read the entry and stamps the time. It
+  can be undone.
+- **Open the scan** opens the scan that found the change, with its full
+  comparison against the baseline. Your filters are still there when you come
+  back.
+
+**Acknowledge visible** acknowledges exactly the unreviewed entries currently on
+screen, which is why the filters matter: it never reaches anything you cannot
+see. Over twenty-five entries it asks first.
+
+Nothing here deletes a record. Acknowledging and ignoring change where an entry
+appears, not whether it exists, and everything is included in an export.
+
+If ArcScan was upgraded from an earlier version, the list starts with the scans
+you run after the upgrade and says so. Differences found before then are still in
+each scan's own comparison, under History.
 
 ## Change detection
 
@@ -248,10 +348,11 @@ look through it and export it exactly like any other scan.
 
 What a partial scan will never do is report changes. It did not reach every
 address, so a device it did not see is not necessarily gone, and a port it did
-not probe is not necessarily closed. The Changes tab explains this instead of
-showing a comparison, the compare action in History is disabled, and the next
-completed scan compares against the last *completed* scan, skipping the partial
-one entirely.
+not probe is not necessarily closed. The comparison explains this instead of
+showing differences, the compare action in History is disabled, the next
+completed scan compares against the last *completed* scan and skips the partial
+one entirely, nothing is added to the Changes list, and no device becomes Missing
+in the Inventory.
 
 ## Networks
 
@@ -315,19 +416,36 @@ or operating system settings, and it does not cross a router.
 
 ## Exporting
 
-**Export** in the results toolbar, or Ctrl/Cmd + E, writes CSV, JSON or XML
-through the native save dialog. The export contains the devices currently shown,
-so a filter narrows it.
+Every export writes CSV, JSON or XML through the native save dialog, and each one
+says what it is about to contain before you pick a format.
 
-Exporting from **History** is different, and deliberately so: it writes exactly
-the scan whose row you used, in the format you pick from that row, regardless of
-which scan is currently displayed or how the table is filtered. The filename
-carries that scan's own target. Your current view is left as it was.
+**From the Scan view**, or Ctrl/Cmd + E while it is open, the export contains the
+devices currently shown, so a filter narrows it. Columns: name, IP, hostname,
+MAC, vendor, OS, TTL, open ports, response, ICMP, TCP, status and last seen. The
+v1.6 columns are all still there in the same order, with the two latency
+measurements appended, so existing spreadsheets and scripts keep working.
 
-Columns: name, IP, hostname, MAC, vendor, OS, TTL, open ports, response,
-ICMP, TCP, status and last seen. The v1.6 columns are all still there in the same
-order, with the two latency measurements appended, so existing spreadsheets and
-scripts keep working.
+**From the Inventory** the scope follows what you are looking at: the selected
+devices if you have ticked any, otherwise the filtered set, which may be one
+network or all of them. Columns: network, device, status, presence, current IP,
+previous IPs, MAC, manufacturer, hostname, OS guess, open ports, open services,
+first seen, last seen, observations and notes. Presence and status are written
+out as words rather than as internal values. Filenames carry the day and, where
+the export is scoped to one network, its name:
+`arcscan-inventory-home-wi-fi-2026-08-03.csv`.
+
+**From Changes** the export contains exactly the entries on screen, ignored ones
+included when the Ignored filter is showing them. Columns: date, network, device,
+IP, MAC, change, previous value, new value, opened ports, closed ports, scan,
+baseline, review state and acknowledged date.
+
+Exporting from **History** is different again, and deliberately so: it writes
+exactly the scan whose row you used, in the format you pick from that row,
+regardless of which scan is currently displayed or how the table is filtered. The
+filename carries that scan's own target. Your current view is left as it was.
+
+Internal identifiers stay out of CSV and XML. The JSON form keeps the device or
+event id, which is the only place a script has any use for one.
 
 ## The public IP lookup
 
@@ -358,16 +476,19 @@ v1.6 performed this lookup automatically at startup. v1.7 does not.
 | Key | Action |
 | --- | --- |
 | Enter | Start the scan, from the target field |
-| Escape | Close settings, then the device panel, then clear the filter, then stop the scan |
-| Ctrl/Cmd + F, or `/` | Focus the filter |
+| Escape | Close settings, then the device panel, then the current view's selection, then its filters, then stop the scan |
+| Ctrl/Cmd + F, or `/` | Focus the search box of the view you are in |
 | Ctrl/Cmd + L | Focus the target field |
 | Ctrl/Cmd + R | Rescan the last target |
-| Ctrl/Cmd + E | Export |
-| Arrow keys, Home, End | Move the selection in the table |
+| Ctrl/Cmd + E | Export what the current view is showing |
+| Arrow keys, Home, End | Move the selection in a table |
+| Space | Tick or untick the focused row in the Inventory |
 | Enter | Open the selected device |
 
 Escape's order is deliberate and fixed: it never cancels a scan while something is
-open on top of the results.
+open on top of the results, and it clears a selection before it clears filters,
+because the selection is the more recent and more surprising thing to leave
+behind.
 
 ## Where your data lives
 
@@ -382,8 +503,19 @@ separately by the application window and are not in this file.
 
 ## Upgrading
 
-Install v1.7.1 over v1.6.x or v1.7.0 without deleting anything. On first launch
-ArcScan migrates the database in place:
+Install v1.8.0 over v1.7.x or v1.6.x without deleting anything. On first launch
+ArcScan migrates the database in place.
+
+From v1.7.1 the upgrade is small: the Inventory and the presence states are
+computed from the scans you already have, so they are populated the moment you
+open the view, and nothing is rebuilt or rewritten. The only new storage is the
+record behind the Changes list, and it starts empty on purpose. Replaying every
+past comparison would be unbounded work at launch and would greet you with a
+backlog of changes you were never asked to review; those differences are still in
+each scan's own comparison, under History. The list fills from your next
+completed scan onwards, and says so until it does.
+
+From v1.6.x or v1.7.0 the earlier migrations run first:
 
 - Every scan and every observation it already held is kept.
 - The device inventory is built from those existing observations, oldest scan
@@ -452,7 +584,15 @@ is a broadcast, so it does not cross a router.
 
 - **IPv4 only.** IPv6 discovery is not implemented.
 - **No continuous monitoring.** ArcScan scans when you ask and compares with the
-  previous scan. It does not watch a network or send alerts.
+  previous scan. It does not watch a network or send alerts. Present and missing
+  describe what the latest completed scan found, not what is true right now.
+- **Presence needs a completed scan.** Until a network has one that also recorded
+  which ports it checked, every device on it reads Unknown.
+- **Search reaches the opening of a note**, not the whole of it. The Inventory
+  loads a short excerpt so search can find it without pulling every note body
+  into the table.
+- **The Changes list starts at the upgrade** on an existing installation, rather
+  than being backfilled from older scans.
 - **Not a vulnerability scanner.** It reports what is reachable and makes no
   assessment of whether anything is vulnerable.
 - **TCP only for ports.** There is no UDP port scanning.
