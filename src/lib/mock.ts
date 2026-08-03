@@ -39,11 +39,16 @@ const DEMO_CIDR = "192.168.10.0/24";
 export const PARTIAL_SCAN_REASON =
   "This scan was stopped before every address was checked, so missing devices and complete network changes cannot be determined reliably.";
 
-/** The demo network's single scope, mirroring the backend's network scoping. */
+/**
+ * The scope every demo scan belongs to, mirroring the backend's scoping.
+ *
+ * Scans in the demo all run against DEMO_CIDR, so only this one accumulates
+ * devices and history.
+ */
 const DEMO_SCOPE: NetworkScope = {
   id: 1,
   stable_key: `target:cidr:${DEMO_CIDR}`,
-  display_name: "Office network",
+  display_name: "Main office",
   canonical_target: `cidr:${DEMO_CIDR}`,
   gateway_mac: "F4:92:BF:1A:0C:31",
   interface_hint: "Ethernet",
@@ -51,6 +56,27 @@ const DEMO_SCOPE: NetworkScope = {
   updated_at: new Date().toISOString(),
   device_count: 0,
   scan_count: 0,
+};
+
+/**
+ * A second, previously scanned network.
+ *
+ * Network scoping only means anything when there is more than one network to
+ * keep apart, so the demo carries a second site with its own gateway. It holds
+ * no demo scans, which is why its device and scan counts stay at what is set
+ * here rather than being derived.
+ */
+const DEMO_SCOPE_SECONDARY: NetworkScope = {
+  id: 2,
+  stable_key: "target:cidr:10.20.0.0/24|gw:B4:FB:E4:7C:22:90",
+  display_name: "Warehouse",
+  canonical_target: "cidr:10.20.0.0/24",
+  gateway_mac: "B4:FB:E4:7C:22:90",
+  interface_hint: "Wi-Fi",
+  created_at: new Date(Date.now() - 12 * 24 * 3600 * 1000).toISOString(),
+  updated_at: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
+  device_count: 9,
+  scan_count: 4,
 };
 
 /** One device on the fictional demo network. */
@@ -764,20 +790,23 @@ export const mock = {
   },
 
   listNetworkScopes(): NetworkScope[] {
+    // Most recently used first, matching the backend's ordering.
     return [
       {
         ...DEMO_SCOPE,
         device_count: devices.size,
         scan_count: scans.length,
       },
+      { ...DEMO_SCOPE_SECONDARY },
     ];
   },
 
   renameNetworkScope(id: number, name: string): void {
-    if (id !== DEMO_SCOPE.id) throw new Error(`Network ${id} no longer exists.`);
+    const scope = id === DEMO_SCOPE.id ? DEMO_SCOPE : id === DEMO_SCOPE_SECONDARY.id ? DEMO_SCOPE_SECONDARY : null;
+    if (!scope) throw new Error(`Network ${id} no longer exists.`);
     const trimmed = name.trim();
     if (!trimmed) throw new Error("A network name cannot be empty.");
-    DEMO_SCOPE.display_name = trimmed;
+    scope.display_name = trimmed;
   },
 
   deviceDetail(id: number): DeviceDetail {

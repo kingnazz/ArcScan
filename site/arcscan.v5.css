@@ -684,6 +684,26 @@ code,
   }
 }
 
+/* Two supporting screenshots for the release section, side by side and smaller
+ * than the switcher above. They reuse .frame, so the chrome, radius and caption
+ * treatment stay identical to every other screenshot on the page. */
+.whats-new-shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  max-width: var(--wide);
+  margin: clamp(2.5rem, 5vw, 3.5rem) auto 0;
+  padding: 0 1.5rem;
+}
+.frame-sm figcaption {
+  font-size: 0.78rem;
+}
+@media (max-width: 820px) {
+  .whats-new-shots {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .benefit {
   background: var(--elev);
   border-radius: 20px;

@@ -368,6 +368,9 @@
               <button class="shot-tab" role="tab" id="tab-history" aria-controls="shot-panel" aria-selected="false" data-shot="history-dark" data-caption="Scan history, with the target, profile, duration, device count and change counts for every saved scan.">History</button>
             </li>
             <li role="presentation">
+              <button class="shot-tab" role="tab" id="tab-partial" aria-controls="shot-panel" aria-selected="false" data-shot="history-partial-dark" data-caption="A scan stopped part of the way through is saved and labelled a partial scan, showing how many addresses it managed to check. It reports no missing devices, because it did not reach every address.">Partial scan</button>
+            </li>
+            <li role="presentation">
               <button class="shot-tab" role="tab" id="tab-light" aria-controls="shot-panel" aria-selected="false" data-shot="results-light" data-caption="The same inventory in the light theme.">Light theme</button>
             </li>
           </ul>
@@ -764,6 +767,49 @@
                 historical exports always contain the exact scan selected.
               </p>
             </article>
+          </div>
+
+          <!--
+            Two supporting views at half width. Deliberately smaller than the
+            switcher above, so the release illustrates itself without competing
+            with the product's own screenshots.
+          -->
+          <div class="whats-new-shots">
+            <figure class="frame frame-sm">
+              <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+              <img
+                src="assets/shots/changes-partial-dark.webp"
+                srcset="assets/shots/changes-partial-dark-800.webp 800w, assets/shots/changes-partial-dark.webp 1440w"
+                sizes="(max-width: 820px) 100vw, 34rem"
+                width="1440"
+                height="900"
+                alt="The ArcScan Changes view for a partial scan, explaining that changes are unavailable because the scan was stopped before every address was checked."
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>
+                A stopped scan says why it has no comparison instead of reporting devices it never
+                reached as missing.
+              </figcaption>
+            </figure>
+
+            <figure class="frame frame-sm">
+              <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+              <img
+                src="assets/shots/settings-networks-dark.webp"
+                srcset="assets/shots/settings-networks-dark-800.webp 800w, assets/shots/settings-networks-dark.webp 1440w"
+                sizes="(max-width: 820px) 100vw, 34rem"
+                width="1440"
+                height="900"
+                alt="The Networks section of ArcScan settings, listing two named networks with their address range, gateway and device count."
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>
+                Each network keeps its own inventory, so two sites that reuse the same addresses
+                never mix.
+              </figcaption>
+            </figure>
           </div>
         </div>
       </section>
