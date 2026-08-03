@@ -3,6 +3,99 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - unreleased
+
+A persistent Inventory, honest presence states, and a Changes list that stays
+until you have read it. Navigation becomes `Scan · Inventory · Changes · History`.
+
+Install over 1.7.x or 1.6.x without losing anything. The database migrates in
+place and keeps every scan, device, name, note, status, network and date it
+already held. Full notes: [docs/RELEASE-NOTES-1.8.0.md](docs/RELEASE-NOTES-1.8.0.md).
+
+### Added
+
+- **A persistent Inventory.** Every device ArcScan has recorded, across every
+  scan, in one searchable list: name, current address, presence, services,
+  manufacturer, network and last seen by default, with MAC, hostname, first seen,
+  scan count, response time and previous address available as optional columns.
+  Search matches names, hostnames, current and previous addresses, MACs,
+  manufacturers, service names, network names and the opening of your notes.
+  Filters cover All, Present, Missing, Unknown, Trusted, Unreviewed and Ignored.
+  Selection supports marking trusted, marking unreviewed, ignoring, copying
+  addresses and exporting the selection; nothing there deletes anything.
+- **Present, missing and unknown.** Presence is decided only from a network's
+  most recent scan that both completed and recorded which ports it checked.
+  Present means that scan saw the device; missing means it did not, and an
+  earlier completed scan with the same target and coverage did; unknown means
+  nothing can say. ArcScan never claims a device is online or offline, and a
+  partial scan can never make a device missing.
+- **A Changes list.** New devices, returning devices, missing devices, address,
+  hostname, manufacturer, operating-system and MAC changes, and services that
+  opened or closed, kept as records rather than appearing in one comparison and
+  vanishing. Changes to one device from one scan are grouped. Review, Trust,
+  Rename, Ignore and Acknowledge are offered only where they would do something,
+  Acknowledge is undoable, and **Acknowledge visible** affects exactly the entries
+  on screen. Ignored entries leave every view except the Ignored filter; nothing
+  is deleted.
+- **Optional network names.** Networks can be named — `Home Wi-Fi`, `Office`,
+  `Workshop` — and the name appears in the Inventory, Changes, History and the
+  device panel. An unnamed network shows its address range. Renaming reaches
+  every view at once.
+- **Inventory and Changes exports** in CSV, JSON and XML, scoped to the
+  selection, the current filter, one network or everything, with dated filenames
+  that carry the scope. Presence and status are written out as words. Internal
+  identifiers stay out of CSV and XML.
+- **An `Ignored` device status**, which keeps the device and its history and
+  takes its changes out of the review inbox.
+- **Bulk device classification** and a note-fetch command used only by exports.
+
+### Changed
+
+- Navigation is now `Scan · Inventory · Changes · History`, and no view is ever
+  disabled. The scan-to-scan comparison stays inside Scan, where it belongs: it
+  describes one scan against one baseline, while Changes is the persistent list
+  across every scan.
+- The scan toolbar always offers the comparison, reading **Why no comparison?**
+  when there is none — so a scan stopped early, the case where the explanation
+  matters most, can finally reach it.
+- Escape now resolves against the view in front of you: settings, then the device
+  panel, then that view's selection, then its filters, and only then a running
+  scan. The search and export shortcuts follow the view you are in instead of
+  jumping back to the scan results.
+- The device panel shows presence, network, last seen and the recorded changes
+  for the device, and distinguishes a scan's observation from the persistent
+  record. Opened in a scan it says the device answered that scan; opened from the
+  Inventory it reports presence.
+- Renames, classifications and network renames refresh the Inventory and the
+  Changes list in place. Nothing reloads the application, so a scan in progress,
+  the filters and the selection all survive.
+- The browser demo now carries two networks with their own gateways and ten kinds
+  of device, produces all three presence states honestly, and includes devices
+  nothing could identify. `?demo=empty` starts it with no history.
+
+### Fixed
+
+- Muted text inside a selected table row was below the 4.5:1 contrast floor in
+  the light theme. It now steps up to the secondary tone.
+- The clear buttons on the new search fields are a full 24px target.
+
+### Database
+
+- Schema version 4. One new table, `change_events`, with a unique key per scan,
+  device and kind of change, so a retried save or a reopened scan cannot create a
+  duplicate. Port changes store the opened and closed lists as numbers, not only
+  as display text.
+- Change records are deliberately not foreign-keyed to scans and carry the scan
+  dates and a device label of their own, so they stay readable after retention
+  prunes the scan that found them.
+- The Inventory is a query rather than a materialised table, so a rename, a
+  status change or a deleted scan can never leave two copies of the truth. It
+  costs two statements whatever the size of the database.
+- The upgrade records a watermark and starts the Changes list empty rather than
+  replaying every historical comparison, which would be unbounded work at launch
+  and would create a backlog nobody asked to review. Those differences are still
+  in each scan's own comparison.
+
 ## [1.7.1] - unreleased
 
 A correctness, reliability and security hardening release. No new product

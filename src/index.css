@@ -418,6 +418,17 @@
     background: var(--row-selected);
   }
 
+  /*
+   * The selected row's tint lifts the background enough that the muted text on
+   * it drops below 4.5:1 in the light theme. Muted is a de-emphasis, not a
+   * licence to become unreadable, so inside a selected row it steps up to the
+   * secondary tone. Everywhere else it is unchanged.
+   */
+  .data-table tbody tr[aria-selected="true"] td .text-text-muted,
+  .data-table tbody tr[aria-selected="true"] td.text-text-muted {
+    color: var(--text-secondary);
+  }
+
   /* Comfortable density adds four pixels of breathing room per row. */
   .data-table.density-comfortable tbody td {
     padding-top: 8px;
@@ -433,6 +444,20 @@
   .empty-value::after {
     content: "—";
     color: var(--text-muted);
+  }
+
+  /*
+   * Selection checkboxes for the inventory. The native control is kept — it is
+   * already keyboard accessible and announces itself correctly — and only its
+   * colour and size are brought in line with the rest of the interface.
+   */
+  .checkbox {
+    @apply h-3.5 w-3.5 shrink-0 cursor-pointer rounded-[3px] border border-border align-middle;
+    accent-color: var(--accent);
+  }
+  .checkbox:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 }
 

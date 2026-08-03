@@ -16,12 +16,14 @@ export interface ResultsToolbarProps {
   comparison: ScanComparison | null;
   onExport: (format: ExportFormat) => void;
   onViewChanges: () => void;
+  /** True while the comparison is showing instead of the table. */
+  comparisonOpen: boolean;
   canExport: boolean;
 }
 
 export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
   function ResultsToolbar(
-    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, canExport },
+    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, comparisonOpen, canExport },
     filterRef,
   ) {
     const exportButton = useRef<HTMLButtonElement>(null);
@@ -99,20 +101,39 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {anyChanges ? (
+          {/*
+           * One button in every case, so the comparison is always reachable.
+           * A scan with no comparison has a *reason* — it was stopped early, or
+           * nothing earlier covered the same ports — and that explanation is the
+           * most useful thing on the screen for the person wondering why.
+           */}
+          {comparison ? (
             <button
               type="button"
               onClick={onViewChanges}
-              className="flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast hover:bg-surface-hover"
-              title="Open the full comparison"
+              aria-pressed={comparisonOpen}
+              className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-text-secondary transition-colors duration-fast hover:bg-surface-hover ${
+                comparisonOpen ? "bg-surface-active" : ""
+              }`}
+              title={
+                comparisonOpen
+                  ? "Back to the device table"
+                  : "Compare this scan with the previous one"
+              }
             >
-              {newCount > 0 ? <Badge tone="new">{newCount} new</Badge> : null}
-              {returnedCount > 0 ? <Badge tone="accent">{returnedCount} back</Badge> : null}
-              {changedCount > 0 ? <Badge tone="changed">{changedCount} changed</Badge> : null}
-              {missingCount > 0 ? <Badge tone="missing">{missingCount} missing</Badge> : null}
+              {anyChanges ? (
+                <>
+                  {newCount > 0 ? <Badge tone="new">{newCount} new</Badge> : null}
+                  {returnedCount > 0 ? <Badge tone="accent">{returnedCount} back</Badge> : null}
+                  {changedCount > 0 ? <Badge tone="changed">{changedCount} changed</Badge> : null}
+                  {missingCount > 0 ? <Badge tone="missing">{missingCount} missing</Badge> : null}
+                </>
+              ) : comparison.baseline_scan_id != null ? (
+                <Badge>No changes</Badge>
+              ) : (
+                <Badge tone="warning">Why no comparison?</Badge>
+              )}
             </button>
-          ) : comparison && comparison.baseline_scan_id != null ? (
-            <Badge>No changes</Badge>
           ) : null}
 
           <div className="relative">

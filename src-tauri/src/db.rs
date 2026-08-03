@@ -17,6 +17,15 @@
 //! means an existing v1.6.4 database keeps every scan it ever recorded, and the
 //! upgrade is a handful of `ALTER TABLE`s plus one backfill pass.
 //!
+//! # Persistent inventory and change events (v1.8.0)
+//!
+//! v1.8 adds no new observation storage. The inventory view is a *query* over
+//! the tables above ([`Db::inventory`]), and the only new table is
+//! `change_events`: one normalized row per device, per scan, per kind of change,
+//! written once when a completed scan is saved and carrying its own review
+//! state. Deriving the inventory rather than materialising it means a rename, a
+//! status change or a deleted scan can never leave two copies of the truth.
+//!
 //! # Network scopes (v1.7.1)
 //!
 //! Device identity is scoped to a *network scope*: one row per physical
@@ -51,14 +60,25 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::inventory::{
-    self, ChangeKind, Device, DeviceStatus, IdentifiedHost, IdentitySource, ScanComparison,
+    self, ChangeKind, ChangeState, ChangeType, Device, DeviceStatus, IdentifiedHost,
+    IdentitySource, PresenceState, ScanComparison,
 };
 use crate::ipparse;
 use crate::scanner::{HostResult, ScanResult};
 use crate::signature;
 
 /// Current schema version. Bump when a migration is added below.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
+
+/// Most previous addresses kept per device in an inventory row. The full trail
+/// is in the device drawer; the table and the export only need the recent ones,
+/// and an unbounded list would make one long-lived device dominate an export.
+const PREVIOUS_IP_LIMIT: usize = 8;
+
+/// Largest change-event page the inbox will load in one call. Beyond this the
+/// list is truncated (newest first) and the UI says so, so a database with
+/// years of history cannot stall the view.
+pub const CHANGE_EVENT_LIMIT: i64 = 5_000;
 
 /// Why a cancelled scan carries no comparison.
 pub const PARTIAL_SCAN_REASON: &str = "This scan was stopped before every address was checked, \
@@ -172,6 +192,135 @@ pub struct DeviceObservation {
     pub os_guess: Option<String>,
 }
 
+/// One row of the persistent Inventory.
+///
+/// Everything here comes from the two queries in [`Db::inventory`]: no per-row
+/// lookups, no full observation history, and no note bodies — only whether a
+/// note exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventoryRow {
+    pub device_id: i64,
+    pub network_scope_id: Option<i64>,
+    /// The network's friendly name, or its automatic label.
+    pub network_name: Option<String>,
+    pub identity_source: IdentitySource,
+    /// Friendly name, hostname, manufacturer or address, in that order.
+    pub display_name: String,
+    pub custom_name: Option<String>,
+    pub hostname: Option<String>,
+    /// Address in the most recent observation.
+    pub current_ip: Option<String>,
+    /// Earlier addresses, newest first, without the current one.
+    pub previous_ips: Vec<String>,
+    pub mac: Option<String>,
+    pub vendor: Option<String>,
+    pub os_guess: Option<String>,
+    /// How the operator classified the device.
+    pub status: DeviceStatus,
+    /// What the latest completed scan says about the device.
+    pub presence: PresenceState,
+    pub first_seen: String,
+    pub last_seen: String,
+    /// The scan the presence state was decided from, when there is one.
+    pub last_completed_scan_id: Option<i64>,
+    pub last_completed_scan_at: Option<String>,
+    pub observation_count: i64,
+    /// Open ports in the most recent observation.
+    pub open_ports: Vec<u16>,
+    /// True when the device carries notes.
+    pub notes_present: bool,
+    /// The opening of the note, so search can reach it. Deliberately not the
+    /// whole body: the table shows an indicator, and loading thousands of full
+    /// notes to render a dot would be wasted work.
+    pub notes_excerpt: Option<String>,
+    pub latest_response_ms: Option<i64>,
+    pub latest_icmp_ms: Option<f64>,
+    pub latest_tcp_ms: Option<f64>,
+}
+
+/// A network as the Inventory and Changes filters offer it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkOption {
+    pub id: i64,
+    pub name: String,
+    pub device_count: i64,
+}
+
+/// The whole Inventory plus the counts its header shows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventorySummary {
+    pub rows: Vec<InventoryRow>,
+    /// Networks that actually hold devices, for the network filter.
+    pub networks: Vec<NetworkOption>,
+    pub present: i64,
+    pub missing: i64,
+    pub unknown: i64,
+    /// True when no completed scan anywhere can decide presence, so the UI can
+    /// explain why every device reads Unknown.
+    pub needs_completed_scan: bool,
+}
+
+/// One persisted change, as the Changes inbox shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeEvent {
+    pub id: i64,
+    /// Deterministic identity: the same change recorded twice is one row.
+    pub event_key: String,
+    /// The scan that found the change. Null once that scan has been pruned.
+    pub scan_id: Option<i64>,
+    pub baseline_scan_id: Option<i64>,
+    pub network_scope_id: Option<i64>,
+    pub network_name: Option<String>,
+    pub device_id: Option<i64>,
+    /// The device's current name, falling back to the label recorded with the
+    /// event when the device is gone.
+    pub device_label: String,
+    pub ip: Option<String>,
+    pub mac: Option<String>,
+    pub vendor: Option<String>,
+    pub change_type: ChangeType,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    /// Ports that opened, for `ports_changed`. Structured, not display text.
+    pub opened_ports: Vec<u16>,
+    /// Ports that closed, for `ports_changed`.
+    pub closed_ports: Vec<u16>,
+    pub state: ChangeState,
+    /// When the change was recorded.
+    pub created_at: String,
+    /// When the scan that found it ran, kept so the record survives pruning.
+    pub scan_at: Option<String>,
+    pub baseline_at: Option<String>,
+    pub acknowledged_at: Option<String>,
+    /// The device's current classification, so Trust and Ignore can be offered
+    /// only where they would do something.
+    pub device_status: Option<DeviceStatus>,
+}
+
+/// A page of change events plus the counts the inbox header shows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeFeed {
+    pub events: Vec<ChangeEvent>,
+    pub unreviewed: i64,
+    pub total: i64,
+    /// True when older events exist beyond the page that was returned.
+    pub truncated: bool,
+    /// The newest scan that existed when this database was upgraded to the
+    /// v1.8 schema. Changes are recorded for scans after it, so an inbox that
+    /// is empty on an upgraded install can say why instead of looking broken.
+    /// Zero on a database that has never held a scan.
+    pub starts_after_scan_id: i64,
+}
+
+/// What a bulk action actually managed to do.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOutcome {
+    pub updated: usize,
+    /// Ids that no longer exist. The transaction still commits the rest, and
+    /// the UI reports the shortfall rather than pretending it succeeded.
+    pub missing: Vec<i64>,
+}
+
 /// Everything the device drawer needs, in one round trip.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceDetail {
@@ -182,6 +331,17 @@ pub struct DeviceDetail {
     pub previous_ips: Vec<String>,
     /// Field changes between the two most recent observations.
     pub recent_changes: Vec<inventory::FieldChange>,
+    /// Persisted change events for this device, newest first. Distinct from
+    /// `recent_changes`: these are the reviewable records the Changes inbox
+    /// works with, not a diff computed on the spot.
+    #[serde(default)]
+    pub events: Vec<ChangeEvent>,
+    /// The network this device belongs to, named.
+    #[serde(default)]
+    pub network_name: Option<String>,
+    /// What the latest completed scan says about the device.
+    #[serde(default)]
+    pub presence: PresenceState,
 }
 
 impl Db {
@@ -331,6 +491,14 @@ impl Db {
             ],
         )
         .map_err(sql_err)?;
+
+        // Persist the changes for the inbox. A cancelled scan has no baseline
+        // and produces no comparison, so this is naturally a no-op for it: a
+        // scan that did not check every address must never create an actionable
+        // change event.
+        if let Some(b) = &baseline {
+            record_change_events(&tx, scan_id, scope_id, b, &comparison, &created_at)?;
+        }
 
         tx.commit().map_err(sql_err)?;
         Ok(SavedScan {
@@ -545,26 +713,32 @@ impl Db {
     }
 
     pub fn delete_scan(&self, id: i64) -> Result<(), String> {
-        let conn = self.lock()?;
-        conn.execute("DELETE FROM scans WHERE id = ?1", params![id])
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(sql_err)?;
+        tx.execute("DELETE FROM scans WHERE id = ?1", params![id])
             .map_err(sql_err)?;
-        Ok(())
+        clear_deleted_scan_links(&tx)?;
+        tx.commit().map_err(sql_err)
     }
 
     /// Drop the oldest scans, keeping the newest `keep`. Devices survive so
-    /// labels, notes and first-seen dates are never lost to retention.
+    /// labels, notes and first-seen dates are never lost to retention, and so do
+    /// change records.
     pub fn prune_history(&self, keep: i64) -> Result<usize, String> {
         if keep < 1 {
             return Err("History retention must keep at least one scan.".into());
         }
-        let conn = self.lock()?;
-        let removed = conn
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(sql_err)?;
+        let removed = tx
             .execute(
                 "DELETE FROM scans WHERE id NOT IN
                     (SELECT id FROM scans ORDER BY id DESC LIMIT ?1)",
                 params![keep],
             )
             .map_err(sql_err)?;
+        clear_deleted_scan_links(&tx)?;
+        tx.commit().map_err(sql_err)?;
         Ok(removed)
     }
 
@@ -585,17 +759,306 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
     }
 
+    /// The persistent Inventory: one row per device across every scan, with the
+    /// presence rules in [`PresenceState`] applied.
+    ///
+    /// Two statements, whatever the size of the database. Everything a row needs
+    /// — the latest observation, the observation count, the previous addresses,
+    /// whether a note exists, and the presence verdict — is computed set-wise in
+    /// SQL rather than by asking a question per device. Note bodies and full
+    /// observation histories are deliberately not loaded: the drawer fetches
+    /// those for the one device it is showing.
+    pub fn inventory(&self) -> Result<InventorySummary, String> {
+        let conn = self.lock()?;
+
+        // Addresses first, so the main pass can attach them without a lookup.
+        // Grouped by device and address, ordered newest-sighting-first.
+        let mut ip_history: HashMap<i64, Vec<String>> = HashMap::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT device_id, ip FROM (
+                         SELECT h.device_id AS device_id, h.ip AS ip, MAX(h.scan_id) AS seen
+                         FROM hosts h
+                         WHERE h.device_id IS NOT NULL
+                         GROUP BY h.device_id, h.ip
+                     )
+                     ORDER BY device_id ASC, seen DESC",
+                )
+                .map_err(sql_err)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .map_err(sql_err)?;
+            for row in rows {
+                let (device_id, ip) = row.map_err(sql_err)?;
+                let entry = ip_history.entry(device_id).or_default();
+                // One extra, because the current address is dropped below.
+                if entry.len() <= PREVIOUS_IP_LIMIT {
+                    entry.push(ip);
+                }
+            }
+        }
+
+        let mut stmt = conn.prepare(INVENTORY_SQL).map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let device_id: i64 = row.get(0)?;
+                let custom_name: Option<String> = row.get(4)?;
+                let hostname: Option<String> = row.get(5)?;
+                let vendor: Option<String> = row.get(6)?;
+                let last_ip: Option<String> = row.get(8)?;
+                let latest_ip: Option<String> = row.get(14)?;
+                let current_ip = latest_ip.or(last_ip);
+                let present: bool = row.get(22)?;
+                let comparable: bool = row.get(23)?;
+                Ok(InventoryRow {
+                    device_id,
+                    network_scope_id: row.get(1)?,
+                    network_name: row.get(2)?,
+                    identity_source: parse_source(&row.get::<_, String>(3)?),
+                    display_name: inventory::display_name(
+                        custom_name.as_deref(),
+                        hostname.as_deref(),
+                        vendor.as_deref(),
+                        current_ip.as_deref().unwrap_or(""),
+                    ),
+                    custom_name,
+                    hostname,
+                    previous_ips: Vec::new(),
+                    mac: row.get(7)?,
+                    vendor,
+                    os_guess: row.get(20)?,
+                    status: DeviceStatus::parse(&row.get::<_, String>(11)?),
+                    presence: if present {
+                        PresenceState::Present
+                    } else if comparable {
+                        PresenceState::Missing
+                    } else {
+                        PresenceState::Unknown
+                    },
+                    first_seen: row.get(9)?,
+                    last_seen: row.get(10)?,
+                    last_completed_scan_id: row.get(21)?,
+                    last_completed_scan_at: row.get(24)?,
+                    observation_count: row.get(13)?,
+                    open_ports: row
+                        .get::<_, Option<String>>(15)?
+                        .as_deref()
+                        .map(parse_ports)
+                        .unwrap_or_default(),
+                    notes_present: row.get(12)?,
+                    notes_excerpt: row.get(25)?,
+                    latest_response_ms: row.get(16)?,
+                    latest_icmp_ms: row.get(17)?,
+                    latest_tcp_ms: row.get(18)?,
+                    current_ip,
+                })
+            })
+            .map_err(sql_err)?;
+
+        let mut inventory_rows: Vec<InventoryRow> =
+            rows.collect::<Result<_, _>>().map_err(sql_err)?;
+        let mut present = 0i64;
+        let mut missing = 0i64;
+        let mut unknown = 0i64;
+        let mut networks: HashMap<i64, (String, i64)> = HashMap::new();
+
+        for row in &mut inventory_rows {
+            match row.presence {
+                PresenceState::Present => present += 1,
+                PresenceState::Missing => missing += 1,
+                PresenceState::Unknown => unknown += 1,
+            }
+            if let Some(history) = ip_history.remove(&row.device_id) {
+                row.previous_ips = history
+                    .into_iter()
+                    .filter(|ip| Some(ip.as_str()) != row.current_ip.as_deref())
+                    .take(PREVIOUS_IP_LIMIT)
+                    .collect();
+            }
+            if let Some(scope) = row.network_scope_id {
+                let entry = networks.entry(scope).or_insert_with(|| {
+                    (
+                        row.network_name.clone().unwrap_or_else(|| "Network".into()),
+                        0,
+                    )
+                });
+                entry.1 += 1;
+            }
+        }
+
+        let mut networks: Vec<NetworkOption> = networks
+            .into_iter()
+            .map(|(id, (name, device_count))| NetworkOption {
+                id,
+                name,
+                device_count,
+            })
+            .collect();
+        // Case-insensitive, so the filter menu reads alphabetically whatever
+        // capitalisation the operator used for a network name.
+        networks.sort_by_key(|network| network.name.to_lowercase());
+
+        let needs_completed_scan = !inventory_rows.is_empty()
+            && inventory_rows
+                .iter()
+                .all(|r| r.last_completed_scan_id.is_none());
+
+        Ok(InventorySummary {
+            rows: inventory_rows,
+            networks,
+            present,
+            missing,
+            unknown,
+            needs_completed_scan,
+        })
+    }
+
+    /// The Changes inbox: every persisted change event, newest first.
+    ///
+    /// Names and network labels are resolved against the *current* device and
+    /// scope rows, so renaming a device or a network updates the inbox without
+    /// rewriting history. The label recorded with the event is the fallback for
+    /// a device that has since been removed.
+    pub fn change_events(&self) -> Result<ChangeFeed, String> {
+        let conn = self.lock()?;
+        let (total, unreviewed): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(state = 'unreviewed'), 0) FROM change_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(sql_err)?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT ce.id, ce.event_key, ce.scan_id, ce.baseline_scan_id, ce.network_scope_id,
+                        ns.display_name, ce.device_id, ce.device_label, ce.ip, ce.mac, ce.vendor,
+                        ce.change_type, ce.old_value, ce.new_value, ce.details, ce.state,
+                        ce.created_at, ce.scan_at, ce.baseline_at, ce.acknowledged_at,
+                        d.status, d.custom_name, d.hostname, d.vendor
+                 FROM change_events ce
+                 LEFT JOIN network_scopes ns ON ns.id = ce.network_scope_id
+                 LEFT JOIN devices d ON d.id = ce.device_id
+                 ORDER BY ce.id DESC
+                 LIMIT ?1",
+            )
+            .map_err(sql_err)?;
+        let events = stmt
+            .query_map(params![CHANGE_EVENT_LIMIT], read_change_event)
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+
+        Ok(ChangeFeed {
+            truncated: total > events.len() as i64,
+            events,
+            unreviewed,
+            total,
+            starts_after_scan_id: changes_watermark(&conn)?,
+        })
+    }
+
+    /// Move change events into a review state. One transaction, so a bulk
+    /// acknowledgement either lands completely or not at all.
+    ///
+    /// Acknowledging stamps the time; moving back to unreviewed clears it, which
+    /// is what makes Undo honest rather than leaving a stale timestamp behind.
+    pub fn set_change_state(&self, ids: &[i64], state: ChangeState) -> Result<BulkOutcome, String> {
+        if ids.is_empty() {
+            return Ok(BulkOutcome {
+                updated: 0,
+                missing: Vec::new(),
+            });
+        }
+        let mut conn = self.lock()?;
+        let now = chrono::Local::now().to_rfc3339();
+        let tx = conn.transaction().map_err(sql_err)?;
+        let mut updated = 0usize;
+        let mut missing = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare("UPDATE change_events SET state = ?1, acknowledged_at = ?2 WHERE id = ?3")
+                .map_err(sql_err)?;
+            let stamp = (state == ChangeState::Acknowledged).then_some(now);
+            for id in ids {
+                let count = stmt
+                    .execute(params![state.as_str(), stamp, id])
+                    .map_err(sql_err)?;
+                if count == 0 {
+                    missing.push(*id);
+                } else {
+                    updated += count;
+                }
+            }
+        }
+        tx.commit().map_err(sql_err)?;
+        Ok(BulkOutcome { updated, missing })
+    }
+
+    /// Classify several devices at once, for the Inventory's bulk actions.
+    ///
+    /// Marking a device Ignored also takes its existing unreviewed changes out
+    /// of the inbox, because leaving them there would contradict the action the
+    /// operator just took. Nothing is deleted: the events keep their record and
+    /// come back with the Ignored filter.
+    pub fn set_device_statuses(
+        &self,
+        ids: &[i64],
+        status: DeviceStatus,
+    ) -> Result<BulkOutcome, String> {
+        if ids.is_empty() {
+            return Ok(BulkOutcome {
+                updated: 0,
+                missing: Vec::new(),
+            });
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(sql_err)?;
+        let mut updated = 0usize;
+        let mut missing = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare("UPDATE devices SET status = ?1 WHERE id = ?2")
+                .map_err(sql_err)?;
+            let mut hide = tx
+                .prepare(
+                    "UPDATE change_events SET state = 'ignored'
+                     WHERE device_id = ?1 AND state = 'unreviewed'",
+                )
+                .map_err(sql_err)?;
+            for id in ids {
+                let count = stmt
+                    .execute(params![status.as_str(), id])
+                    .map_err(sql_err)?;
+                if count == 0 {
+                    missing.push(*id);
+                    continue;
+                }
+                updated += count;
+                if status == DeviceStatus::Ignored {
+                    hide.execute(params![id]).map_err(sql_err)?;
+                }
+            }
+        }
+        tx.commit().map_err(sql_err)?;
+        Ok(BulkOutcome { updated, missing })
+    }
+
     pub fn device_detail(&self, id: i64) -> Result<DeviceDetail, String> {
         let conn = self.lock()?;
-        let device = conn
+        let (device, network_name) = conn
             .query_row(
                 "SELECT d.id, d.network_scope_id, d.identity_key, d.identity_source, d.mac,
                         d.custom_name, d.hostname, d.vendor, d.last_ip, d.first_seen,
                         d.last_seen, d.status, d.notes,
-                        (SELECT COUNT(*) FROM hosts h WHERE h.device_id = d.id)
-                 FROM devices d WHERE d.id = ?1",
+                        (SELECT COUNT(*) FROM hosts h WHERE h.device_id = d.id),
+                        ns.display_name
+                 FROM devices d
+                 LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
+                 WHERE d.id = ?1",
                 params![id],
-                read_device,
+                |row| Ok((read_device(row)?, row.get::<_, Option<String>>(14)?)),
             )
             .optional()
             .map_err(sql_err)?
@@ -648,11 +1111,39 @@ impl Db {
             _ => Vec::new(),
         };
 
+        // The reviewable records for this device, so the drawer opened from the
+        // Changes inbox can show what happened and when it was reviewed.
+        let mut stmt = conn
+            .prepare(
+                "SELECT ce.id, ce.event_key, ce.scan_id, ce.baseline_scan_id, ce.network_scope_id,
+                        ns.display_name, ce.device_id, ce.device_label, ce.ip, ce.mac, ce.vendor,
+                        ce.change_type, ce.old_value, ce.new_value, ce.details, ce.state,
+                        ce.created_at, ce.scan_at, ce.baseline_at, ce.acknowledged_at,
+                        d.status, d.custom_name, d.hostname, d.vendor
+                 FROM change_events ce
+                 LEFT JOIN network_scopes ns ON ns.id = ce.network_scope_id
+                 LEFT JOIN devices d ON d.id = ce.device_id
+                 WHERE ce.device_id = ?1
+                 ORDER BY ce.id DESC
+                 LIMIT 30",
+            )
+            .map_err(sql_err)?;
+        let events = stmt
+            .query_map(params![id], read_change_event)
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+
+        let presence = device_presence(&conn, id, device.network_scope_id)?;
+
         Ok(DeviceDetail {
             device,
             observations,
             previous_ips,
             recent_changes,
+            events,
+            network_name,
+            presence,
         })
     }
 
@@ -688,6 +1179,32 @@ impl Db {
             return Err(format!("Device {id} is no longer in the inventory."));
         }
         Ok(())
+    }
+
+    /// Note bodies for a set of devices, for an export.
+    ///
+    /// The inventory query carries only whether a note exists, because the table
+    /// shows an indicator; an export needs the text, so it is fetched once for
+    /// exactly the devices being written rather than loaded into every row.
+    pub fn device_notes(&self, ids: &[i64]) -> Result<Vec<(i64, String)>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, notes FROM devices WHERE id = ?1 AND notes IS NOT NULL")
+            .map_err(sql_err)?;
+        let mut out = Vec::new();
+        for id in ids {
+            let row: Option<(i64, String)> = stmt
+                .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .map_err(sql_err)?;
+            if let Some(pair) = row {
+                out.push(pair);
+            }
+        }
+        Ok(out)
     }
 
     pub fn set_device_notes(&self, id: i64, notes: Option<String>) -> Result<(), String> {
@@ -758,6 +1275,377 @@ impl Db {
             .map_err(sql_err)?;
         Ok(ips)
     }
+}
+
+/// Drop change events' references to scans that no longer exist.
+///
+/// `change_events.scan_id` is deliberately not a foreign key — the record has to
+/// outlive the scan that produced it — but that means nothing nulls it
+/// automatically, and an id pointing at a deleted scan would make the inbox's
+/// "Open the scan" fail rather than saying the scan is gone. The event keeps its
+/// own copy of the scan dates and the device label, so it stays readable.
+fn clear_deleted_scan_links(tx: &Transaction<'_>) -> Result<(), String> {
+    tx.execute(
+        "UPDATE change_events
+         SET scan_id = CASE
+                 WHEN scan_id IN (SELECT id FROM scans) THEN scan_id ELSE NULL END,
+             baseline_scan_id = CASE
+                 WHEN baseline_scan_id IN (SELECT id FROM scans) THEN baseline_scan_id
+                 ELSE NULL END
+         WHERE (scan_id IS NOT NULL AND scan_id NOT IN (SELECT id FROM scans))
+            OR (baseline_scan_id IS NOT NULL
+                AND baseline_scan_id NOT IN (SELECT id FROM scans))",
+        [],
+    )
+    .map_err(sql_err)?;
+    Ok(())
+}
+
+/// Presence for a single device, applying exactly the rules documented on
+/// [`PresenceState`] and implemented set-wise in [`INVENTORY_SQL`].
+///
+/// Kept as its own function rather than reusing the inventory query because the
+/// drawer asks about one device, and a test that both agree is cheaper than a
+/// second implementation drifting.
+fn device_presence(
+    conn: &Connection,
+    device_id: i64,
+    scope_id: Option<i64>,
+) -> Result<PresenceState, String> {
+    let Some(scope) = scope_id else {
+        return Ok(PresenceState::Unknown);
+    };
+    let reference: Option<(i64, String, String)> = conn
+        .query_row(
+            "SELECT id, target_key, coverage_key FROM scans
+             WHERE network_scope_id = ?1 AND status = 'completed'
+               AND coverage_key <> '' AND coverage_key NOT LIKE 'legacy:%'
+             ORDER BY id DESC LIMIT 1",
+            params![scope],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(sql_err)?;
+    let Some((scan_id, target_key, coverage_key)) = reference else {
+        return Ok(PresenceState::Unknown);
+    };
+
+    let present: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM hosts WHERE device_id = ?1 AND scan_id = ?2)",
+            params![device_id, scan_id],
+            |r| r.get(0),
+        )
+        .map_err(sql_err)?;
+    if present {
+        return Ok(PresenceState::Present);
+    }
+
+    let comparable: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM hosts h JOIN scans s ON s.id = h.scan_id
+                 WHERE h.device_id = ?1 AND s.network_scope_id = ?2
+                   AND s.status = 'completed'
+                   AND s.target_key = ?3 AND s.coverage_key = ?4)",
+            params![device_id, scope, target_key, coverage_key],
+            |r| r.get(0),
+        )
+        .map_err(sql_err)?;
+    Ok(if comparable {
+        PresenceState::Missing
+    } else {
+        PresenceState::Unknown
+    })
+}
+
+/// The Inventory query.
+///
+/// Four common table expressions do the work that would otherwise be a query per
+/// row:
+///
+/// * `reference` — each network scope's most recent scan that both completed and
+///   recorded which ports it checked. This is the only scan presence is decided
+///   from, which is what keeps a stopped scan from marking anything Missing and
+///   a pre-coverage-key scan from being compared against.
+/// * `present` — devices that scan actually saw.
+/// * `comparable` — devices seen by *any* completed scan with the same target
+///   and coverage as the reference. Absence only means something for these; for
+///   anything else the reference scan was not looking in the same place.
+/// * `latest` — the newest observation per device, in one window-function pass
+///   over `hosts` rather than a lookup per device.
+///
+/// Notes are reduced to a boolean here on purpose: the table only ever shows an
+/// indicator, and loading thousands of note bodies to render a dot would be
+/// wasted work.
+const INVENTORY_SQL: &str = r#"
+WITH reference AS (
+    SELECT s.network_scope_id AS scope_id, s.id AS scan_id, s.created_at AS created_at,
+           s.target_key AS target_key, s.coverage_key AS coverage_key
+    FROM scans s
+    WHERE s.status = 'completed'
+      AND s.coverage_key <> ''
+      AND s.coverage_key NOT LIKE 'legacy:%'
+      AND s.id = (
+          SELECT MAX(s2.id) FROM scans s2
+          WHERE s2.network_scope_id IS s.network_scope_id
+            AND s2.status = 'completed'
+            AND s2.coverage_key <> ''
+            AND s2.coverage_key NOT LIKE 'legacy:%'
+      )
+),
+present AS (
+    SELECT DISTINCT h.device_id AS device_id
+    FROM hosts h JOIN reference r ON r.scan_id = h.scan_id
+    WHERE h.device_id IS NOT NULL
+),
+comparable AS (
+    SELECT DISTINCT h.device_id AS device_id
+    FROM hosts h
+    JOIN scans s ON s.id = h.scan_id
+    JOIN reference r ON r.scope_id IS s.network_scope_id
+    WHERE h.device_id IS NOT NULL
+      AND s.status = 'completed'
+      AND s.target_key = r.target_key
+      AND s.coverage_key = r.coverage_key
+),
+latest AS (
+    SELECT device_id, ip, open_ports, response_ms, icmp_ms, tcp_ms, last_seen, os_guess
+    FROM (
+        SELECT h.device_id AS device_id, h.ip AS ip, h.open_ports AS open_ports,
+               h.response_ms AS response_ms, h.icmp_ms AS icmp_ms, h.tcp_ms AS tcp_ms,
+               h.last_seen AS last_seen, h.os_guess AS os_guess,
+               ROW_NUMBER() OVER (PARTITION BY h.device_id ORDER BY h.scan_id DESC, h.id DESC) AS rn
+        FROM hosts h
+        WHERE h.device_id IS NOT NULL
+    )
+    WHERE rn = 1
+),
+counts AS (
+    SELECT h.device_id AS device_id, COUNT(*) AS n
+    FROM hosts h WHERE h.device_id IS NOT NULL GROUP BY h.device_id
+)
+SELECT d.id, d.network_scope_id, ns.display_name, d.identity_source, d.custom_name, d.hostname,
+       d.vendor, d.mac, d.last_ip, d.first_seen, d.last_seen, d.status,
+       (d.notes IS NOT NULL AND TRIM(d.notes) <> '') AS has_notes,
+       COALESCE(c.n, 0) AS observations,
+       l.ip, l.open_ports, l.response_ms, l.icmp_ms, l.tcp_ms, l.last_seen, l.os_guess,
+       r.scan_id,
+       (p.device_id IS NOT NULL) AS is_present,
+       (cmp.device_id IS NOT NULL) AS is_comparable,
+       r.created_at,
+       SUBSTR(d.notes, 1, 160) AS notes_excerpt
+FROM devices d
+LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
+LEFT JOIN reference r ON r.scope_id IS d.network_scope_id
+LEFT JOIN latest l ON l.device_id = d.id
+LEFT JOIN counts c ON c.device_id = d.id
+LEFT JOIN present p ON p.device_id = d.id
+LEFT JOIN comparable cmp ON cmp.device_id = d.id
+ORDER BY d.last_seen DESC, d.id DESC
+"#;
+
+/// Read one change-event row, resolving the device label against the device's
+/// current name so a rename shows up everywhere at once.
+fn read_change_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChangeEvent> {
+    let ip: Option<String> = row.get(8)?;
+    let stored_label: String = row.get(7)?;
+    let device_status: Option<String> = row.get(20)?;
+    let current_name: Option<String> = row.get(21)?;
+    let current_hostname: Option<String> = row.get(22)?;
+    let current_vendor: Option<String> = row.get(23)?;
+    let device_label = if device_status.is_some() {
+        inventory::display_name(
+            current_name.as_deref(),
+            current_hostname.as_deref(),
+            current_vendor.as_deref(),
+            ip.as_deref().unwrap_or(&stored_label),
+        )
+    } else {
+        stored_label
+    };
+    let details: Option<String> = row.get(14)?;
+    let (opened_ports, closed_ports) = parse_port_details(details.as_deref());
+    Ok(ChangeEvent {
+        id: row.get(0)?,
+        event_key: row.get(1)?,
+        scan_id: row.get(2)?,
+        baseline_scan_id: row.get(3)?,
+        network_scope_id: row.get(4)?,
+        network_name: row.get(5)?,
+        device_id: row.get(6)?,
+        device_label,
+        mac: row.get(9)?,
+        vendor: row.get(10)?,
+        // An unrecognised type can only come from a newer build writing into
+        // this database; showing it as a plain change beats hiding it.
+        change_type: ChangeType::parse(&row.get::<_, String>(11)?)
+            .unwrap_or(ChangeType::PortsChanged),
+        old_value: row.get(12)?,
+        new_value: row.get(13)?,
+        opened_ports,
+        closed_ports,
+        state: ChangeState::parse(&row.get::<_, String>(15)?).unwrap_or_default(),
+        created_at: row.get(16)?,
+        scan_at: row.get(17)?,
+        baseline_at: row.get(18)?,
+        acknowledged_at: row.get(19)?,
+        device_status: device_status.as_deref().map(DeviceStatus::parse),
+        ip,
+    })
+}
+
+/// Unpack the structured opened/closed port lists stored with a port change.
+fn parse_port_details(details: Option<&str>) -> (Vec<u16>, Vec<u16>) {
+    let Some(raw) = details else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return (Vec::new(), Vec::new());
+    };
+    let list = |key: &str| -> Vec<u16> {
+        value
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.as_u64())
+                    .filter_map(|n| u16::try_from(n).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    (list("opened"), list("closed"))
+}
+
+/// Write one normalized change event per device, per kind of change, for a
+/// completed scan that had a baseline to compare against.
+///
+/// # Uniqueness
+///
+/// `event_key` is `s{scan}|{device}|{type}`, derived entirely from data that
+/// cannot change after the fact, and the table has a unique index on it. Saving
+/// the same scan twice, retrying an interrupted save, or re-opening a scan
+/// therefore cannot produce a second copy of a change: the insert conflicts and
+/// does nothing, leaving the operator's existing review state alone.
+///
+/// # Ignored devices
+///
+/// A device the operator marked Ignored still gets its events recorded — the
+/// history is never thrown away — but they are written already in the `ignored`
+/// state, so they stay out of the default inbox and can be filtered back in.
+fn record_change_events(
+    tx: &Transaction<'_>,
+    scan_id: i64,
+    scope_id: i64,
+    baseline: &BaselineScan,
+    comparison: &ScanComparison,
+    now: &str,
+) -> Result<usize, String> {
+    use std::collections::HashSet;
+
+    // One query rather than a status lookup per changed device.
+    let ignored: HashSet<i64> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM devices WHERE network_scope_id = ?1 AND status = 'ignored'")
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map(params![scope_id], |r| r.get::<_, i64>(0))
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+        rows.into_iter().collect()
+    };
+
+    let mut stmt = tx
+        .prepare(
+            "INSERT INTO change_events
+                (event_key, scan_id, baseline_scan_id, network_scope_id, device_id, device_label,
+                 ip, mac, vendor, change_type, old_value, new_value, details, state, created_at,
+                 scan_at, baseline_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16)
+             ON CONFLICT(event_key) DO NOTHING",
+        )
+        .map_err(sql_err)?;
+
+    let mut written = 0usize;
+    let mut write = |diff: &inventory::DeviceDiff,
+                     kind: ChangeType,
+                     old: Option<String>,
+                     new: Option<String>,
+                     details: Option<String>|
+     -> Result<(), String> {
+        let subject = match diff.device_id {
+            Some(id) => format!("d{id}"),
+            // A device the inventory could not identify still gets a stable key
+            // from its address, so a retry does not duplicate it either.
+            None => format!("ip:{}", diff.ip),
+        };
+        let state = match diff.device_id {
+            Some(id) if ignored.contains(&id) => ChangeState::Ignored,
+            _ => ChangeState::Unreviewed,
+        };
+        let count = stmt
+            .execute(params![
+                format!("s{scan_id}|{subject}|{}", kind.as_str()),
+                scan_id,
+                baseline.id,
+                scope_id,
+                diff.device_id,
+                diff.name,
+                diff.ip,
+                diff.mac,
+                diff.vendor,
+                kind.as_str(),
+                old,
+                new,
+                details,
+                state.as_str(),
+                now,
+                baseline.created_at,
+            ])
+            .map_err(sql_err)?;
+        written += count;
+        Ok(())
+    };
+
+    for diff in &comparison.added {
+        let kind = match diff.kind {
+            ChangeKind::Returned => ChangeType::DeviceReturned,
+            _ => ChangeType::DeviceAdded,
+        };
+        write(diff, kind, None, Some(diff.ip.clone()), None)?;
+    }
+    for diff in &comparison.removed {
+        write(
+            diff,
+            ChangeType::DeviceMissing,
+            Some(diff.ip.clone()),
+            None,
+            None,
+        )?;
+    }
+    for diff in &comparison.changed {
+        for field in &diff.fields {
+            let Some(kind) = ChangeType::for_field(&field.field) else {
+                continue;
+            };
+            // Port changes carry the structured lists, not only the display
+            // text, so an export or a later UI can work with the numbers.
+            let details = if kind == ChangeType::PortsChanged {
+                serde_json::to_string(&serde_json::json!({
+                    "opened": field.added_ports,
+                    "closed": field.removed_ports,
+                }))
+                .ok()
+            } else {
+                None
+            };
+            write(diff, kind, field.from.clone(), field.to.clone(), details)?;
+        }
+    }
+    Ok(written)
 }
 
 /// Turn a rusqlite error into a message safe to show a person. The raw SQL error
@@ -1371,11 +2259,48 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
 
+    // v1.8: normalized change events. Created before migrate_v4 so a fresh
+    // database and an upgraded one reach exactly the same shape.
+    //
+    // `scan_id` and `baseline_scan_id` are deliberately *not* foreign keys onto
+    // `scans`: retention prunes old scans, and a change that was reviewed months
+    // ago should stay readable afterwards. The scan timestamps and the device
+    // label are copied in for the same reason.
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS change_events (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key        TEXT NOT NULL UNIQUE,
+            scan_id          INTEGER,
+            baseline_scan_id INTEGER,
+            network_scope_id INTEGER,
+            device_id        INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+            device_label     TEXT NOT NULL,
+            ip               TEXT,
+            mac              TEXT,
+            vendor           TEXT,
+            change_type      TEXT NOT NULL,
+            old_value        TEXT,
+            new_value        TEXT,
+            details          TEXT,
+            state            TEXT NOT NULL DEFAULT 'unreviewed',
+            created_at       TEXT NOT NULL,
+            scan_at          TEXT,
+            baseline_at      TEXT,
+            acknowledged_at  TEXT
+        );
+        "#,
+    )
+    .map_err(sql_err)?;
+
     if version < 2 {
         backfill_v2(conn)?;
     }
     if version < 3 {
         migrate_v3(conn)?;
+    }
+    if version < 4 {
+        migrate_v4(conn)?;
     }
 
     // Indexes last: the scope-aware ones only exist once the v3 shape does.
@@ -1383,11 +2308,20 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen DESC);
         CREATE INDEX IF NOT EXISTS idx_devices_scope_mac ON devices(network_scope_id, mac);
+        CREATE INDEX IF NOT EXISTS idx_devices_scope     ON devices(network_scope_id);
+        CREATE INDEX IF NOT EXISTS idx_devices_status    ON devices(status);
         CREATE INDEX IF NOT EXISTS idx_hosts_device      ON hosts(device_id);
+        CREATE INDEX IF NOT EXISTS idx_hosts_device_scan ON hosts(device_id, scan_id DESC);
         CREATE INDEX IF NOT EXISTS idx_hosts_scan_ip     ON hosts(scan_id, ip);
         CREATE INDEX IF NOT EXISTS idx_scans_target_key  ON scans(target_key, id DESC);
         CREATE INDEX IF NOT EXISTS idx_scans_baseline
             ON scans(network_scope_id, target_key, coverage_key, status, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_scans_scope_completed
+            ON scans(network_scope_id, status, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_change_events_created ON change_events(id DESC);
+        CREATE INDEX IF NOT EXISTS idx_change_events_state   ON change_events(state, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_change_events_device  ON change_events(device_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_change_events_scope   ON change_events(network_scope_id, id DESC);
         "#,
     )
     .map_err(sql_err)?;
@@ -1658,6 +2592,59 @@ fn migrate_v3_inner(conn: &mut Connection) -> Result<(), String> {
     }
 
     tx.commit().map_err(sql_err)
+}
+
+/// The v1.8.0 upgrade: the Changes inbox starts empty, deliberately.
+///
+/// The `change_events` table is created for every database (see [`migrate`]).
+/// What this migration decides is what goes *into* it for an existing install.
+///
+/// # Why nothing is backfilled
+///
+/// Two options were available: replay every historical comparison and store the
+/// results as already-acknowledged, or start recording from the first scan after
+/// the upgrade. Backfilling was rejected on both counts that matter here. It is
+/// unbounded work at launch — a database with years of scans would replay every
+/// one of them while the operator waits — and it would fill a brand-new feature
+/// with entries nobody asked to review, which is exactly the backlog the release
+/// is meant to avoid. Neither is worth it for changes that were already seen in
+/// the comparison view at the time.
+///
+/// So the watermark below records the newest scan present at upgrade time. Every
+/// scan saved afterwards records its changes normally, and the inbox explains
+/// that it starts from the upgrade rather than looking silently empty. Scans
+/// recorded before the upgrade keep their full comparison view, which is where
+/// their history has always been.
+///
+/// Idempotent: the watermark is written once and never moved, so re-running the
+/// migration (or opening an already-current database) changes nothing.
+fn migrate_v4(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn.transaction().map_err(sql_err)?;
+    let newest: i64 = tx
+        .query_row("SELECT COALESCE(MAX(id), 0) FROM scans", [], |r| r.get(0))
+        .map_err(sql_err)?;
+    tx.execute(
+        "INSERT INTO schema_meta (key, value) VALUES ('changes_start_after_scan', ?1)
+         ON CONFLICT(key) DO NOTHING",
+        params![newest.to_string()],
+    )
+    .map_err(sql_err)?;
+    tx.commit().map_err(sql_err)
+}
+
+/// Read the change-inbox watermark: change events exist only for scans newer
+/// than this. Zero on a database that has never held a scan.
+fn changes_watermark(conn: &Connection) -> Result<i64, String> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'changes_start_after_scan'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql_err)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -2993,5 +3980,1174 @@ mod tests {
         let mut ips = db.last_scan_ips().unwrap();
         ips.sort();
         assert_eq!(ips, vec!["10.0.0.2", "10.0.0.3"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.8: persistent inventory
+    // -----------------------------------------------------------------------
+
+    /// Find one inventory row by its current or most recent address.
+    fn row_at<'a>(summary: &'a InventorySummary, ip: &str) -> &'a InventoryRow {
+        summary
+            .rows
+            .iter()
+            .find(|r| r.current_ip.as_deref() == Some(ip))
+            .unwrap_or_else(|| panic!("no inventory row for {ip}"))
+    }
+
+    #[test]
+    fn inventory_summarises_every_device_across_scans() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host(
+                    "10.0.0.1",
+                    Some("aa:bb:cc:00:00:01"),
+                    Some("gateway"),
+                    &[80],
+                ),
+                host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("nas"), &[445]),
+            ],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host(
+                    "10.0.0.1",
+                    Some("aa:bb:cc:00:00:01"),
+                    Some("gateway"),
+                    &[80],
+                ),
+                // The NAS moved and opened HTTPS.
+                host(
+                    "10.0.0.9",
+                    Some("aa:bb:cc:00:00:05"),
+                    Some("nas"),
+                    &[445, 443],
+                ),
+            ],
+        ))
+        .unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(
+            summary.rows.len(),
+            2,
+            "one row per device, not per sighting"
+        );
+
+        let nas = row_at(&summary, "10.0.0.9");
+        assert_eq!(nas.display_name, "nas");
+        assert_eq!(nas.mac.as_deref(), Some("AA:BB:CC:00:00:05"));
+        assert_eq!(nas.observation_count, 2);
+        assert_eq!(nas.open_ports, vec![445, 443]);
+        // The address it used to hold is carried without the current one.
+        assert_eq!(nas.previous_ips, vec!["10.0.0.5"]);
+        assert!(!nas.notes_present);
+        assert_eq!(nas.presence, PresenceState::Present);
+        assert_eq!(nas.latest_icmp_ms, Some(2.4));
+
+        assert_eq!(summary.present, 2);
+        assert_eq!(summary.missing, 0);
+        assert_eq!(summary.unknown, 0);
+        assert!(!summary.needs_completed_scan);
+    }
+
+    #[test]
+    fn inventory_marks_a_device_missing_only_from_a_completed_compatible_scan() {
+        let db = Db::open_in_memory().unwrap();
+        let both = vec![
+            host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gateway"),
+                &[80],
+            ),
+            host(
+                "10.0.0.7",
+                Some("aa:bb:cc:00:00:07"),
+                Some("printer"),
+                &[631],
+            ),
+        ];
+        db.save_scan(&result("10.0.0.0/24", Some("quick-lan"), both))
+            .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gateway"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(
+            row_at(&summary, "10.0.0.1").presence,
+            PresenceState::Present
+        );
+        assert_eq!(
+            row_at(&summary, "10.0.0.7").presence,
+            PresenceState::Missing
+        );
+        assert_eq!(summary.present, 1);
+        assert_eq!(summary.missing, 1);
+        // A missing device keeps every fact the inventory holds about it.
+        let printer = row_at(&summary, "10.0.0.7");
+        assert_eq!(printer.observation_count, 1);
+        assert_eq!(printer.open_ports, vec![631]);
+    }
+
+    #[test]
+    fn a_partial_scan_never_marks_a_device_missing() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host(
+                    "10.0.0.1",
+                    Some("aa:bb:cc:00:00:01"),
+                    Some("gateway"),
+                    &[80],
+                ),
+                host(
+                    "10.0.0.7",
+                    Some("aa:bb:cc:00:00:07"),
+                    Some("printer"),
+                    &[631],
+                ),
+            ],
+        ))
+        .unwrap();
+
+        // A scan stopped part-way that happened to miss the printer.
+        let mut partial = result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gateway"),
+                &[80],
+            )],
+        );
+        partial.cancelled = true;
+        partial.probed = 90;
+        db.save_scan(&partial).unwrap();
+
+        let summary = db.inventory().unwrap();
+        // Presence still comes from the last *completed* scan, which saw both.
+        assert_eq!(
+            row_at(&summary, "10.0.0.7").presence,
+            PresenceState::Present
+        );
+        assert_eq!(summary.missing, 0);
+        assert_eq!(summary.present, 2);
+
+        // And the partial scan created no change events at all.
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.total, 0, "{:?}", feed.events);
+    }
+
+    #[test]
+    fn presence_is_unknown_without_a_completed_scan() {
+        let db = Db::open_in_memory().unwrap();
+        let mut partial = result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.1", Some("aa:bb:cc:00:00:01"), None, &[80])],
+        );
+        partial.cancelled = true;
+        db.save_scan(&partial).unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(summary.rows.len(), 1);
+        assert_eq!(summary.rows[0].presence, PresenceState::Unknown);
+        assert_eq!(summary.unknown, 1);
+        assert!(summary.rows[0].last_completed_scan_id.is_none());
+        assert!(
+            summary.needs_completed_scan,
+            "the UI must be able to say a completed scan is required"
+        );
+    }
+
+    #[test]
+    fn presence_is_unknown_when_only_a_different_coverage_ever_saw_the_device() {
+        let db = Db::open_in_memory().unwrap();
+        // A wide sweep sees the printer.
+        db.save_scan(&result_with_ports(
+            "10.0.0.0/24",
+            Some("full-tcp"),
+            vec![22, 80, 443, 631],
+            Some(true),
+            vec![
+                host(
+                    "10.0.0.1",
+                    Some("aa:bb:cc:00:00:01"),
+                    Some("gateway"),
+                    &[80],
+                ),
+                host(
+                    "10.0.0.7",
+                    Some("aa:bb:cc:00:00:07"),
+                    Some("printer"),
+                    &[631],
+                ),
+            ],
+        ))
+        .unwrap();
+        // A later, narrower scan does not. Its coverage differs, so the printer's
+        // absence proves nothing and must not read as Missing.
+        db.save_scan(&result_with_ports(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![80],
+            Some(true),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gateway"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(
+            row_at(&summary, "10.0.0.1").presence,
+            PresenceState::Present
+        );
+        assert_eq!(
+            row_at(&summary, "10.0.0.7").presence,
+            PresenceState::Unknown
+        );
+        assert_eq!(summary.missing, 0);
+    }
+
+    #[test]
+    fn inventory_keeps_networks_apart_and_offers_them_as_filters() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result_with_scope(
+            "192.168.1.0/24",
+            vec![host(
+                "192.168.1.10",
+                Some("aa:bb:cc:00:00:10"),
+                Some("laptop"),
+                &[],
+            )],
+            "192.168.1.0/24",
+            Some("11:11:11:11:11:11"),
+        ))
+        .unwrap();
+        db.save_scan(&result_with_scope(
+            "192.168.1.0/24",
+            vec![host(
+                "192.168.1.10",
+                Some("aa:bb:cc:00:00:10"),
+                Some("laptop"),
+                &[],
+            )],
+            "192.168.1.0/24",
+            Some("22:22:22:22:22:22"),
+        ))
+        .unwrap();
+
+        let scopes = db.list_network_scopes().unwrap();
+        assert_eq!(scopes.len(), 2, "duplicate private ranges must stay apart");
+        db.rename_network_scope(scopes[0].id, "Office".into())
+            .unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(
+            summary.rows.len(),
+            2,
+            "the same MAC on two networks is two devices"
+        );
+        assert_eq!(summary.networks.len(), 2);
+        assert_eq!(
+            summary.networks.iter().map(|n| n.device_count).sum::<i64>(),
+            2
+        );
+        assert!(
+            summary.networks.iter().any(|n| n.name == "Office"),
+            "a renamed network reaches the inventory filter: {:?}",
+            summary.networks
+        );
+        assert!(summary
+            .rows
+            .iter()
+            .any(|r| r.network_name.as_deref() == Some("Office")));
+    }
+
+    #[test]
+    fn inventory_reports_the_operator_label_notes_flag_and_status() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.5",
+                Some("aa:bb:cc:00:00:05"),
+                Some("nas"),
+                &[445],
+            )],
+        ))
+        .unwrap();
+        let id = db.list_devices().unwrap()[0].id;
+        db.set_device_name(id, Some("Backup NAS".into())).unwrap();
+        db.set_device_notes(id, Some("Nightly backups".into()))
+            .unwrap();
+        db.set_device_status(id, DeviceStatus::Trusted).unwrap();
+
+        let summary = db.inventory().unwrap();
+        let row = &summary.rows[0];
+        assert_eq!(row.display_name, "Backup NAS");
+        assert_eq!(row.custom_name.as_deref(), Some("Backup NAS"));
+        assert_eq!(row.status, DeviceStatus::Trusted);
+        assert!(row.notes_present, "the indicator must be set");
+        // The row carries no note body: the drawer loads that for one device.
+        assert_eq!(row.hostname.as_deref(), Some("nas"));
+    }
+
+    #[test]
+    fn an_inventory_of_five_thousand_devices_is_two_queries_and_stays_quick() {
+        let db = Db::open_in_memory().unwrap();
+        // 5,000 devices over 20 scans is 100,000 observations, which is the
+        // shape the release is meant to hold up under.
+        let mut hosts = Vec::with_capacity(5_000);
+        for i in 0..5_000u32 {
+            let octets = [10, 1 + (i / 65_536) as u8, (i / 256) as u8, (i % 256) as u8];
+            hosts.push(host(
+                &format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]),
+                Some(&format!(
+                    "aa:bb:{:02x}:{:02x}:{:02x}:{:02x}",
+                    octets[0], octets[1], octets[2], octets[3]
+                )),
+                Some(&format!("host-{i}")),
+                &[80, 443],
+            ));
+        }
+        for _ in 0..20 {
+            db.save_scan(&result("10.0.0.0/8", Some("quick-lan"), hosts.clone()))
+                .unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let summary = db.inventory().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(summary.rows.len(), 5_000);
+        assert_eq!(summary.present, 5_000);
+        assert_eq!(summary.rows[0].observation_count, 20);
+        // Generous, because CI machines vary; the point is that it is bounded
+        // work rather than 5,000 round trips, which would take far longer.
+        assert!(
+            elapsed.as_secs() < 20,
+            "inventory of 100,000 observations took {elapsed:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.8: change events
+    // -----------------------------------------------------------------------
+
+    /// Change types present in a feed, for readable assertions.
+    fn kinds(feed: &ChangeFeed) -> Vec<ChangeType> {
+        feed.events.iter().map(|e| e.change_type).collect()
+    }
+
+    #[test]
+    fn a_completed_scan_records_one_event_per_change() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("nas"), &[445]),
+                host(
+                    "10.0.0.7",
+                    Some("aa:bb:cc:00:00:07"),
+                    Some("printer"),
+                    &[631],
+                ),
+            ],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                // Moved, renamed and opened HTTPS while closing SMB.
+                host(
+                    "10.0.0.6",
+                    Some("aa:bb:cc:00:00:05"),
+                    Some("nas-01"),
+                    &[443],
+                ),
+                // Brand new.
+                host("10.0.0.9", Some("aa:bb:cc:00:00:09"), Some("laptop"), &[]),
+            ],
+        ))
+        .unwrap();
+
+        let feed = db.change_events().unwrap();
+        let found = kinds(&feed);
+        for expected in [
+            ChangeType::DeviceAdded,
+            ChangeType::DeviceMissing,
+            ChangeType::IpChanged,
+            ChangeType::HostnameChanged,
+            ChangeType::PortsChanged,
+        ] {
+            assert!(
+                found.contains(&expected),
+                "{expected:?} missing from {found:?}"
+            );
+        }
+        assert_eq!(feed.unreviewed, feed.total);
+
+        // Port changes keep the structured lists, not just display text.
+        let ports = feed
+            .events
+            .iter()
+            .find(|e| e.change_type == ChangeType::PortsChanged)
+            .unwrap();
+        assert_eq!(ports.opened_ports, vec![443]);
+        assert_eq!(ports.closed_ports, vec![445]);
+        assert!(ports.new_value.as_deref().unwrap().contains("443"));
+
+        // Every event names the scan and baseline it came from, so the inbox can
+        // link to both comparisons.
+        for event in &feed.events {
+            assert!(event.scan_id.is_some());
+            assert!(event.baseline_scan_id.is_some());
+            assert!(event.scan_at.is_some());
+            assert!(event.baseline_at.is_some());
+        }
+    }
+
+    #[test]
+    fn a_returning_device_is_recorded_as_returned_not_added() {
+        let db = Db::open_in_memory().unwrap();
+        let phone = host("10.0.0.20", Some("aa:bb:cc:00:00:20"), Some("phone"), &[]);
+        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![gateway.clone(), phone.clone()],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![gateway.clone()],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![gateway, phone],
+        ))
+        .unwrap();
+
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.events[0].change_type, ChangeType::DeviceReturned);
+        assert_eq!(feed.events[1].change_type, ChangeType::DeviceMissing);
+        assert_eq!(feed.total, 2);
+    }
+
+    #[test]
+    fn saving_the_same_comparison_twice_creates_no_duplicate_events() {
+        let db = Db::open_in_memory().unwrap();
+        let first = result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        );
+        db.save_scan(&first).unwrap();
+        let second = result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+            ],
+        );
+        let saved = db.save_scan(&second).unwrap();
+        let before = db.change_events().unwrap().total;
+        assert_eq!(before, 1);
+
+        // Re-record the identical comparison, the way a retried save would.
+        {
+            let mut conn = db.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            let baseline = BaselineScan {
+                id: saved.comparison.baseline_scan_id.unwrap(),
+                target: "10.0.0.0/24".into(),
+                created_at: saved.comparison.baseline_created_at.clone().unwrap(),
+            };
+            let written = record_change_events(
+                &tx,
+                saved.scan_id,
+                1,
+                &baseline,
+                &saved.comparison,
+                "2026-08-03T10:00:00+00:00",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            assert_eq!(written, 0, "a repeated save must write nothing");
+        }
+        assert_eq!(db.change_events().unwrap().total, before);
+    }
+
+    #[test]
+    fn acknowledging_and_reopening_an_event_keeps_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+            ],
+        ))
+        .unwrap();
+
+        let feed = db.change_events().unwrap();
+        let id = feed.events[0].id;
+        let outcome = db
+            .set_change_state(&[id], ChangeState::Acknowledged)
+            .unwrap();
+        assert_eq!(outcome.updated, 1);
+        assert!(outcome.missing.is_empty());
+
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.events[0].state, ChangeState::Acknowledged);
+        assert!(feed.events[0].acknowledged_at.is_some());
+        assert_eq!(feed.unreviewed, 0);
+        assert_eq!(feed.total, 1, "acknowledging must never delete the record");
+
+        // Undo puts it back and clears the stamp rather than leaving a stale one.
+        db.set_change_state(&[id], ChangeState::Unreviewed).unwrap();
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.events[0].state, ChangeState::Unreviewed);
+        assert!(feed.events[0].acknowledged_at.is_none());
+        assert_eq!(feed.unreviewed, 1);
+    }
+
+    #[test]
+    fn a_bulk_action_reports_ids_that_no_longer_exist() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+            ],
+        ))
+        .unwrap();
+        let id = db.change_events().unwrap().events[0].id;
+
+        let outcome = db
+            .set_change_state(&[id, 9_999], ChangeState::Acknowledged)
+            .unwrap();
+        assert_eq!(outcome.updated, 1);
+        assert_eq!(outcome.missing, vec![9_999]);
+    }
+
+    #[test]
+    fn ignoring_a_device_hides_its_changes_without_losing_them() {
+        let db = Db::open_in_memory().unwrap();
+        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![gateway.clone()],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                gateway.clone(),
+                host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+            ],
+        ))
+        .unwrap();
+
+        let tv = db
+            .inventory()
+            .unwrap()
+            .rows
+            .iter()
+            .find(|r| r.hostname.as_deref() == Some("tv"))
+            .unwrap()
+            .device_id;
+
+        let outcome = db
+            .set_device_statuses(&[tv], DeviceStatus::Ignored)
+            .unwrap();
+        assert_eq!(outcome.updated, 1);
+
+        // The existing event left the default inbox but is still recorded.
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.total, 1);
+        assert_eq!(feed.unreviewed, 0);
+        assert_eq!(feed.events[0].state, ChangeState::Ignored);
+
+        // A later change to the same device is recorded already ignored.
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                gateway,
+                host(
+                    "10.0.0.4",
+                    Some("aa:bb:cc:00:00:04"),
+                    Some("tv"),
+                    &[8009, 8443],
+                ),
+            ],
+        ))
+        .unwrap();
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.total, 2);
+        assert_eq!(feed.unreviewed, 0, "an ignored device must not reappear");
+        assert!(feed.events.iter().all(|e| e.state == ChangeState::Ignored));
+
+        // Ignoring never removes the device or its history.
+        let summary = db.inventory().unwrap();
+        assert_eq!(summary.rows.len(), 2);
+        let row = summary.rows.iter().find(|r| r.device_id == tv).unwrap();
+        assert_eq!(row.status, DeviceStatus::Ignored);
+        assert_eq!(row.observation_count, 2);
+    }
+
+    #[test]
+    fn renaming_a_device_updates_its_change_events() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+            ],
+        ))
+        .unwrap();
+
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.events[0].device_label, "tv");
+        let device_id = feed.events[0].device_id.unwrap();
+        db.set_device_name(device_id, Some("Lounge TV".into()))
+            .unwrap();
+
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.events[0].device_label, "Lounge TV");
+        assert_eq!(
+            feed.events[0].device_status,
+            Some(DeviceStatus::Unclassified)
+        );
+    }
+
+    #[test]
+    fn change_events_survive_the_scan_that_produced_them_being_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        let second = db
+            .save_scan(&result(
+                "10.0.0.0/24",
+                Some("quick-lan"),
+                vec![
+                    host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                    host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
+                ],
+            ))
+            .unwrap();
+
+        db.delete_scan(second.scan_id).unwrap();
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.total, 1, "pruning history must not erase the record");
+        // The date the change was found is kept with the event itself.
+        assert!(feed.events[0].scan_at.is_some());
+        assert_eq!(feed.events[0].device_label, "tv");
+        // The link is cleared rather than left pointing at a scan that is gone,
+        // so "Open the scan" says so instead of failing.
+        assert!(feed.events[0].scan_id.is_none());
+
+        // The inventory is intact too.
+        assert_eq!(db.inventory().unwrap().rows.len(), 2);
+    }
+
+    #[test]
+    fn retention_keeps_change_records_and_clears_their_dead_links() {
+        let db = Db::open_in_memory().unwrap();
+        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        for extra in [None, Some(4u8), Some(5), Some(6)] {
+            let mut hosts = vec![gateway.clone()];
+            if let Some(n) = extra {
+                hosts.push(host(
+                    &format!("10.0.0.{n}"),
+                    Some(&format!("aa:bb:cc:00:00:0{n}")),
+                    Some("device"),
+                    &[8009],
+                ));
+            }
+            db.save_scan(&result("10.0.0.0/24", Some("quick-lan"), hosts))
+                .unwrap();
+        }
+        let before = db.change_events().unwrap();
+        assert!(before.total > 0);
+
+        // Keep only the newest scan; every earlier one goes.
+        let removed = db.prune_history(1).unwrap();
+        assert_eq!(removed, 3);
+
+        let after = db.change_events().unwrap();
+        assert_eq!(
+            after.total, before.total,
+            "retention must not erase records"
+        );
+        let survivor = db.list_scans().unwrap()[0].id;
+        for event in &after.events {
+            assert!(
+                event.scan_id.is_none_or(|id| id == survivor),
+                "event {} still points at a deleted scan",
+                event.id
+            );
+            assert!(event.baseline_scan_id.is_none_or(|id| id == survivor));
+            assert!(event.scan_at.is_some(), "the date is kept on the record");
+        }
+        // Devices, names and dates are untouched by retention.
+        assert_eq!(db.inventory().unwrap().rows.len(), 4);
+    }
+
+    #[test]
+    fn device_detail_carries_presence_network_and_change_events() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result_with_scope(
+            "192.168.1.0/24",
+            vec![host(
+                "192.168.1.4",
+                Some("aa:bb:cc:00:00:04"),
+                Some("tv"),
+                &[8009],
+            )],
+            "192.168.1.0/24",
+            Some("11:11:11:11:11:11"),
+        ))
+        .unwrap();
+        db.save_scan(&result_with_scope(
+            "192.168.1.0/24",
+            vec![host(
+                "192.168.1.4",
+                Some("aa:bb:cc:00:00:04"),
+                Some("tv"),
+                &[8009, 8443],
+            )],
+            "192.168.1.0/24",
+            Some("11:11:11:11:11:11"),
+        ))
+        .unwrap();
+
+        let scope = db.list_network_scopes().unwrap()[0].id;
+        db.rename_network_scope(scope, "Home Wi-Fi".into()).unwrap();
+
+        let device_id = db.list_devices().unwrap()[0].id;
+        let detail = db.device_detail(device_id).unwrap();
+        assert_eq!(detail.presence, PresenceState::Present);
+        assert_eq!(detail.network_name.as_deref(), Some("Home Wi-Fi"));
+        assert_eq!(detail.events.len(), 1);
+        assert_eq!(detail.events[0].change_type, ChangeType::PortsChanged);
+        assert_eq!(detail.events[0].opened_ports, vec![8443]);
+    }
+
+    #[test]
+    fn drawer_presence_agrees_with_the_inventory_query() {
+        // Two implementations of one rule only stay honest if a test compares
+        // them; this covers present, missing and unknown in one database.
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![
+                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host(
+                    "10.0.0.7",
+                    Some("aa:bb:cc:00:00:07"),
+                    Some("printer"),
+                    &[631],
+                ),
+            ],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.1",
+                Some("aa:bb:cc:00:00:01"),
+                Some("gw"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        // A second network with nothing but a stopped scan.
+        let mut partial = result_with_scope(
+            "172.16.0.0/24",
+            vec![host("172.16.0.5", Some("aa:bb:cc:00:00:55"), None, &[])],
+            "172.16.0.0/24",
+            Some("33:33:33:33:33:33"),
+        );
+        partial.cancelled = true;
+        db.save_scan(&partial).unwrap();
+
+        let summary = db.inventory().unwrap();
+        assert!(summary.rows.len() >= 3);
+        for row in &summary.rows {
+            let detail = db.device_detail(row.device_id).unwrap();
+            assert_eq!(
+                detail.presence, row.presence,
+                "drawer and inventory disagree for device {}",
+                row.device_id
+            );
+        }
+        assert_eq!(summary.present, 1);
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.unknown, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.8: migration from v1.7.1
+    // -----------------------------------------------------------------------
+
+    /// A v1.7.1 database (schema v3): scoped devices, coverage keys, existing
+    /// comparisons, names, notes, a partial scan and a legacy-coverage scan.
+    fn seed_v171(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO schema_meta (key, value) VALUES ('version', '3');
+
+            CREATE TABLE network_scopes (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key       TEXT NOT NULL UNIQUE,
+                display_name     TEXT NOT NULL,
+                canonical_target TEXT,
+                gateway_mac      TEXT,
+                interface_hint   TEXT,
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT NOT NULL
+            );
+            CREATE TABLE scans (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                target      TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                scanned     INTEGER NOT NULL,
+                target_key  TEXT NOT NULL DEFAULT '',
+                profile     TEXT,
+                probed      INTEGER NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'completed',
+                new_count   INTEGER NOT NULL DEFAULT 0,
+                missing_count INTEGER NOT NULL DEFAULT 0,
+                changed_count INTEGER NOT NULL DEFAULT 0,
+                baseline_scan_id INTEGER,
+                network_scope_id INTEGER REFERENCES network_scopes(id),
+                coverage_key TEXT NOT NULL DEFAULT '',
+                execution_settings TEXT
+            );
+            CREATE TABLE devices (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                network_scope_id INTEGER NOT NULL REFERENCES network_scopes(id),
+                identity_key     TEXT NOT NULL,
+                identity_source  TEXT NOT NULL,
+                mac              TEXT,
+                custom_name      TEXT,
+                hostname         TEXT,
+                vendor           TEXT,
+                last_ip          TEXT,
+                first_seen       TEXT NOT NULL,
+                last_seen        TEXT NOT NULL,
+                status           TEXT NOT NULL DEFAULT 'unclassified',
+                notes            TEXT,
+                UNIQUE(network_scope_id, identity_key),
+                UNIQUE(network_scope_id, mac)
+            );
+            CREATE TABLE hosts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id     INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                ip          TEXT NOT NULL,
+                hostname    TEXT,
+                mac         TEXT,
+                vendor      TEXT,
+                open_ports  TEXT NOT NULL,
+                response_ms INTEGER,
+                ttl         INTEGER,
+                os_guess    TEXT,
+                last_seen   TEXT NOT NULL,
+                icmp_ms     REAL,
+                tcp_ms      REAL,
+                device_id   INTEGER REFERENCES devices(id) ON DELETE SET NULL
+            );
+
+            -- Two networks that reuse the same private range, told apart by their
+            -- gateways, plus one named and one left automatic.
+            INSERT INTO network_scopes (id, stable_key, display_name, canonical_target,
+                                        gateway_mac, created_at, updated_at)
+            VALUES (1, 'target:cidr:192.168.1.0/24|gw:11:11:11:11:11:11', 'Home Wi-Fi',
+                    'cidr:192.168.1.0/24', '11:11:11:11:11:11',
+                    '2026-05-01T09:00:00+00:00', '2026-07-01T09:00:00+00:00'),
+                   (2, 'target:cidr:192.168.1.0/24|gw:22:22:22:22:22:22', '192.168.1.0/24',
+                    'cidr:192.168.1.0/24', '22:22:22:22:22:22',
+                    '2026-05-02T09:00:00+00:00', '2026-07-02T09:00:00+00:00');
+
+            INSERT INTO scans (id, target, created_at, duration_ms, scanned, target_key, profile,
+                               probed, status, new_count, missing_count, changed_count,
+                               baseline_scan_id, network_scope_id, coverage_key)
+            VALUES (1, '192.168.1.0/24', '2026-06-01T09:00:00+00:00', 4000, 254,
+                    'cidr:192.168.1.0/24', 'quick-lan', 254, 'completed', 0, 0, 0, NULL, 1,
+                    'v1|arp:auto|ports:22,80,443'),
+                   (2, '192.168.1.0/24', '2026-06-08T09:00:00+00:00', 4100, 254,
+                    'cidr:192.168.1.0/24', 'quick-lan', 254, 'completed', 1, 1, 1, 1, 1,
+                    'v1|arp:auto|ports:22,80,443'),
+                   -- A scan stopped early: never a baseline, never a reference.
+                   (3, '192.168.1.0/24', '2026-06-09T09:00:00+00:00', 900, 254,
+                    'cidr:192.168.1.0/24', 'quick-lan', 60, 'cancelled', 0, 0, 0, NULL, 1,
+                    'v1|arp:auto|ports:22,80,443'),
+                   -- The other network, recorded before coverage keys existed.
+                   (4, '192.168.1.0/24', '2026-06-10T09:00:00+00:00', 4000, 254,
+                    'cidr:192.168.1.0/24', 'custom', 254, 'completed', 0, 0, 0, NULL, 2,
+                    'legacy:custom:4');
+
+            INSERT INTO devices (id, network_scope_id, identity_key, identity_source, mac,
+                                 custom_name, hostname, vendor, last_ip, first_seen, last_seen,
+                                 status, notes)
+            VALUES (1, 1, 'mac:AA:BB:CC:00:00:01', 'mac', 'AA:BB:CC:00:00:01', 'Office Printer',
+                    'printer', 'HP Inc.', '192.168.1.7', '2026-06-01T09:00:00+00:00',
+                    '2026-06-01T09:00:00+00:00', 'known', 'Toner reordered automatically'),
+                   (2, 1, 'mac:AA:BB:CC:00:00:02', 'mac', 'AA:BB:CC:00:00:02', NULL,
+                    'laptop', 'Dell Inc.', '192.168.1.20', '2026-06-01T09:00:00+00:00',
+                    '2026-06-08T09:00:00+00:00', 'trusted', NULL),
+                   -- No MAC at all: identified by hostname and vendor.
+                   (3, 1, 'hv:camera-01|axis', 'hostname-vendor', NULL, NULL,
+                    'camera-01', 'Axis', '192.168.1.30', '2026-06-08T09:00:00+00:00',
+                    '2026-06-08T09:00:00+00:00', 'unclassified', NULL),
+                   -- Same MAC as device 1, different network. Must stay separate.
+                   (4, 2, 'mac:AA:BB:CC:00:00:01', 'mac', 'AA:BB:CC:00:00:01', NULL,
+                    'printer', 'HP Inc.', '192.168.1.7', '2026-06-10T09:00:00+00:00',
+                    '2026-06-10T09:00:00+00:00', 'unclassified', NULL);
+
+            INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports, response_ms,
+                               last_seen, device_id)
+            VALUES (1, '192.168.1.7', 'printer', 'AA:BB:CC:00:00:01', 'HP Inc.', '80,631',
+                    4, '2026-06-01T09:00:00+00:00', 1),
+                   (1, '192.168.1.11', 'laptop', 'AA:BB:CC:00:00:02', 'Dell Inc.', '',
+                    3, '2026-06-01T09:00:00+00:00', 2),
+                   -- Second scan: the printer is gone, the laptop moved, a camera arrived.
+                   (2, '192.168.1.20', 'laptop', 'AA:BB:CC:00:00:02', 'Dell Inc.', '445',
+                    3, '2026-06-08T09:00:00+00:00', 2),
+                   (2, '192.168.1.30', 'camera-01', NULL, 'Axis', '80,554',
+                    9, '2026-06-08T09:00:00+00:00', 3),
+                   (3, '192.168.1.20', 'laptop', 'AA:BB:CC:00:00:02', 'Dell Inc.', '445',
+                    3, '2026-06-09T09:00:00+00:00', 2),
+                   (4, '192.168.1.7', 'printer', 'AA:BB:CC:00:00:01', 'HP Inc.', '80',
+                    4, '2026-06-10T09:00:00+00:00', 4);
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn upgrades_a_v171_database_without_creating_a_review_backlog() {
+        let dir = std::env::temp_dir().join(format!("arcscan-mig171-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("upgrade171.db");
+        let _ = std::fs::remove_file(&path);
+        seed_v171(&path);
+
+        let db = Db::open(&path).unwrap();
+
+        // The point of the migration decision: nothing to review on first launch.
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.total, 0, "an upgrade must not invent a backlog");
+        assert_eq!(feed.unreviewed, 0);
+        assert_eq!(
+            feed.starts_after_scan_id, 4,
+            "the watermark records where the inbox begins"
+        );
+
+        // Everything v1.7.1 held is still here.
+        assert_eq!(db.list_scans().unwrap().len(), 4);
+        assert_eq!(db.list_network_scopes().unwrap().len(), 2);
+
+        let summary = db.inventory().unwrap();
+        assert_eq!(summary.rows.len(), 4);
+        assert_eq!(summary.networks.len(), 2);
+
+        let printer = summary
+            .rows
+            .iter()
+            .find(|r| r.custom_name.as_deref() == Some("Office Printer"))
+            .expect("the named device survived");
+        assert_eq!(printer.status, DeviceStatus::Known);
+        assert!(printer.notes_present);
+        assert_eq!(printer.first_seen, "2026-06-01T09:00:00+00:00");
+        // Scan 2 is the reference for Home Wi-Fi and did not see the printer,
+        // and scan 1 shares its coverage, so this is a real Missing.
+        assert_eq!(printer.presence, PresenceState::Missing);
+        assert_eq!(printer.last_completed_scan_id, Some(2));
+
+        let laptop = summary
+            .rows
+            .iter()
+            .find(|r| r.hostname.as_deref() == Some("laptop"))
+            .unwrap();
+        assert_eq!(laptop.presence, PresenceState::Present);
+        assert_eq!(laptop.status, DeviceStatus::Trusted);
+        assert_eq!(laptop.current_ip.as_deref(), Some("192.168.1.20"));
+        assert_eq!(laptop.previous_ips, vec!["192.168.1.11"]);
+        assert_eq!(laptop.observation_count, 3);
+
+        // A device with no MAC keeps its hostname-and-vendor identity.
+        let camera = summary
+            .rows
+            .iter()
+            .find(|r| r.hostname.as_deref() == Some("camera-01"))
+            .unwrap();
+        assert!(camera.mac.is_none());
+        assert_eq!(camera.identity_source, IdentitySource::HostnameVendor);
+        assert_eq!(camera.presence, PresenceState::Present);
+
+        // The second network only ever had a legacy-coverage scan, so nothing
+        // there can be called present or missing.
+        let other = summary
+            .rows
+            .iter()
+            .find(|r| r.network_scope_id == Some(2))
+            .unwrap();
+        assert_eq!(other.presence, PresenceState::Unknown);
+        assert_eq!(
+            other.network_name.as_deref(),
+            Some("192.168.1.0/24"),
+            "an unnamed network keeps its automatic label"
+        );
+
+        // Reopening the database changes nothing: the migration is idempotent.
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.change_events().unwrap().starts_after_scan_id, 4);
+        assert_eq!(db.inventory().unwrap().rows.len(), 4);
+    }
+
+    #[test]
+    fn the_first_scan_after_an_upgrade_records_its_changes() {
+        let dir = std::env::temp_dir().join(format!("arcscan-mig171b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("upgrade171b.db");
+        let _ = std::fs::remove_file(&path);
+        seed_v171(&path);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.change_events().unwrap().total, 0);
+
+        // A new scan of Home Wi-Fi with exactly the coverage the history used.
+        let mut next = result_with_ports(
+            "192.168.1.0/24",
+            Some("quick-lan"),
+            vec![22, 80, 443],
+            None,
+            vec![host(
+                "192.168.1.20",
+                Some("aa:bb:cc:00:00:02"),
+                Some("laptop"),
+                &[445, 3389],
+            )],
+        );
+        next.scope_hint = Some(crate::scanner::ScopeHint {
+            local_network: Some("192.168.1.0/24".into()),
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: Some("11:11:11:11:11:11".into()),
+            interface: Some("eth0".into()),
+        });
+        db.save_scan(&next).unwrap();
+
+        let feed = db.change_events().unwrap();
+        assert!(feed.total > 0, "post-upgrade scans do record changes");
+        assert!(kinds(&feed).contains(&ChangeType::PortsChanged));
+        assert!(kinds(&feed).contains(&ChangeType::DeviceMissing));
+        assert_eq!(feed.unreviewed, feed.total);
+    }
+
+    #[test]
+    fn a_fresh_database_starts_its_inbox_at_zero() {
+        let db = Db::open_in_memory().unwrap();
+        let feed = db.change_events().unwrap();
+        assert_eq!(feed.starts_after_scan_id, 0);
+        assert_eq!(feed.total, 0);
+        let summary = db.inventory().unwrap();
+        assert!(summary.rows.is_empty());
+        assert!(
+            !summary.needs_completed_scan,
+            "an empty inventory asks for a first scan, not for a completed one"
+        );
     }
 }

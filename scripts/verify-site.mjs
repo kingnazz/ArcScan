@@ -198,10 +198,12 @@ await step("screenshot switcher changes the image, caption and alt text", async 
   if (!alt || alt.length < 20) throw new Error("the alt text was not updated");
   if (!caption.trim()) throw new Error("the caption is empty");
   // Arrow keys must work, because the tabs claim the tablist role.
+  const ids = await page.$$eval('[role="tab"]', (els) => els.map((e) => e.id));
+  const next = ids[ids.indexOf("tab-changes") + 1];
   await page.locator("#tab-changes").press("ArrowRight");
   await page.waitForTimeout(150);
   const selected = await page.locator('[role="tab"][aria-selected="true"]').getAttribute("id");
-  if (selected !== "tab-history") throw new Error(`arrow key moved to ${selected}`);
+  if (selected !== next) throw new Error(`arrow key moved to ${selected}, expected ${next}`);
   return `switched to ${after.split("/").pop()}, arrows work`;
 });
 
@@ -257,27 +259,27 @@ await step("exactly one platform is recommended, and only on that platform", asy
 });
 
 /**
- * The v1.7.1 release as GitHub actually returns it, including the signature and
+ * A release as GitHub actually returns one, including the signature and
  * updater assets that sit alongside the installers. Using the real asset names
  * is the point: the page picks assets by pattern, and a pattern that quietly
- * matched ArcScan_1.7.1_x64-setup.exe.sig would hand visitors a 400 byte file.
+ * matched ArcScan_1.8.0_x64-setup.exe.sig would hand visitors a 400 byte file.
  */
 const RELEASE_FIXTURE = {
-  tag_name: "v1.7.1",
-  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.7.1",
+  tag_name: "v1.8.0",
+  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0",
   published_at: "2026-08-01T06:28:00Z",
   assets: [
     { name: "ArcScan.app.tar.gz", size: 7505259 },
     { name: "ArcScan.app.tar.gz.sig", size: 404 },
-    { name: "ArcScan_1.7.1_arm64-setup.exe", size: 4285945 },
-    { name: "ArcScan_1.7.1_arm64-setup.exe.sig", size: 420 },
-    { name: "ArcScan_1.7.1_universal.dmg", size: 7576208 },
-    { name: "ArcScan_1.7.1_x64-setup.exe", size: 4543127 },
-    { name: "ArcScan_1.7.1_x64-setup.exe.sig", size: 416 },
+    { name: "ArcScan_1.8.0_arm64-setup.exe", size: 4285945 },
+    { name: "ArcScan_1.8.0_arm64-setup.exe.sig", size: 420 },
+    { name: "ArcScan_1.8.0_universal.dmg", size: 7576208 },
+    { name: "ArcScan_1.8.0_x64-setup.exe", size: 4543127 },
+    { name: "ArcScan_1.8.0_x64-setup.exe.sig", size: 416 },
     { name: "latest.json", size: 2376 },
   ].map((a) => ({
     ...a,
-    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.7.1/${a.name}`,
+    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.0/${a.name}`,
   })),
 };
 
@@ -320,9 +322,9 @@ await step("the release API fills every card with the right asset", async () => 
   await p.close();
 
   const expected = {
-    "win-x64": { file: "ArcScan_1.7.1_x64-setup.exe", size: "4.3 MB" },
-    "win-arm64": { file: "ArcScan_1.7.1_arm64-setup.exe", size: "4.1 MB" },
-    mac: { file: "ArcScan_1.7.1_universal.dmg", size: "7.2 MB" },
+    "win-x64": { file: "ArcScan_1.8.0_x64-setup.exe", size: "4.3 MB" },
+    "win-arm64": { file: "ArcScan_1.8.0_arm64-setup.exe", size: "4.1 MB" },
+    mac: { file: "ArcScan_1.8.0_universal.dmg", size: "7.2 MB" },
   };
   for (const card of cards) {
     const want = expected[card.os];
@@ -333,9 +335,9 @@ await step("the release API fills every card with the right asset", async () => 
     if (/\.sig$|\.tar\.gz$|latest\.json$/.test(card.link ?? "")) {
       throw new Error(`${card.os} links to a non-installer asset: ${card.link}`);
     }
-    if (card.version !== "1.7.1") throw new Error(`${card.os} shows version ${card.version}`);
+    if (card.version !== "1.8.0") throw new Error(`${card.os} shows version ${card.version}`);
     if (card.size !== want.size) throw new Error(`${card.os} shows size ${card.size}`);
-    if (!card.notes?.includes("/releases/tag/v1.7.1")) {
+    if (!card.notes?.includes("/releases/tag/v1.8.0")) {
       throw new Error(`${card.os} notes link is ${card.notes}`);
     }
   }
@@ -347,17 +349,17 @@ await step("each platform is recommended the build it can run", async () => {
     [
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
       "mac",
-      "ArcScan_1.7.1_universal.dmg",
+      "ArcScan_1.8.0_universal.dmg",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-x64",
-      "ArcScan_1.7.1_x64-setup.exe",
+      "ArcScan_1.8.0_x64-setup.exe",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; ARM64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-arm64",
-      "ArcScan_1.7.1_arm64-setup.exe",
+      "ArcScan_1.8.0_arm64-setup.exe",
     ],
   ];
   const seen = [];
@@ -469,22 +471,23 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.7.1 improvements", async () => {
+await step("the release section states the 1.8.0 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
   // The version has to be named, or the section could describe any release.
-  if (!text.includes("1.7.1")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.0")) throw new Error("the section does not name the version");
 
   // One assertion per improvement, phrased as the claim rather than as exact
   // wording, so the copy can be edited without the test becoming a transcript.
   const claims = [
-    [/partial scans?/, "partial scans"],
-    [/never report unprobed devices as missing|never report.*as missing/, "no false missing devices"],
-    [/network[- ]scoped|attached to the network/, "network-scoped inventory"],
-    [/same target and ports/, "comparison coverage"],
-    [/exact scan selected/, "historical export accuracy"],
+    [/persistent inventory/, "the persistent inventory"],
+    [/previous addresses/, "address history per device"],
+    [/present, missing or unknown|present.*missing.*unknown/, "the three presence states"],
+    [/partial scan never reports|never reports? a device as missing/, "partial-scan safety"],
+    [/review, trust, rename, ignore or acknowledge/, "the review actions"],
+    [/csv, json or xml/, "exports"],
   ];
   for (const [pattern, label] of claims) {
     if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
@@ -495,13 +498,13 @@ await step("the release section states the 1.7.1 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the release notes link points at the 1.7.1 tag", async () => {
+await step("the release notes link points at the 1.8.0 tag", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A tag URL, not /releases/latest: it must keep resolving to these notes
   // after a later release ships, and without the GitHub API answering.
-  if (href !== "https://github.com/kingnazz/ArcScan/releases/tag/v1.7.1") {
+  if (href !== "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0") {
     throw new Error(`release link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -517,8 +520,8 @@ await step("the release notes link points at the 1.7.1 tag", async () => {
 
 await step("the new screenshots load at their stated size", async () => {
   const shots = [
-    "assets/shots/changes-partial-dark.webp",
-    "assets/shots/settings-networks-dark.webp",
+    "assets/shots/inventory-missing-dark.webp",
+    "assets/shots/changes-dark.webp",
   ];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
@@ -557,7 +560,7 @@ await step("the new screenshots load at their stated size", async () => {
   if (!shown?.includes("history-partial-dark")) {
     throw new Error(`the partial-scan tab shows ${shown}`);
   }
-  await page.locator("#tab-results").click();
+  await page.locator("#tab-inventory").click();
   await page.waitForTimeout(150);
   return `${shots.length} inline shots plus the switcher tab`;
 });

@@ -4,8 +4,8 @@
 
 **A fast, private network inventory and scanner for IT professionals**
 
-See every device on your network, keep a local inventory of them, and know
-exactly what changed since the last scan.
+Scan a network, keep a local inventory of the devices you find, and keep track of
+what changes.
 
 Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 
@@ -33,18 +33,26 @@ reachable.
 address, manufacturer (from the full IEEE OUI registry), hostname, open services,
 operating-system estimate, TTL and both ICMP and TCP response times.
 
-**See what changed.** New devices, missing devices, address changes, hostname and
-manufacturer changes, and ports that opened or closed since the previous scan.
-Scans are only compared when they covered the same ground: the same network, the
-same target, and the same ports and discovery mode. A scan you stopped early is
-never compared, because it did not see the whole target, so it can never report a
-device as missing that it simply never reached.
+**Keep an inventory.** Every device ArcScan has recorded lives in one searchable
+list, with the addresses it has held, when it was first seen, how many scans have
+seen it, and the name, status and notes you gave it. Devices are matched by MAC
+address first, so a DHCP lease change reads as a device that moved rather than a
+new one. Each network keeps its own inventory, so two sites using the same
+private addresses never mix their devices, names or notes.
 
-**Keep an inventory.** Devices persist across scans, matched by MAC address first
-so a DHCP lease change reads as a device that moved rather than a new one. Give
-them names, a status and notes; all of it survives reinstalls. Each network keeps
-its own inventory, so two client sites using the same private addresses never mix
-their devices, names or notes.
+**Know what a scan can actually tell you.** A device is *present* when the latest
+completed scan found it, *missing* when that scan looked where it used to be and
+did not, and *unknown* when no completed scan can say. ArcScan is not continuous
+monitoring, so it never claims a device is online or offline.
+
+**See what changed, and keep it.** New devices, missing devices, address changes,
+hostname and manufacturer changes, and services that opened or closed are kept as
+records rather than appearing in one comparison and vanishing. Review, trust,
+rename, ignore or acknowledge each one; nothing is deleted either way. Scans are
+only compared when they covered the same ground: the same network, the same
+target, and the same ports and discovery mode. A scan you stopped early is never
+compared, so it can never report a device as missing that it simply never
+reached.
 
 **Investigate without leaving.** Open a device's web interface, SMB shares, SSH or
 Remote Desktop from the inventory, or send a Wake-on-LAN packet. Only the actions
@@ -96,9 +104,9 @@ this precisely, including what GitHub sees when you download a release.
 ## Documentation
 
 The [user guide](docs/USER-GUIDE.md) covers profiles, targets, live results, the
-inventory, change detection, history, exporting, device actions, keyboard
-shortcuts, where the database lives, upgrading, uninstalling, troubleshooting,
-known limitations, and responsible scanning.
+Inventory, the presence rules, Changes, networks, history, exporting, device
+actions, keyboard shortcuts, where the database lives, upgrading, uninstalling,
+troubleshooting, known limitations, and responsible scanning.
 
 - [Auto-update setup](docs/AUTO_UPDATE.md)
 - [Website](site/README.md)
@@ -135,15 +143,16 @@ cargo clippy --all-targets -- -D warnings
 Both are run by [CI](.github/workflows/ci.yml) on every pull request, along with
 a dependency audit.
 
-Two browser-driven verification scripts are not in CI, because the hosted runners
-have no browser. Run them locally against a preview build:
+The browser-driven verification scripts run in the CI `browser` job and can be
+run locally against a preview build:
 
 ```sh
 npm run build && npm run preview &
 npm i --no-save playwright @axe-core/playwright
-node scripts/verify-ui.mjs      # 20 checks against the application
-cd site && python3 -m http.server 4174 &
-node scripts/verify-site.mjs    # 22 checks against the website, including axe-core
+node scripts/verify-ui.mjs      # the application, end to end, including axe-core
+node scripts/verify-csp.mjs     # the packaged Content Security Policy
+npx --yes serve site -l 4174 &
+node scripts/verify-site.mjs    # the website, including axe-core
 ```
 
 `scripts/capture-screenshots.mjs` regenerates the website's product screenshots
@@ -164,13 +173,13 @@ website. CI fails if any of them drift.
 
 ```
 src/                    React interface
-  lib/                  pure logic: live merging, table, profiles, export, actions
+  lib/                  pure logic: live merging, tables, inventory, changes, export
   ui/                   design-system primitives
   components/           application surfaces
   hooks/                scanning, settings, theme, shortcuts
 src-tauri/src/
   scanner.rs            discovery, probing, concurrency limits
-  inventory.rs          device identity and change detection
+  inventory.rs          device identity, presence rules and change detection
   db.rs                 SQLite schema, migrations and queries
   ports.rs              port parsing, validation and the service table
   ipparse.rs            target parsing and normalisation

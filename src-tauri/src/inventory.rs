@@ -159,6 +159,10 @@ pub enum DeviceStatus {
     Trusted,
     /// Recognised, and the operator wants to be told when it changes.
     Watched,
+    /// Recognised, and its changes are not worth reviewing. History is kept; new
+    /// change events for the device are recorded already-ignored so they stay
+    /// out of the default inbox without being lost.
+    Ignored,
 }
 
 impl DeviceStatus {
@@ -168,6 +172,7 @@ impl DeviceStatus {
             DeviceStatus::Known => "known",
             DeviceStatus::Trusted => "trusted",
             DeviceStatus::Watched => "watched",
+            DeviceStatus::Ignored => "ignored",
         }
     }
 
@@ -176,8 +181,138 @@ impl DeviceStatus {
             "known" => DeviceStatus::Known,
             "trusted" => DeviceStatus::Trusted,
             "watched" => DeviceStatus::Watched,
+            "ignored" => DeviceStatus::Ignored,
             _ => DeviceStatus::Unclassified,
         }
+    }
+}
+
+/// Whether a device answered the most recent *completed* scan that could have
+/// seen it.
+///
+/// ArcScan does not watch a network continuously, so these three values are the
+/// only honest ones. The rules are applied in [`crate::db::Db::inventory`] and
+/// are, in full:
+///
+/// * A network scope's **reference scan** is its most recent scan that both
+///   completed (was not stopped early) and carries a real coverage key. A scan
+///   recorded before coverage keys existed cannot say which ports it checked, so
+///   it is never a reference.
+/// * **Present** — the device was observed by that reference scan.
+/// * **Missing** — the device was not observed by the reference scan, but it was
+///   observed by at least one earlier completed scan with the *same* target and
+///   coverage, so the reference scan genuinely looked where the device used to
+///   be and did not find it.
+/// * **Unknown** — everything else: the scope has no reference scan (only
+///   partial scans, only legacy scans, or none at all), or the device has only
+///   ever been seen under a different target or coverage, so its absence proves
+///   nothing.
+///
+/// A partial scan can therefore never make a device Missing: it is excluded from
+/// being a reference and from the compatible-history test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PresenceState {
+    /// Observed in the latest completed scan that covers this device's network.
+    Present,
+    /// Observed before under the same coverage, absent from the latest one.
+    Missing,
+    /// Presence cannot be determined from completed scans.
+    #[default]
+    Unknown,
+}
+
+/// What a persistent change event records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeType {
+    /// Never observed before this scan.
+    DeviceAdded,
+    /// Known to the inventory, absent from the baseline scan, back now.
+    DeviceReturned,
+    /// In the baseline scan, absent from this one.
+    DeviceMissing,
+    IpChanged,
+    HostnameChanged,
+    VendorChanged,
+    OsChanged,
+    MacChanged,
+    PortsChanged,
+}
+
+impl ChangeType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeType::DeviceAdded => "device_added",
+            ChangeType::DeviceReturned => "device_returned",
+            ChangeType::DeviceMissing => "device_missing",
+            ChangeType::IpChanged => "ip_changed",
+            ChangeType::HostnameChanged => "hostname_changed",
+            ChangeType::VendorChanged => "vendor_changed",
+            ChangeType::OsChanged => "os_changed",
+            ChangeType::MacChanged => "mac_changed",
+            ChangeType::PortsChanged => "ports_changed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "device_added" => ChangeType::DeviceAdded,
+            "device_returned" => ChangeType::DeviceReturned,
+            "device_missing" => ChangeType::DeviceMissing,
+            "ip_changed" => ChangeType::IpChanged,
+            "hostname_changed" => ChangeType::HostnameChanged,
+            "vendor_changed" => ChangeType::VendorChanged,
+            "os_changed" => ChangeType::OsChanged,
+            "mac_changed" => ChangeType::MacChanged,
+            "ports_changed" => ChangeType::PortsChanged,
+            _ => return None,
+        })
+    }
+
+    /// The change type a [`FieldChange`] becomes, or `None` for fields that are
+    /// not worth an inbox entry on their own.
+    pub fn for_field(field: &str) -> Option<Self> {
+        Some(match field {
+            "ip" => ChangeType::IpChanged,
+            "hostname" => ChangeType::HostnameChanged,
+            "vendor" => ChangeType::VendorChanged,
+            "os_guess" => ChangeType::OsChanged,
+            "mac" => ChangeType::MacChanged,
+            "ports" => ChangeType::PortsChanged,
+            _ => return None,
+        })
+    }
+}
+
+/// Where a change event sits in the review inbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeState {
+    #[default]
+    Unreviewed,
+    Acknowledged,
+    /// Deliberately not worth reviewing. The event is kept and can be filtered
+    /// back into view; it is simply out of the default inbox.
+    Ignored,
+}
+
+impl ChangeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeState::Unreviewed => "unreviewed",
+            ChangeState::Acknowledged => "acknowledged",
+            ChangeState::Ignored => "ignored",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "unreviewed" => ChangeState::Unreviewed,
+            "acknowledged" => ChangeState::Acknowledged,
+            "ignored" => ChangeState::Ignored,
+            _ => return None,
+        })
     }
 }
 
@@ -761,9 +896,82 @@ mod tests {
             DeviceStatus::Known,
             DeviceStatus::Trusted,
             DeviceStatus::Watched,
+            DeviceStatus::Ignored,
         ] {
             assert_eq!(DeviceStatus::parse(status.as_str()), status);
         }
         assert_eq!(DeviceStatus::parse("nonsense"), DeviceStatus::Unclassified);
+    }
+
+    #[test]
+    fn presence_state_crosses_the_boundary_as_the_ui_expects() {
+        // The frontend switches on these three strings; renaming one silently
+        // would make every device read as neither present nor missing.
+        assert_eq!(
+            serde_json::to_string(&PresenceState::Present).unwrap(),
+            "\"present\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PresenceState::Missing).unwrap(),
+            "\"missing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PresenceState::Unknown).unwrap(),
+            "\"unknown\""
+        );
+        // Presence is never assumed: the default is Unknown, not Present.
+        assert_eq!(PresenceState::default(), PresenceState::Unknown);
+    }
+
+    #[test]
+    fn change_type_round_trips_and_rejects_unknown_values() {
+        for kind in [
+            ChangeType::DeviceAdded,
+            ChangeType::DeviceReturned,
+            ChangeType::DeviceMissing,
+            ChangeType::IpChanged,
+            ChangeType::HostnameChanged,
+            ChangeType::VendorChanged,
+            ChangeType::OsChanged,
+            ChangeType::MacChanged,
+            ChangeType::PortsChanged,
+        ] {
+            assert_eq!(ChangeType::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ChangeType::parse("ticket_raised"), None);
+    }
+
+    #[test]
+    fn every_reported_field_change_maps_to_a_change_type() {
+        // diff_fields is the only producer of change events for a device that
+        // was present in both scans, so every field it can emit must have a
+        // type. A field with no mapping would silently vanish from the inbox.
+        let mut before = host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("srv"), &[22]);
+        before.os_guess = Some("Windows".into());
+        let mut after = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("srv2"), &[443]);
+        after.vendor = Some("Other Vendor".into());
+        after.os_guess = Some("Linux/Unix/macOS".into());
+
+        let fields = diff_fields(&before, &after);
+        assert_eq!(fields.len(), 6, "{fields:?}");
+        for field in &fields {
+            assert!(
+                ChangeType::for_field(&field.field).is_some(),
+                "no change type for {}",
+                field.field
+            );
+        }
+    }
+
+    #[test]
+    fn change_state_round_trips() {
+        for state in [
+            ChangeState::Unreviewed,
+            ChangeState::Acknowledged,
+            ChangeState::Ignored,
+        ] {
+            assert_eq!(ChangeState::parse(state.as_str()), Some(state));
+        }
+        assert_eq!(ChangeState::parse("closed"), None);
     }
 }
