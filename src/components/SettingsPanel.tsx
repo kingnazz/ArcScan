@@ -11,6 +11,7 @@ import { Drawer } from "../ui/Drawer";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PROFILES, PROFILE_ORDER } from "../lib/profiles";
 import { COLUMNS, type SortKey } from "../lib/table";
+import { OPTIONAL_INVENTORY_COLUMNS, type InventoryColumn } from "../lib/inventory";
 import { formatCount, parsePorts } from "../lib/format";
 import type { Settings } from "../lib/prefs";
 import type { PublicIpState } from "../hooks/usePublicIp";
@@ -209,6 +210,34 @@ export function SettingsPanel(props: SettingsPanelProps) {
                         hiddenColumns: visible
                           ? settings.hiddenColumns.filter((k) => k !== column.key)
                           : ([...settings.hiddenColumns, column.key] as SortKey[]),
+                      })
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <div className="divider" />
+
+          <section>
+            <SectionHeading>Inventory columns</SectionHeading>
+            <p className="mb-2 text-xs leading-relaxed text-text-muted">
+              Device, Address, Status and Last seen are always shown. These extras are off by
+              default and, like the rest, hide themselves when the window is too narrow.
+            </p>
+            <ul className="space-y-1.5">
+              {OPTIONAL_INVENTORY_COLUMNS.map((column) => (
+                <li key={column.key}>
+                  <Toggle
+                    id={`settings-inventory-column-${column.key}`}
+                    label={column.label}
+                    checked={settings.inventoryColumns.includes(column.key)}
+                    onChange={(visible) =>
+                      onChange({
+                        inventoryColumns: visible
+                          ? ([...settings.inventoryColumns, column.key] as InventoryColumn[])
+                          : settings.inventoryColumns.filter((k) => k !== column.key),
                       })
                     }
                   />

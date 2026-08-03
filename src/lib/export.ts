@@ -190,7 +190,9 @@ const INVENTORY_HEADERS = [
 function inventoryRecord(row: InventoryRow, notes: string): Record<string, string> {
   return {
     network: row.network_name ?? "",
-    device: row.display_name,
+    // Not `device`: the XML item element is already <device>, and a field of the
+    // same name inside it reads as malformed even though it parses.
+    device_name: row.display_name,
     status: STATUS_LABEL[row.status] ?? row.status,
     presence: PRESENCE_LABEL[row.presence] ?? row.presence,
     current_ip: row.current_ip ?? "",
@@ -258,7 +260,7 @@ function changeRecord(event: ChangeEvent): Record<string, string> {
   return {
     date: event.scan_at ?? event.created_at,
     network: event.network_name ?? "",
-    device: event.device_label,
+    device_name: event.device_label,
     ip: event.ip ?? "",
     mac: event.mac ?? "",
     change: CHANGE_TYPE_LABEL[event.change_type] ?? event.change_type,

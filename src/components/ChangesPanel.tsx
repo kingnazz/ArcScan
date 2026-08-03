@@ -91,7 +91,9 @@ export const ChangesPanel = forwardRef<HTMLInputElement, ChangesPanelProps>(func
               type="button"
               aria-label="Clear the search"
               onClick={() => onFilterChange({ query: "" })}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text"
+              // A full 24px target: the field sits next to the filter menus,
+              // so a smaller hit area has nowhere to borrow space from.
+              className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-text-muted hover:text-text"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -319,7 +321,7 @@ function ChangeGroupRow({
         ))}
       </ul>
 
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 opacity-70 transition-opacity duration-fast focus-within:opacity-100 group-hover:opacity-100">
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         {actions.map((action) => (
           <Button
             key={action}

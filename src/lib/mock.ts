@@ -745,109 +745,120 @@ function seedHistory(): void {
   homeSeeds.set(HOME_TABLET.ip, HOME_TABLET);
 
   const printer = HOME_DEVICES.find((d) => d.hostname === "office-printer")!;
-  const oldPrinter: DemoDevice = {
-    ...printer,
-    ip: "192.168.1.28",
-    ports: [80, 515, 631, 9100],
-  };
+  const oldPrinter: DemoDevice = { ...printer, ip: "192.168.1.28", ports: [80, 515, 631, 9100] };
   homeSeeds.set(oldPrinter.ip, oldPrinter);
-
   const laptop = HOME_DEVICES.find((d) => d.hostname === "macbook-air")!;
   const oldLaptop: DemoDevice = { ...laptop, hostname: "macbook" };
   const camera = HOME_DEVICES.find((d) => d.hostname === "cam-driveway")!;
   const quietCamera: DemoDevice = { ...camera, ports: [80, 554] };
 
-  // First home scan: the old printer address, the old laptop name, the tablet,
-  // and no TV yet.
-  const firstStamp = daysAgo(6);
-  const firstHome = HOME_DEVICES.filter(
-    (d) =>
-      d.hostname !== "office-printer" && d.hostname !== "livingroom-tv" && d.hostname !== "macbook-air" &&
-      d.hostname !== "cam-driveway",
-  ).map((d) => hostFrom(d, firstStamp));
-  firstHome.push(
-    hostFrom(oldPrinter, firstStamp),
-    hostFrom(oldLaptop, firstStamp),
-    hostFrom(quietCamera, firstStamp),
-    hostFrom(HOME_TABLET, firstStamp),
-  );
-  recordScan({
-    scopeId: 1,
-    target: DEMO_CIDR,
-    profile: "quick-lan",
-    coverageKey: QUICK_COVERAGE,
-    hosts: firstHome.sort(byIp),
-    createdAt: firstStamp,
-    durationMs: 18_400,
-    seeds: homeSeeds,
-  });
-
-  // Second home scan: everything the latest scan sees, minus the tablet.
-  const secondStamp = daysAgo(1, 20);
-  recordScan({
-    scopeId: 1,
-    target: DEMO_CIDR,
-    profile: "quick-lan",
-    coverageKey: QUICK_COVERAGE,
-    hosts: HOME_DEVICES.map((d) => hostFrom(d, secondStamp)).sort(byIp),
-    createdAt: secondStamp,
-    durationMs: 17_950,
-    seeds: homeSeeds,
-  });
-
-  // --- Office ------------------------------------------------------------
   const officeSeeds = new Map(OFFICE_DEVICES.map((d) => [d.ip, d]));
   officeSeeds.set(OFFICE_ONE_OFF.ip, OFFICE_ONE_OFF);
-
-  const wideStamp = daysAgo(21);
-  recordScan({
-    scopeId: 2,
-    target: OFFICE_CIDR,
-    profile: "full-tcp",
-    coverageKey: WIDE_COVERAGE,
-    hosts: [...OFFICE_DEVICES, OFFICE_ONE_OFF].map((d) => hostFrom(d, wideStamp)).sort(byIp),
-    createdAt: wideStamp,
-    durationMs: 184_000,
-    seeds: officeSeeds,
-  });
-
   const officePrinter = OFFICE_DEVICES.find((d) => d.hostname === "printer-back-office")!;
   const oldOfficePrinter: DemoDevice = { ...officePrinter, ip: "10.20.0.19" };
   officeSeeds.set(oldOfficePrinter.ip, oldOfficePrinter);
   const officeNas = OFFICE_DEVICES.find((d) => d.hostname === "nas-office")!;
   const oldOfficeNas: DemoDevice = { ...officeNas, ports: [22, 445] };
 
-  const officeFirst = daysAgo(10);
-  recordScan({
-    scopeId: 2,
-    target: OFFICE_CIDR,
-    profile: "quick-lan",
-    coverageKey: QUICK_COVERAGE,
-    hosts: OFFICE_DEVICES.filter(
-      (d) => d.hostname !== "printer-back-office" && d.hostname !== "nas-office",
-    )
-      .map((d) => hostFrom(d, officeFirst))
-      .concat([hostFrom(oldOfficePrinter, officeFirst), hostFrom(oldOfficeNas, officeFirst)])
-      .sort(byIp),
-    createdAt: officeFirst,
-    durationMs: 16_200,
-    seeds: officeSeeds,
-  });
+  // Oldest first, so scan ids ascend with time and History reads in order.
+  const timeline = [
+    // A wide office sweep. Its coverage differs from everything after it, which
+    // is what leaves the one-off device honestly Unknown rather than Missing.
+    {
+      scopeId: 2,
+      target: OFFICE_CIDR,
+      profile: "full-tcp",
+      coverageKey: WIDE_COVERAGE,
+      createdAt: daysAgo(21),
+      durationMs: 184_000,
+      seeds: officeSeeds,
+      devices: [...OFFICE_DEVICES, OFFICE_ONE_OFF],
+    },
+    {
+      scopeId: 2,
+      target: OFFICE_CIDR,
+      profile: "quick-lan",
+      coverageKey: QUICK_COVERAGE,
+      createdAt: daysAgo(10),
+      durationMs: 16_200,
+      seeds: officeSeeds,
+      devices: OFFICE_DEVICES.filter(
+        (d) => d.hostname !== "printer-back-office" && d.hostname !== "nas-office",
+      ).concat([oldOfficePrinter, oldOfficeNas]),
+    },
+    // The home network before the printer moved, with the tablet still present
+    // and no TV yet.
+    {
+      scopeId: 1,
+      target: DEMO_CIDR,
+      profile: "quick-lan",
+      coverageKey: QUICK_COVERAGE,
+      createdAt: daysAgo(6),
+      durationMs: 18_400,
+      seeds: homeSeeds,
+      devices: HOME_DEVICES.filter(
+        (d) =>
+          d.hostname !== "office-printer" &&
+          d.hostname !== "livingroom-tv" &&
+          d.hostname !== "macbook-air" &&
+          d.hostname !== "cam-driveway",
+      ).concat([oldPrinter, oldLaptop, quietCamera, HOME_TABLET]),
+    },
+    // The office printer moves and the NAS opens HTTPS.
+    {
+      scopeId: 2,
+      target: OFFICE_CIDR,
+      profile: "quick-lan",
+      coverageKey: QUICK_COVERAGE,
+      createdAt: daysAgo(3),
+      durationMs: 16_050,
+      seeds: officeSeeds,
+      devices: OFFICE_DEVICES,
+    },
+    // The home printer moves and gains HTTPS, the laptop is renamed, the TV
+    // arrives and the tablet stops answering.
+    {
+      scopeId: 1,
+      target: DEMO_CIDR,
+      profile: "quick-lan",
+      coverageKey: QUICK_COVERAGE,
+      createdAt: daysAgo(1, 20),
+      durationMs: 17_950,
+      seeds: homeSeeds,
+      devices: HOME_DEVICES,
+    },
+  ];
 
-  const officeSecond = daysAgo(3);
-  recordScan({
-    scopeId: 2,
-    target: OFFICE_CIDR,
-    profile: "quick-lan",
-    coverageKey: QUICK_COVERAGE,
-    hosts: OFFICE_DEVICES.map((d) => hostFrom(d, officeSecond)).sort(byIp),
-    createdAt: officeSecond,
-    durationMs: 16_050,
-    seeds: officeSeeds,
-  });
+  for (const entry of timeline) {
+    recordScan({
+      scopeId: entry.scopeId,
+      target: entry.target,
+      profile: entry.profile,
+      coverageKey: entry.coverageKey,
+      hosts: entry.devices.map((d) => hostFrom(d, entry.createdAt)).sort(byIp),
+      createdAt: entry.createdAt,
+      durationMs: entry.durationMs,
+      seeds: entry.seeds,
+    });
+  }
 }
 
-seedHistory();
+/**
+ * The browser tests need to see the empty states as well as the populated ones,
+ * and a demo that is empty until you scan is exactly what a new install looks
+ * like. `?demo=empty` skips the seeding; anything else gets the full history.
+ * This affects the browser demo only — the native app never loads this module.
+ */
+function seedingWanted(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return new URLSearchParams(window.location.search).get("demo") !== "empty";
+  } catch {
+    return true;
+  }
+}
+
+if (seedingWanted()) seedHistory();
 
 // ---------------------------------------------------------------------------
 // Presence, mirroring the Rust rules

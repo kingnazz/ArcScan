@@ -118,7 +118,7 @@ await step("the pre-paint theme script runs", async () => {
 });
 
 await step("a scan streams and completes under the policy", async () => {
-  await page.getByRole("button", { name: /^Scan 192\.168\.10\.0\/24$/ }).click();
+  await page.getByRole("button", { name: /^Scan 192\.168\.1\.0\/24$/ }).click();
   await page.locator("tbody tr").first().waitFor({ timeout: 8000 });
   await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 40000 });
   await page.waitForTimeout(600);
@@ -127,13 +127,35 @@ await step("a scan streams and completes under the policy", async () => {
   return `${rows} devices`;
 });
 
-await step("an export is produced under the policy", async () => {
+await step("a scan export is produced under the policy", async () => {
   // In the browser the export goes through a blob URL, which some policies
   // block outright.
   const download = page.waitForEvent("download", { timeout: 10000 });
   await page.getByRole("button", { name: "Export", exact: true }).click();
   await page.getByRole("button", { name: "CSV spreadsheet" }).click();
   const file = await download;
+  return file.suggestedFilename();
+});
+
+await step("an inventory export is produced under the policy", async () => {
+  await page.locator("header nav button", { hasText: "Inventory" }).click();
+  await page.locator("tbody tr").first().waitFor({ timeout: 5000 });
+  const download = page.waitForEvent("download", { timeout: 10000 });
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await page.getByRole("button", { name: "CSV spreadsheet" }).click();
+  const file = await download;
+  return file.suggestedFilename();
+});
+
+await step("a changes export is produced under the policy", async () => {
+  await page.locator("header nav button", { hasText: "Changes" }).click();
+  await page.getByLabel("Filter changes", { exact: true }).selectOption("all");
+  await page.locator("main ul > li").first().waitFor({ timeout: 5000 });
+  const download = page.waitForEvent("download", { timeout: 10000 });
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await page.getByRole("button", { name: "CSV spreadsheet" }).click();
+  const file = await download;
+  await page.locator("header nav button", { hasText: "Scan" }).click();
   return file.suggestedFilename();
 });
 

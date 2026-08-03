@@ -168,7 +168,9 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
                 type="button"
                 aria-label="Clear the search"
                 onClick={() => onFilterChange({ query: "" })}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text"
+                // A full 24px target: the field sits next to the filter menus,
+                // so a smaller hit area has nowhere to borrow space from.
+                className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-text-muted hover:text-text"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
