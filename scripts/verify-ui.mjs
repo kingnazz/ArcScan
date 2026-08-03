@@ -205,8 +205,9 @@ await step("history lists the seeded scans with change counts", async () => {
 
 await step("history shows which network each scan belongs to", async () => {
   // innerText returns CSS-transformed text, and the badges are uppercased.
+  // "Main office" is the demo network every demo scan runs against.
   const text = await page.locator("main").innerText();
-  if (!/office network/i.test(text)) throw new Error("network scope not shown in history");
+  if (!/main office/i.test(text)) throw new Error("network scope not shown in history");
 });
 
 await step("exporting an old scan does not disturb the current view", async () => {
@@ -329,13 +330,24 @@ await step("settings opens and public IP lookup is off by default", async () => 
   return "opt-in confirmed";
 });
 
-await step("settings lets the scanned network be named", async () => {
+await step("settings lists every network separately and names them", async () => {
   const panel = page.getByRole("complementary", { name: "Settings" });
-  const field = panel.getByLabel(/^Name for /);
-  await field.waitFor({ timeout: 3000 });
-  await field.fill("Head Office");
-  await field.blur();
+  const fields = panel.getByLabel(/^Name for /);
+  await fields.first().waitFor({ timeout: 3000 });
+
+  // Scoping only means something with more than one network to keep apart, so
+  // each one must get its own independently editable name.
+  const count = await fields.count();
+  if (count < 2) throw new Error(`expected at least 2 networks, found ${count}`);
+  const before = await fields.nth(1).inputValue();
+
+  await fields.first().fill("Head Office");
+  await fields.first().blur();
   await page.getByRole("status").filter({ hasText: /renamed/i }).first().waitFor({ timeout: 3000 });
+
+  // Renaming one network must not touch another.
+  const after = await fields.nth(1).inputValue();
+  if (after !== before) throw new Error(`renaming one network changed another: ${before} -> ${after}`);
 
   // The new name reaches history, which is where it does its work.
   await page.keyboard.press("Escape");
@@ -343,7 +355,7 @@ await step("settings lets the scanned network be named", async () => {
   await page.waitForTimeout(300);
   const history = await page.locator("main").innerText();
   if (!/head office/i.test(history)) throw new Error("renamed network not shown in history");
-  return "named and shown in history";
+  return `${count} networks, renamed and shown in history`;
 });
 
 await step("no horizontal overflow at 1440x900", async () => {

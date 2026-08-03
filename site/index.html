@@ -81,6 +81,7 @@
           "Open service and port detection",
           "MAC address and manufacturer identification",
           "Persistent device inventory with names and notes",
+          "Network-scoped device inventory for multiple sites",
           "Change detection between scans",
           "Scan history and comparison",
           "CSV, JSON and XML export",
@@ -173,6 +174,14 @@
             "acceptedAnswer": {
               "@type": "Answer",
               "text": "Yes. Every scan is compared with the most recent earlier completed scan that covered the same target with the same ports, and ArcScan reports new devices, devices that have gone missing, IP address changes, hostname and manufacturer changes, and ports that opened or closed. Devices are matched by MAC address first, so a DHCP lease change is reported as a changed device rather than as a new one. A scan you stopped early is never compared, since it did not check every address."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What happens if I stop a scan part of the way through?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Everything found so far is kept and saved, and the scan appears in history labelled a partial scan with the number of addresses it managed to check. You can open it, read it and export it like any other scan. What it will not do is report changes. A device it never reached is not necessarily gone, and a port it never probed is not necessarily closed, so ArcScan says why the comparison is unavailable rather than showing one that could be wrong. The next completed scan compares against the last completed scan instead."
             }
           },
           {
@@ -1081,6 +1090,21 @@
                 Devices are matched by MAC address first, so a DHCP lease change is reported as a
                 changed device rather than as a new one. A scan you stopped early is never compared,
                 since it did not check every address.
+              </p>
+            </details>
+
+            <details>
+              <summary>What happens if I stop a scan part of the way through?</summary>
+              <p>
+                Everything found so far is kept and saved, and the scan appears in history labelled
+                a partial scan with the number of addresses it managed to check. You can open it,
+                read it and export it like any other scan.
+              </p>
+              <p>
+                What it will not do is report changes. A device it never reached is not necessarily
+                gone, and a port it never probed is not necessarily closed, so ArcScan says why the
+                comparison is unavailable rather than showing one that could be wrong. The next
+                completed scan compares against the last completed scan instead.
               </p>
             </details>
 
