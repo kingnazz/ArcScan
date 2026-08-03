@@ -7,8 +7,11 @@ use tauri::State;
 
 use serde::Serialize;
 
-use crate::db::{Db, DeviceDetail, NetworkScope, SavedScan, ScanDetail, ScanSummary};
-use crate::inventory::{Device, DeviceStatus, ScanComparison};
+use crate::db::{
+    BulkOutcome, ChangeFeed, Db, DeviceDetail, InventorySummary, NetworkScope, SavedScan,
+    ScanDetail, ScanSummary,
+};
+use crate::inventory::{ChangeState, Device, DeviceStatus, ScanComparison};
 use crate::netinfo::{self, LocalNetwork};
 use crate::ports;
 use crate::scanner::{self, ScanEvent, ScanOptions, ScanResult};
@@ -184,6 +187,42 @@ pub fn prune_history(db: State<'_, Db>, keep: i64) -> Result<usize, String> {
 #[tauri::command]
 pub fn list_devices(db: State<'_, Db>) -> Result<Vec<Device>, String> {
     db.list_devices()
+}
+
+/// The persistent Inventory: every device ArcScan has ever recorded, with the
+/// presence its network's latest completed scan supports.
+#[tauri::command]
+pub fn inventory_summary(db: State<'_, Db>) -> Result<InventorySummary, String> {
+    db.inventory()
+}
+
+/// The Changes inbox, newest first, with the unreviewed count.
+#[tauri::command]
+pub fn list_change_events(db: State<'_, Db>) -> Result<ChangeFeed, String> {
+    db.change_events()
+}
+
+/// Acknowledge, ignore or reopen change events. Rejects an unknown state rather
+/// than writing it, so a typo cannot make events invisible to every filter.
+#[tauri::command]
+pub fn set_change_state(
+    db: State<'_, Db>,
+    ids: Vec<i64>,
+    state: String,
+) -> Result<BulkOutcome, String> {
+    let state = ChangeState::parse(&state)
+        .ok_or_else(|| format!("`{state}` is not a review state ArcScan recognises."))?;
+    db.set_change_state(&ids, state)
+}
+
+/// Classify several devices at once, for the Inventory's bulk actions.
+#[tauri::command]
+pub fn set_device_statuses(
+    db: State<'_, Db>,
+    ids: Vec<i64>,
+    status: String,
+) -> Result<BulkOutcome, String> {
+    db.set_device_statuses(&ids, DeviceStatus::parse(&status))
 }
 
 /// Every known network scope, for display and naming.
