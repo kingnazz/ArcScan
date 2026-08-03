@@ -713,26 +713,32 @@ impl Db {
     }
 
     pub fn delete_scan(&self, id: i64) -> Result<(), String> {
-        let conn = self.lock()?;
-        conn.execute("DELETE FROM scans WHERE id = ?1", params![id])
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(sql_err)?;
+        tx.execute("DELETE FROM scans WHERE id = ?1", params![id])
             .map_err(sql_err)?;
-        Ok(())
+        clear_deleted_scan_links(&tx)?;
+        tx.commit().map_err(sql_err)
     }
 
     /// Drop the oldest scans, keeping the newest `keep`. Devices survive so
-    /// labels, notes and first-seen dates are never lost to retention.
+    /// labels, notes and first-seen dates are never lost to retention, and so do
+    /// change records.
     pub fn prune_history(&self, keep: i64) -> Result<usize, String> {
         if keep < 1 {
             return Err("History retention must keep at least one scan.".into());
         }
-        let conn = self.lock()?;
-        let removed = conn
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(sql_err)?;
+        let removed = tx
             .execute(
                 "DELETE FROM scans WHERE id NOT IN
                     (SELECT id FROM scans ORDER BY id DESC LIMIT ?1)",
                 params![keep],
             )
             .map_err(sql_err)?;
+        clear_deleted_scan_links(&tx)?;
+        tx.commit().map_err(sql_err)?;
         Ok(removed)
     }
 
@@ -1267,6 +1273,30 @@ impl Db {
             .map_err(sql_err)?;
         Ok(ips)
     }
+}
+
+/// Drop change events' references to scans that no longer exist.
+///
+/// `change_events.scan_id` is deliberately not a foreign key — the record has to
+/// outlive the scan that produced it — but that means nothing nulls it
+/// automatically, and an id pointing at a deleted scan would make the inbox's
+/// "Open the scan" fail rather than saying the scan is gone. The event keeps its
+/// own copy of the scan dates and the device label, so it stays readable.
+fn clear_deleted_scan_links(tx: &Transaction<'_>) -> Result<(), String> {
+    tx.execute(
+        "UPDATE change_events
+         SET scan_id = CASE
+                 WHEN scan_id IN (SELECT id FROM scans) THEN scan_id ELSE NULL END,
+             baseline_scan_id = CASE
+                 WHEN baseline_scan_id IN (SELECT id FROM scans) THEN baseline_scan_id
+                 ELSE NULL END
+         WHERE (scan_id IS NOT NULL AND scan_id NOT IN (SELECT id FROM scans))
+            OR (baseline_scan_id IS NOT NULL
+                AND baseline_scan_id NOT IN (SELECT id FROM scans))",
+        [],
+    )
+    .map_err(sql_err)?;
+    Ok(())
 }
 
 /// Presence for a single device, applying exactly the rules documented on
@@ -4697,9 +4727,55 @@ mod tests {
         // The date the change was found is kept with the event itself.
         assert!(feed.events[0].scan_at.is_some());
         assert_eq!(feed.events[0].device_label, "tv");
+        // The link is cleared rather than left pointing at a scan that is gone,
+        // so "Open the scan" says so instead of failing.
+        assert!(feed.events[0].scan_id.is_none());
 
         // The inventory is intact too.
         assert_eq!(db.inventory().unwrap().rows.len(), 2);
+    }
+
+    #[test]
+    fn retention_keeps_change_records_and_clears_their_dead_links() {
+        let db = Db::open_in_memory().unwrap();
+        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        for extra in [None, Some(4u8), Some(5), Some(6)] {
+            let mut hosts = vec![gateway.clone()];
+            if let Some(n) = extra {
+                hosts.push(host(
+                    &format!("10.0.0.{n}"),
+                    Some(&format!("aa:bb:cc:00:00:0{n}")),
+                    Some("device"),
+                    &[8009],
+                ));
+            }
+            db.save_scan(&result("10.0.0.0/24", Some("quick-lan"), hosts))
+                .unwrap();
+        }
+        let before = db.change_events().unwrap();
+        assert!(before.total > 0);
+
+        // Keep only the newest scan; every earlier one goes.
+        let removed = db.prune_history(1).unwrap();
+        assert_eq!(removed, 3);
+
+        let after = db.change_events().unwrap();
+        assert_eq!(
+            after.total, before.total,
+            "retention must not erase records"
+        );
+        let survivor = db.list_scans().unwrap()[0].id;
+        for event in &after.events {
+            assert!(
+                event.scan_id.is_none_or(|id| id == survivor),
+                "event {} still points at a deleted scan",
+                event.id
+            );
+            assert!(event.baseline_scan_id.is_none_or(|id| id == survivor));
+            assert!(event.scan_at.is_some(), "the date is kept on the record");
+        }
+        // Devices, names and dates are untouched by retention.
+        assert_eq!(db.inventory().unwrap().rows.len(), 4);
     }
 
     #[test]

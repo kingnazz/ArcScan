@@ -374,9 +374,3 @@ export interface ServiceInfo {
   name: string;
   sensitive: boolean;
 }
-
-/** Total reported changes, which is what the change badges count. */
-export function changeCount(comparison: ScanComparison | null): number {
-  if (!comparison) return 0;
-  return comparison.added.length + comparison.removed.length + comparison.changed.length;
-}
