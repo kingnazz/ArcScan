@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- ArcScan site build: v1.7.1 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -80,6 +81,7 @@
           "Open service and port detection",
           "MAC address and manufacturer identification",
           "Persistent device inventory with names and notes",
+          "Network-scoped device inventory for multiple sites",
           "Change detection between scans",
           "Scan history and comparison",
           "CSV, JSON and XML export",
@@ -176,10 +178,18 @@
           },
           {
             "@type": "Question",
+            "name": "What happens if I stop a scan part of the way through?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Everything found so far is kept and saved, and the scan appears in history labelled a partial scan with the number of addresses it managed to check. You can open it, read it and export it like any other scan. What it will not do is report changes. A device it never reached is not necessarily gone, and a port it never probed is not necessarily closed, so ArcScan says why the comparison is unavailable rather than showing one that could be wrong. The next completed scan compares against the last completed scan instead."
+            }
+          },
+          {
+            "@type": "Question",
             "name": "Is the ArcScan application code-signed?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Not yet. The installers are not signed with a paid publisher certificate and the macOS builds are not notarised, so Windows SmartScreen and macOS Gatekeeper will warn on first launch. Update packages are cryptographically signed with a minisign key that the application verifies before installing, which protects the update path but is not the same as publisher signing. SHA-256 checksums are published with every release."
+              "text": "Not yet. The installers are not signed with a paid publisher certificate and the macOS builds are not notarised, so Windows SmartScreen and macOS Gatekeeper will warn on first launch. Update packages are cryptographically signed with a minisign key that the application verifies before installing, which protects the update path but is not the same as publisher signing. GitHub records a SHA-256 digest for every release asset, which you can check against a file you have downloaded."
             }
           },
           {
@@ -287,6 +297,19 @@
 
           <p class="release-line">
             <span id="version-fallback">v1.7.1</span><span id="release-meta"></span>
+            <!--
+              A direct tag URL rather than /releases/latest, so this keeps
+              pointing at the 1.7.1 notes even when the GitHub API is
+              unreachable and even after a later release ships.
+            -->
+            <span aria-hidden="true"> &middot; </span
+            ><a
+              class="release-link"
+              id="release-notes-link"
+              href="https://github.com/kingnazz/ArcScan/releases/tag/v1.7.1"
+              rel="noopener"
+              >What changed in 1.7.1</a
+            >
           </p>
 
           <ul class="hero-facts">
@@ -352,6 +375,9 @@
             </li>
             <li role="presentation">
               <button class="shot-tab" role="tab" id="tab-history" aria-controls="shot-panel" aria-selected="false" data-shot="history-dark" data-caption="Scan history, with the target, profile, duration, device count and change counts for every saved scan.">History</button>
+            </li>
+            <li role="presentation">
+              <button class="shot-tab" role="tab" id="tab-partial" aria-controls="shot-panel" aria-selected="false" data-shot="history-partial-dark" data-caption="A scan stopped part of the way through is saved and labelled a partial scan, showing how many addresses it managed to check. It reports no missing devices, because it did not reach every address.">Partial scan</button>
             </li>
             <li role="presentation">
               <button class="shot-tab" role="tab" id="tab-light" aria-controls="shot-panel" aria-selected="false" data-shot="results-light" data-caption="The same inventory in the light theme.">Light theme</button>
@@ -470,10 +496,10 @@
               <p class="eyebrow">Change detection</p>
               <h2>Know what moved, arrived or disappeared.</h2>
               <p class="lede">
-                ArcScan compares each scan with the most recent earlier scan of the same target and
-                profile. Devices are matched by MAC address first, then by hostname and
-                manufacturer, so a new DHCP lease shows up as a device that changed address rather
-                than as one device vanishing and another appearing.
+                ArcScan compares each scan with the most recent earlier completed scan that checked
+                the same target with the same ports. Devices are matched by MAC address first, then
+                by hostname and manufacturer, so a new DHCP lease shows up as a device that changed
+                address rather than as one device vanishing and another appearing.
               </p>
               <p class="lede">
                 Field-level differences are shown for each change, so you can see that a printer
@@ -706,6 +732,97 @@
       </section>
 
       <!-- ======================================================== download -->
+      <!-- ====================================================== new in 1.7.1 -->
+      <!--
+        Sits directly above the downloads, so what changed is in front of the
+        person about to install it. Divided columns rather than another card
+        grid: the benefits section above already uses cards, and repeating them
+        here would give the release the same weight as the product itself.
+      -->
+      <section class="section" id="whats-new">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">New in 1.7.1</p>
+            <h2>More reliable on real networks.</h2>
+            <p>
+              ArcScan 1.7.1 improves the parts of a network inventory that have to be trustworthy.
+              Partial scans no longer create false missing-device reports, devices stay separated
+              between networks, and comparisons only use scans that checked equivalent coverage.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>Accurate partial scans</h3>
+              <p>
+                Stop a scan at any point and keep the results already found. Partial scans are
+                clearly labelled and never report unprobed devices as missing.
+              </p>
+            </article>
+
+            <article>
+              <h3>Network-scoped inventory</h3>
+              <p>
+                Device names, notes, status and history stay attached to the network where the
+                device was discovered, preventing unrelated client networks from being mixed
+                together.
+              </p>
+            </article>
+
+            <article>
+              <h3>Safer comparisons and exports</h3>
+              <p>
+                ArcScan compares completed scans that checked the same target and ports, and
+                historical exports always contain the exact scan selected.
+              </p>
+            </article>
+          </div>
+
+          <!--
+            Two supporting views at half width. Deliberately smaller than the
+            switcher above, so the release illustrates itself without competing
+            with the product's own screenshots.
+          -->
+          <div class="whats-new-shots">
+            <figure class="frame frame-sm">
+              <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+              <img
+                src="assets/shots/changes-partial-dark.webp"
+                srcset="assets/shots/changes-partial-dark-800.webp 800w, assets/shots/changes-partial-dark.webp 1440w"
+                sizes="(max-width: 820px) 100vw, 34rem"
+                width="1440"
+                height="900"
+                alt="The ArcScan Changes view for a partial scan, explaining that changes are unavailable because the scan was stopped before every address was checked."
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>
+                A stopped scan says why it has no comparison instead of reporting devices it never
+                reached as missing.
+              </figcaption>
+            </figure>
+
+            <figure class="frame frame-sm">
+              <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+              <img
+                src="assets/shots/settings-networks-dark.webp"
+                srcset="assets/shots/settings-networks-dark-800.webp 800w, assets/shots/settings-networks-dark.webp 1440w"
+                sizes="(max-width: 820px) 100vw, 34rem"
+                width="1440"
+                height="900"
+                alt="The Networks section of ArcScan settings, listing two named networks with their address range, gateway and device count."
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>
+                Each network keeps its own inventory, so two sites that reuse the same addresses
+                never mix.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
       <section class="section" id="download">
         <div class="wrap">
           <div class="section-head">
@@ -737,7 +854,7 @@
                 Download for Windows x64
               </a>
               <p class="dl-links">
-                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">SHA-256 checksum</a>
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
                 <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
               </p>
             </li>
@@ -762,7 +879,7 @@
                 Download for Windows ARM64
               </a>
               <p class="dl-links">
-                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">SHA-256 checksum</a>
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
                 <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
               </p>
             </li>
@@ -787,7 +904,7 @@
                 Download for macOS
               </a>
               <p class="dl-links">
-                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">SHA-256 checksum</a>
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
                 <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
               </p>
             </li>
@@ -812,7 +929,7 @@
                 Update packages are cryptographically signed with a minisign key, and ArcScan
                 verifies that signature before installing an update. That protects the update path;
                 it is not the same as publisher signing, and this page will say so until it is.
-                SHA-256 checksums are published with every release if you want to verify a download.
+                Every release asset carries a SHA-256 digest on GitHub if you want to verify a download.
               </p>
             </div>
           </div>
@@ -964,13 +1081,30 @@
             <details>
               <summary>Can ArcScan detect network changes?</summary>
               <p>
-                Yes. Every scan is compared with the most recent earlier scan of the same target and
-                profile, and ArcScan reports new devices, missing devices, IP address changes,
-                hostname and manufacturer changes, and ports that opened or closed.
+                Yes. Every scan is compared with the most recent earlier completed scan that covered
+                the same target with the same ports, and ArcScan reports new devices, devices that
+                have gone missing, IP address changes, hostname and manufacturer changes, and ports
+                that opened or closed.
               </p>
               <p>
                 Devices are matched by MAC address first, so a DHCP lease change is reported as a
-                device that moved rather than as a new device plus a missing one.
+                changed device rather than as a new one. A scan you stopped early is never compared,
+                since it did not check every address.
+              </p>
+            </details>
+
+            <details>
+              <summary>What happens if I stop a scan part of the way through?</summary>
+              <p>
+                Everything found so far is kept and saved, and the scan appears in history labelled
+                a partial scan with the number of addresses it managed to check. You can open it,
+                read it and export it like any other scan.
+              </p>
+              <p>
+                What it will not do is report changes. A device it never reached is not necessarily
+                gone, and a port it never probed is not necessarily closed, so ArcScan says why the
+                comparison is unavailable rather than showing one that could be wrong. The next
+                completed scan compares against the last completed scan instead.
               </p>
             </details>
 
@@ -984,7 +1118,8 @@
               <p>
                 Update packages are cryptographically signed with a minisign key that the application
                 verifies before installing. That protects the update path but is not the same as
-                publisher signing. SHA-256 checksums are published with every release.
+                publisher signing. GitHub records a SHA-256 digest for every release asset, which you
+                can check against a file you have downloaded.
               </p>
             </details>
 

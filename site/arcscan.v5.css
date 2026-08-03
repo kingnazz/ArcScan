@@ -457,6 +457,21 @@ code,
   color: var(--gray);
 }
 
+/* The release-notes link sits in the same muted line as the version, so it is
+ * findable without competing with the download button. Underlined rather than
+ * coloured alone, so it does not depend on colour to read as a link. The
+ * compound selector is deliberate: `.release-line a` above clears underlines
+ * for that line, and it would otherwise win on specificity. */
+.release-line .release-link {
+  color: var(--blue-text);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.release-line .release-link:hover {
+  color: var(--white);
+}
+
 /* Four short facts on one line, the way the original listed platforms. */
 /* Four short claims. A centred flex wrap breaks them into two rows that each
  * centre independently, so the ticks never line up; an explicit two column grid
@@ -623,6 +638,68 @@ code,
 }
 @media (max-width: 620px) {
   .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The 1.7.1 release notes: three columns separated by the same hairline the
+ * rest of the page uses, with no card backgrounds. Deliberately lighter than
+ * .benefit above, so a point release does not read as heavily as the product's
+ * own feature set. Columns collapse to rows below 820px, where the divider
+ * moves from the left edge to the top. */
+.whats-new {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 2.4rem;
+  max-width: var(--wide);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+.whats-new > article + article {
+  border-left: 1px solid var(--hair-soft);
+  padding-left: 2.4rem;
+}
+.whats-new h3 {
+  font-size: 1.12rem;
+  letter-spacing: -0.015em;
+  margin-bottom: 0.5rem;
+}
+.whats-new p {
+  color: var(--gray);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0;
+}
+@media (max-width: 820px) {
+  .whats-new {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .whats-new > article + article {
+    border-left: 0;
+    border-top: 1px solid var(--hair-soft);
+    padding-left: 0;
+    padding-top: 1.6rem;
+    margin-top: 1.6rem;
+  }
+}
+
+/* Two supporting screenshots for the release section, side by side and smaller
+ * than the switcher above. They reuse .frame, so the chrome, radius and caption
+ * treatment stay identical to every other screenshot on the page. */
+.whats-new-shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  max-width: var(--wide);
+  margin: clamp(2.5rem, 5vw, 3.5rem) auto 0;
+  padding: 0 1.5rem;
+}
+.frame-sm figcaption {
+  font-size: 0.78rem;
+}
+@media (max-width: 820px) {
+  .whats-new-shots {
     grid-template-columns: minmax(0, 1fr);
   }
 }

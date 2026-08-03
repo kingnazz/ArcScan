@@ -106,7 +106,38 @@ await shot("history-dark");
 await page.getByRole("button", { name: "Settings" }).click();
 await page.waitForTimeout(300);
 await shot("settings-dark");
+
+// The Networks section, scrolled into view. Scoping only means something with
+// more than one network, so the demo carries a second site.
+const settings = page.getByRole("complementary", { name: "Settings" });
+await settings.getByLabel(/^Name for /).first().scrollIntoViewIfNeeded();
+await page.waitForTimeout(300);
+await shot("settings-networks-dark");
 await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+
+// --- v1.7.1 partial-scan states -------------------------------------------
+// A genuinely stopped scan, not a mocked-up screen: the scan is started and
+// then cancelled part-way, exactly as pressing Stop does.
+await page.locator("header nav button", { hasText: "Devices" }).click();
+await page.waitForTimeout(200);
+await runScan();
+await page.locator("tbody tr").nth(4).waitFor({ timeout: 10_000 });
+await page.waitForTimeout(250);
+await page.getByRole("button", { name: /^Stop/ }).click();
+await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 15_000 });
+await page.waitForTimeout(900);
+
+await page.locator("header nav button", { hasText: "History" }).click();
+await page.waitForTimeout(400);
+await shot("history-partial-dark");
+
+// The Changes view for that partial scan, which explains why it has none.
+await page.locator("main ul > li").first().locator("button").first().click();
+await page.waitForTimeout(400);
+await page.locator("header nav button", { hasText: "Changes" }).click();
+await page.waitForTimeout(350);
+await shot("changes-partial-dark");
 
 // Narrow window, to show the layout holding together.
 await page.locator("header nav button", { hasText: "Devices" }).click();

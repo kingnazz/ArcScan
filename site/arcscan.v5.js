@@ -244,7 +244,7 @@
         status.textContent =
           "Sizes and links are from release " +
           (release.tag_name || "latest") +
-          " on GitHub. Verify a download against its SHA-256 checksum if you want to be certain.";
+          " on GitHub. Each asset carries a SHA-256 digest there if you want to verify a download.";
       }
     })
     .catch(function () {

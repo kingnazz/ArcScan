@@ -19,7 +19,8 @@
     "sync-version": "node scripts/sync-version.mjs",
     "check-version": "node scripts/sync-version.mjs --check",
     "verify-ui": "node scripts/verify-ui.mjs",
-    "verify-csp": "node scripts/verify-csp.mjs"
+    "verify-csp": "node scripts/verify-csp.mjs",
+    "verify-site": "node scripts/verify-site.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
