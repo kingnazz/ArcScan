@@ -895,7 +895,9 @@ impl Db {
                 device_count,
             })
             .collect();
-        networks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Case-insensitive, so the filter menu reads alphabetically whatever
+        // capitalisation the operator used for a network name.
+        networks.sort_by_key(|network| network.name.to_lowercase());
 
         let needs_completed_scan = !inventory_rows.is_empty()
             && inventory_rows
