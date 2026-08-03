@@ -257,6 +257,12 @@ pub fn set_device_notes(db: State<'_, Db>, id: i64, notes: Option<String>) -> Re
     db.set_device_notes(id, notes)
 }
 
+/// Note bodies for the devices an export covers.
+#[tauri::command]
+pub fn device_notes(db: State<'_, Db>, ids: Vec<i64>) -> Result<Vec<(i64, String)>, String> {
+    db.device_notes(&ids)
+}
+
 /// One-time adoption of the device labels v1.6 kept in browser local storage, so
 /// upgrading to v1.7 does not lose the names an operator already gave devices.
 #[tauri::command]

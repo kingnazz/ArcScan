@@ -9,13 +9,15 @@ import { IconButton } from "../ui/primitives";
 import { Logo } from "./Logo";
 import type { ResolvedTheme } from "../hooks/useTheme";
 
-export type View = "results" | "history" | "changes";
+export type View = "results" | "inventory" | "changes" | "history";
 
 export interface TitleBarProps {
   view: View;
   onViewChange: (view: View) => void;
-  changeCount: number;
-  hasComparison: boolean;
+  /** Devices in the persistent inventory. */
+  inventoryCount: number;
+  /** Unreviewed entries in the Changes inbox. */
+  unreviewedChanges: number;
   theme: ResolvedTheme;
   onToggleTheme: () => void;
   onOpenSettings: () => void;
@@ -27,8 +29,8 @@ export interface TitleBarProps {
 export function TitleBar({
   view,
   onViewChange,
-  changeCount,
-  hasComparison,
+  inventoryCount,
+  unreviewedChanges,
   theme,
   onToggleTheme,
   onOpenSettings,
@@ -36,9 +38,12 @@ export function TitleBar({
   onCheckUpdates,
   updateBusy,
 }: TitleBarProps) {
-  const tabs: Array<{ id: View; label: string; badge?: number; disabled?: boolean }> = [
-    { id: "results", label: "Devices" },
-    { id: "changes", label: "Changes", badge: changeCount, disabled: !hasComparison },
+  // Four views, none of them ever disabled: Inventory and Changes explain their
+  // own empty states, which is more useful than a tab that cannot be clicked.
+  const tabs: Array<{ id: View; label: string; badge?: number }> = [
+    { id: "results", label: "Scan" },
+    { id: "inventory", label: "Inventory", badge: inventoryCount },
+    { id: "changes", label: "Changes", badge: unreviewedChanges },
     { id: "history", label: "History" },
   ];
 
@@ -63,18 +68,12 @@ export function TitleBar({
             // aria-current is the right signal inside a nav, and aria-selected
             // is not a valid attribute on a plain button.
             aria-current={view === tab.id ? "page" : undefined}
-            disabled={tab.disabled}
             onClick={() => onViewChange(tab.id)}
-            title={
-              tab.disabled
-                ? "A comparison appears once there is an earlier scan of the same target"
-                : undefined
-            }
           >
             {tab.label}
             {tab.badge != null && tab.badge > 0 ? (
               <span className="rounded bg-accent-subtle px-1 text-[10.5px] font-semibold text-accent-text">
-                {tab.badge}
+                {tab.badge > 999 ? "999+" : tab.badge}
               </span>
             ) : null}
           </button>

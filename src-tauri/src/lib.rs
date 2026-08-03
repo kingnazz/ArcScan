@@ -60,6 +60,7 @@ pub fn run() {
             commands::set_device_name,
             commands::set_device_status,
             commands::set_device_notes,
+            commands::device_notes,
             commands::import_device_labels,
             commands::last_scan_ips,
             commands::detect_networks,

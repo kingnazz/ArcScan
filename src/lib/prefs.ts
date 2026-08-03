@@ -9,6 +9,7 @@
 // corrupted on disk, must never stop the app from starting.
 
 import { isProfileId, type ProfileId } from "./profiles";
+import type { InventoryColumn } from "./inventory";
 import type { SortDir, SortKey } from "./table";
 
 const SETTINGS_KEY = "arcscan-settings";
@@ -33,6 +34,8 @@ export interface Settings {
   pingConcurrency: number;
   density: Density;
   hiddenColumns: SortKey[];
+  /** Optional Inventory columns the operator has turned on. */
+  inventoryColumns: InventoryColumn[];
   sortKey: SortKey;
   sortDir: SortDir;
   /** Scans kept before the oldest are pruned. */
@@ -56,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pingConcurrency: 32,
   density: "compact",
   hiddenColumns: [],
+  inventoryColumns: [],
   sortKey: "ip",
   sortDir: "asc",
   historyRetention: 100,
@@ -65,6 +69,16 @@ export const DEFAULT_SETTINGS: Settings = {
   reducedMotion: false,
   showFirstRunGuidance: true,
 };
+
+/** Optional Inventory columns, for validating what was stored. */
+const INVENTORY_COLUMN_KEYS: InventoryColumn[] = [
+  "mac",
+  "hostname",
+  "first_seen",
+  "observations",
+  "response",
+  "previous",
+];
 
 const SORT_KEYS: SortKey[] = [
   "state",
@@ -132,6 +146,11 @@ export function loadSettings(): Settings {
           SORT_KEYS.includes(c as SortKey),
         ) as SortKey[])
       : d.hiddenColumns,
+    inventoryColumns: Array.isArray(stored.inventoryColumns)
+      ? (stored.inventoryColumns.filter((c): c is InventoryColumn =>
+          INVENTORY_COLUMN_KEYS.includes(c as InventoryColumn),
+        ) as InventoryColumn[])
+      : d.inventoryColumns,
     sortKey: oneOf(stored.sortKey, SORT_KEYS, d.sortKey),
     sortDir: oneOf(stored.sortDir, ["asc", "desc"] as const, d.sortDir),
     historyRetention: clampNumber(stored.historyRetention, 5, 5_000, d.historyRetention),

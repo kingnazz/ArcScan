@@ -434,6 +434,20 @@
     content: "—";
     color: var(--text-muted);
   }
+
+  /*
+   * Selection checkboxes for the inventory. The native control is kept — it is
+   * already keyboard accessible and announces itself correctly — and only its
+   * colour and size are brought in line with the rest of the interface.
+   */
+  .checkbox {
+    @apply h-3.5 w-3.5 shrink-0 cursor-pointer rounded-[3px] border border-border align-middle;
+    accent-color: var(--accent);
+  }
+  .checkbox:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
 }
 
 /* Scrollbars themed to match the surfaces they sit on. */

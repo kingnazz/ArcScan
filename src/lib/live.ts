@@ -11,6 +11,7 @@ import type {
   DeviceStatus,
   FieldChange,
   HostResult,
+  InventoryRow,
   ScanComparison,
   ScanDetail,
 } from "../types";
@@ -175,6 +176,39 @@ export function rowsFromScanDetail(detail: ScanDetail): DeviceRow[] {
       };
     })
     .sort((a, b) => ipToNum(a.host.ip) - ipToNum(b.host.ip));
+}
+
+/**
+ * Present an Inventory row as a table row, so the device drawer has one shape to
+ * work with wherever it was opened from.
+ *
+ * The host here is the device's *most recent observation*, not a live reading:
+ * the drawer labels it accordingly, and the persistent facts (presence, first
+ * seen, notes) come from the detail the backend loads alongside it.
+ */
+export function rowFromInventory(row: InventoryRow): DeviceRow {
+  return {
+    host: {
+      ip: row.current_ip ?? "",
+      hostname: row.hostname,
+      mac: row.mac,
+      vendor: row.vendor,
+      open_ports: row.open_ports,
+      response_ms: row.latest_response_ms,
+      icmp_ms: row.latest_icmp_ms,
+      tcp_ms: row.latest_tcp_ms,
+      ttl: null,
+      os_guess: row.os_guess,
+      last_seen: row.last_seen,
+    },
+    device_id: row.device_id,
+    custom_name: row.custom_name,
+    status: row.status,
+    first_seen: row.first_seen,
+    change: null,
+    changed_fields: [],
+    pending: false,
+  };
 }
 
 /** The name to show for a row, matching the backend's `display_name` order. */

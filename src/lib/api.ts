@@ -5,12 +5,16 @@
 // screenshotable in a browser without a Rust build.
 
 import type {
+  BulkOutcome,
+  ChangeFeed,
+  ChangeState,
   Device,
   DeviceDetail,
   DeviceStatus,
   ExportFormat,
   HostEvent,
   HostRemovedEvent,
+  InventorySummary,
   LocalNetwork,
   NetworkScope,
   SavedScan,
@@ -24,8 +28,15 @@ import type {
   ScanSummary,
   ServiceInfo,
 } from "../types";
+import type { ChangeEvent, InventoryRow } from "../types";
 import type { DeviceRow } from "./live";
-import { buildExport, exportFilename } from "./export";
+import {
+  buildChangesExport,
+  buildExport,
+  buildInventoryExport,
+  datedFilename,
+  exportFilename,
+} from "./export";
 import { mock } from "./mock";
 
 export function isTauri(): boolean {
@@ -146,6 +157,30 @@ export const api = {
     return mock.listDevices();
   },
 
+  /** The persistent Inventory: one row per device, across every scan. */
+  async inventory(): Promise<InventorySummary> {
+    if (isTauri()) return invoke<InventorySummary>("inventory_summary");
+    return mock.inventory();
+  },
+
+  /** The Changes inbox, newest first. */
+  async changeEvents(): Promise<ChangeFeed> {
+    if (isTauri()) return invoke<ChangeFeed>("list_change_events");
+    return mock.changeEvents();
+  },
+
+  /** Acknowledge, ignore or reopen change events. */
+  async setChangeState(ids: number[], state: ChangeState): Promise<BulkOutcome> {
+    if (isTauri()) return invoke<BulkOutcome>("set_change_state", { ids, state });
+    return mock.setChangeState(ids, state);
+  },
+
+  /** Classify several devices at once, for the Inventory's bulk actions. */
+  async setDeviceStatuses(ids: number[], status: DeviceStatus): Promise<BulkOutcome> {
+    if (isTauri()) return invoke<BulkOutcome>("set_device_statuses", { ids, status });
+    return mock.setDeviceStatuses(ids, status);
+  },
+
   async listNetworkScopes(): Promise<NetworkScope[]> {
     if (isTauri()) return invoke<NetworkScope[]>("list_network_scopes");
     return mock.listNetworkScopes();
@@ -174,6 +209,14 @@ export const api = {
   async setDeviceNotes(id: number, notes: string | null): Promise<void> {
     if (isTauri()) return invoke<void>("set_device_notes", { id, notes });
     mock.setDeviceNotes(id, notes);
+  },
+
+  /** Note bodies for the devices an export covers. */
+  async deviceNotes(ids: number[]): Promise<Map<number, string>> {
+    const pairs = isTauri()
+      ? await invoke<Array<[number, string]>>("device_notes", { ids })
+      : mock.deviceNotes(ids);
+    return new Map(pairs);
   },
 
   async importDeviceLabels(labels: Record<string, string>): Promise<number> {
@@ -264,29 +307,72 @@ export const api = {
    * the save dialog, which is a cancellation rather than a failure.
    */
   async exportRows(rows: DeviceRow[], format: ExportFormat, target: string): Promise<boolean> {
-    const contents = buildExport(rows, format);
-    const suggestedName = exportFilename(target, format);
+    return writeExport(buildExport(rows, format), exportFilename(target, format), format);
+  },
 
-    if (isTauri()) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        defaultPath: suggestedName,
-        filters: [{ name: format.toUpperCase(), extensions: [format] }],
-      });
-      if (!path) return false;
-      await invoke<void>("save_text", { path, contents });
-      return true;
-    }
+  /**
+   * Export Inventory rows. The caller decides the scope — everything, the
+   * current filter, the selection or one network — and passes the label that
+   * names it, which becomes part of the filename.
+   */
+  async exportInventory(
+    rows: InventoryRow[],
+    format: ExportFormat,
+    scopeLabel: string | null,
+  ): Promise<boolean> {
+    const notes = await api.deviceNotes(rows.filter((r) => r.notes_present).map((r) => r.device_id));
+    return writeExport(
+      buildInventoryExport(rows, format, notes),
+      datedFilename("inventory", scopeLabel, format),
+      format,
+    );
+  },
 
-    const mime =
-      format === "json" ? "application/json" : format === "xml" ? "application/xml" : "text/csv";
-    const blob = new Blob([contents], { type: `${mime};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = suggestedName;
-    link.click();
-    URL.revokeObjectURL(url);
-    return true;
+  /** Export change events, exactly the ones the caller passes in. */
+  async exportChanges(
+    events: ChangeEvent[],
+    format: ExportFormat,
+    scopeLabel: string | null,
+  ): Promise<boolean> {
+    return writeExport(
+      buildChangesExport(events, format),
+      datedFilename("changes", scopeLabel, format),
+      format,
+    );
   },
 };
+
+/**
+ * Write already-formatted export text, through the native save dialog when
+ * ArcScan is running as a desktop app and through a download otherwise.
+ *
+ * Returns false when the operator dismissed the dialog, which is a cancellation
+ * rather than a failure.
+ */
+async function writeExport(
+  contents: string,
+  suggestedName: string,
+  format: ExportFormat,
+): Promise<boolean> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: suggestedName,
+      filters: [{ name: format.toUpperCase(), extensions: [format] }],
+    });
+    if (!path) return false;
+    await invoke<void>("save_text", { path, contents });
+    return true;
+  }
+
+  const mime =
+    format === "json" ? "application/json" : format === "xml" ? "application/xml" : "text/csv";
+  const blob = new Blob([contents], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = suggestedName;
+  link.click();
+  URL.revokeObjectURL(url);
+  return true;
+}

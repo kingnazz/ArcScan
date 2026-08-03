@@ -16,12 +16,14 @@ export interface ResultsToolbarProps {
   comparison: ScanComparison | null;
   onExport: (format: ExportFormat) => void;
   onViewChanges: () => void;
+  /** True while the comparison is showing instead of the table. */
+  comparisonOpen: boolean;
   canExport: boolean;
 }
 
 export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
   function ResultsToolbar(
-    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, canExport },
+    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, comparisonOpen, canExport },
     filterRef,
   ) {
     const exportButton = useRef<HTMLButtonElement>(null);
@@ -103,8 +105,15 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
             <button
               type="button"
               onClick={onViewChanges}
-              className="flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast hover:bg-surface-hover"
-              title="Open the full comparison"
+              aria-pressed={comparisonOpen}
+              className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast hover:bg-surface-hover ${
+                comparisonOpen ? "bg-surface-active" : ""
+              }`}
+              title={
+                comparisonOpen
+                  ? "Back to the device table"
+                  : "Compare this scan with the previous one"
+              }
             >
               {newCount > 0 ? <Badge tone="new">{newCount} new</Badge> : null}
               {returnedCount > 0 ? <Badge tone="accent">{returnedCount} back</Badge> : null}

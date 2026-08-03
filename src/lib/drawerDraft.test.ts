@@ -40,6 +40,9 @@ function detailFor(deviceId: number, notes: string | null): DeviceDetail {
     observations: [],
     previous_ips: [],
     recent_changes: [],
+    events: [],
+    network_name: "Home Wi-Fi",
+    presence: "present",
   };
 }
 

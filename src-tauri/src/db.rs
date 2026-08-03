@@ -227,8 +227,12 @@ pub struct InventoryRow {
     pub observation_count: i64,
     /// Open ports in the most recent observation.
     pub open_ports: Vec<u16>,
-    /// True when the device carries notes. The body is not loaded here.
+    /// True when the device carries notes.
     pub notes_present: bool,
+    /// The opening of the note, so search can reach it. Deliberately not the
+    /// whole body: the table shows an indicator, and loading thousands of full
+    /// notes to render a dot would be wasted work.
+    pub notes_excerpt: Option<String>,
     pub latest_response_ms: Option<i64>,
     pub latest_icmp_ms: Option<f64>,
     pub latest_tcp_ms: Option<f64>,
@@ -837,6 +841,7 @@ impl Db {
                         .map(parse_ports)
                         .unwrap_or_default(),
                     notes_present: row.get(12)?,
+                    notes_excerpt: row.get(25)?,
                     latest_response_ms: row.get(16)?,
                     latest_icmp_ms: row.get(17)?,
                     latest_tcp_ms: row.get(18)?,
@@ -1168,6 +1173,32 @@ impl Db {
         Ok(())
     }
 
+    /// Note bodies for a set of devices, for an export.
+    ///
+    /// The inventory query carries only whether a note exists, because the table
+    /// shows an indicator; an export needs the text, so it is fetched once for
+    /// exactly the devices being written rather than loaded into every row.
+    pub fn device_notes(&self, ids: &[i64]) -> Result<Vec<(i64, String)>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, notes FROM devices WHERE id = ?1 AND notes IS NOT NULL")
+            .map_err(sql_err)?;
+        let mut out = Vec::new();
+        for id in ids {
+            let row: Option<(i64, String)> = stmt
+                .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .map_err(sql_err)?;
+            if let Some(pair) = row {
+                out.push(pair);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn set_device_notes(&self, id: i64, notes: Option<String>) -> Result<(), String> {
         let notes = notes.filter(|n| !n.trim().is_empty());
         if let Some(n) = &notes {
@@ -1370,7 +1401,8 @@ SELECT d.id, d.network_scope_id, ns.display_name, d.identity_source, d.custom_na
        r.scan_id,
        (p.device_id IS NOT NULL) AS is_present,
        (cmp.device_id IS NOT NULL) AS is_comparable,
-       r.created_at
+       r.created_at,
+       SUBSTR(d.notes, 1, 160) AS notes_excerpt
 FROM devices d
 LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
 LEFT JOIN reference r ON r.scope_id IS d.network_scope_id

@@ -153,7 +153,122 @@ export interface ScanSummary {
   coverage_key: string;
 }
 
-export type DeviceStatus = "unclassified" | "known" | "trusted" | "watched";
+export type DeviceStatus = "unclassified" | "known" | "trusted" | "watched" | "ignored";
+
+/**
+ * What the latest completed scan says about a device.
+ *
+ * ArcScan does not watch a network continuously, so these three values are the
+ * only honest ones. The rules are implemented and documented in
+ * `src-tauri/src/inventory.rs`; in short, presence is decided only from a
+ * network's most recent scan that both completed and recorded which ports it
+ * checked, and a device is only Missing when that scan looked where it used to
+ * be and did not find it.
+ */
+export type PresenceState = "present" | "missing" | "unknown";
+
+export type ChangeType =
+  | "device_added"
+  | "device_returned"
+  | "device_missing"
+  | "ip_changed"
+  | "hostname_changed"
+  | "vendor_changed"
+  | "os_changed"
+  | "mac_changed"
+  | "ports_changed";
+
+export type ChangeState = "unreviewed" | "acknowledged" | "ignored";
+
+/** One row of the persistent Inventory. */
+export interface InventoryRow {
+  device_id: number;
+  network_scope_id: number | null;
+  network_name: string | null;
+  identity_source: IdentitySource;
+  display_name: string;
+  custom_name: string | null;
+  hostname: string | null;
+  current_ip: string | null;
+  previous_ips: string[];
+  mac: string | null;
+  vendor: string | null;
+  os_guess: string | null;
+  status: DeviceStatus;
+  presence: PresenceState;
+  first_seen: string;
+  last_seen: string;
+  last_completed_scan_id: number | null;
+  last_completed_scan_at: string | null;
+  observation_count: number;
+  open_ports: number[];
+  /** True when the device carries notes. */
+  notes_present: boolean;
+  /** The opening of the note, so search can reach it without loading it all. */
+  notes_excerpt: string | null;
+  latest_response_ms: number | null;
+  latest_icmp_ms: number | null;
+  latest_tcp_ms: number | null;
+}
+
+/** A network as the Inventory and Changes filters offer it. */
+export interface NetworkOption {
+  id: number;
+  name: string;
+  device_count: number;
+}
+
+export interface InventorySummary {
+  rows: InventoryRow[];
+  networks: NetworkOption[];
+  present: number;
+  missing: number;
+  unknown: number;
+  /** True when no completed scan anywhere can decide presence. */
+  needs_completed_scan: boolean;
+}
+
+/** One persisted change, as the Changes inbox shows it. */
+export interface ChangeEvent {
+  id: number;
+  event_key: string;
+  scan_id: number | null;
+  baseline_scan_id: number | null;
+  network_scope_id: number | null;
+  network_name: string | null;
+  device_id: number | null;
+  device_label: string;
+  ip: string | null;
+  mac: string | null;
+  vendor: string | null;
+  change_type: ChangeType;
+  old_value: string | null;
+  new_value: string | null;
+  opened_ports: number[];
+  closed_ports: number[];
+  state: ChangeState;
+  created_at: string;
+  scan_at: string | null;
+  baseline_at: string | null;
+  acknowledged_at: string | null;
+  device_status: DeviceStatus | null;
+}
+
+export interface ChangeFeed {
+  events: ChangeEvent[];
+  unreviewed: number;
+  total: number;
+  truncated: boolean;
+  /** Newest scan present when the database was upgraded to the v1.8 schema. */
+  starts_after_scan_id: number;
+}
+
+/** What a bulk action actually managed to do. */
+export interface BulkOutcome {
+  updated: number;
+  /** Ids that no longer existed. The rest still committed. */
+  missing: number[];
+}
 
 export interface HostDevice {
   ip: string;
@@ -248,6 +363,10 @@ export interface DeviceDetail {
   observations: DeviceObservation[];
   previous_ips: string[];
   recent_changes: FieldChange[];
+  /** Persisted change events for this device, newest first. */
+  events: ChangeEvent[];
+  network_name: string | null;
+  presence: PresenceState;
 }
 
 export interface ServiceInfo {

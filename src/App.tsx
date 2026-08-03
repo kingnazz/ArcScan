@@ -14,6 +14,8 @@ import { ResultsTable } from "./components/ResultsTable";
 import { DeviceDrawer } from "./components/DeviceDrawer";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { ComparisonPanel } from "./components/ComparisonPanel";
+import { InventoryPanel, type BulkAction } from "./components/InventoryPanel";
+import { ChangesPanel } from "./components/ChangesPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ScanStart } from "./components/ScanStart";
 import { ProgressStrip, StatusBar } from "./components/StatusBar";
@@ -28,7 +30,7 @@ import { useTheme } from "./hooks/useTheme";
 import { useUpdater } from "./hooks/useUpdater";
 import { api } from "./lib/api";
 import { setServiceCatalog } from "./lib/format";
-import { rowName, rowsFromScanDetail } from "./lib/live";
+import { rowFromInventory, rowName, rowsFromScanDetail } from "./lib/live";
 import {
   markLegacyLabelsImported,
   pendingLegacyLabels,
@@ -37,8 +39,22 @@ import {
 } from "./lib/prefs";
 import { recommendedProfile, type ProfileId } from "./lib/profiles";
 import { EMPTY_FILTER, prepareRows, visibleColumns, type SortKey, type TableFilter } from "./lib/table";
+import {
+  EMPTY_INVENTORY_FILTER,
+  prepareInventory,
+  visibleInventoryColumns,
+  type InventoryFilter,
+  type InventorySortKey,
+  type SortDirection,
+} from "./lib/inventory";
+import {
+  EMPTY_CHANGE_FILTER,
+  filterChanges,
+  type ChangeAction,
+  type ChangeFilter,
+} from "./lib/changes";
 import type { ActionId } from "./lib/actions";
-import { changeCount, type DeviceDetail, type DeviceStatus, type ExportFormat, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
+import { type ChangeEvent, type ChangeFeed, type DeviceDetail, type DeviceStatus, type ExportFormat, type InventorySummary, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
 import { APP_VERSION } from "./version";
 
 /** Below this the drawer becomes an overlay rather than a second pane. */
@@ -52,6 +68,14 @@ export default function App() {
   const publicIp = usePublicIp();
 
   const [view, setView] = useState<View>("results");
+  /**
+   * Within the Scan view, the results table or this scan's comparison.
+   *
+   * The scan-to-scan comparison stays here rather than moving into Changes: it
+   * describes one scan against one baseline, while Changes is the persistent
+   * inbox across every scan. Collapsing the two would lose the detail.
+   */
+  const [scanTab, setScanTab] = useState<"devices" | "comparison">("devices");
   const [target, setTarget] = useState("");
   const [profileId, setProfileId] = useState<ProfileId>("quick-lan");
   const [recents, setRecents] = useState<string[]>([]);
@@ -65,6 +89,8 @@ export default function App() {
 
   const [selectedIp, setSelectedIp] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /** Which table the open drawer is describing. */
+  const [drawerSource, setDrawerSource] = useState<"scan" | "inventory">("scan");
   const [deviceDetail, setDeviceDetail] = useState<DeviceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -73,11 +99,36 @@ export default function App() {
     typeof window === "undefined" ? 1440 : window.innerWidth,
   );
   const [pendingDelete, setPendingDelete] = useState<ScanSummary | null>(null);
+  const [pendingBulk, setPendingBulk] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    run: () => void;
+  } | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [scopes, setScopes] = useState<NetworkScope[]>([]);
 
+  // --- Inventory ----------------------------------------------------------
+  const [inventory, setInventory] = useState<InventorySummary | null>(null);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
+  const [invFilter, setInvFilter] = useState<InventoryFilter>(EMPTY_INVENTORY_FILTER);
+  const [invSortKey, setInvSortKey] = useState<InventorySortKey>("last_seen");
+  const [invSortDir, setInvSortDir] = useState<SortDirection>("desc");
+  const [invSelectedId, setInvSelectedId] = useState<number | null>(null);
+  const [invSelection, setInvSelection] = useState<Set<number>>(() => new Set());
+  const [invExportOpen, setInvExportOpen] = useState(false);
+  const [highlightEventId, setHighlightEventId] = useState<number | null>(null);
+
+  // --- Changes ------------------------------------------------------------
+  const [changes, setChanges] = useState<ChangeFeed | null>(null);
+  const [changesLoading, setChangesLoading] = useState(true);
+  const [changeFilter, setChangeFilter] = useState<ChangeFilter>(EMPTY_CHANGE_FILTER);
+  const [changeExportOpen, setChangeExportOpen] = useState(false);
+
   const targetInput = useRef<HTMLInputElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
+  const inventorySearch = useRef<HTMLInputElement>(null);
+  const changesSearch = useRef<HTMLInputElement>(null);
 
   const reportError = useCallback(
     (message: string, technical?: string) => {
@@ -95,10 +146,42 @@ export default function App() {
     }
   }, [reportError]);
 
+  /**
+   * Reload the persistent inventory.
+   *
+   * Called after anything that can change it — a completed scan, a rename, a
+   * status change, a network rename — rather than reloading the application, so
+   * the scan in progress, the filters and the selection all survive.
+   */
+  const refreshInventory = useCallback(async () => {
+    try {
+      setInventory(await api.inventory());
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      reportError(`ArcScan could not read the device inventory. ${message}`, technical);
+    } finally {
+      setInventoryLoading(false);
+    }
+  }, [reportError]);
+
+  const refreshChanges = useCallback(async () => {
+    try {
+      setChanges(await api.changeEvents());
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      reportError(`ArcScan could not read the list of changes. ${message}`, technical);
+    } finally {
+      setChangesLoading(false);
+    }
+  }, [reportError]);
+
   const scan = useLiveScan({
     onError: reportError,
     onSaved: (comparison) => {
       void refreshHistory();
+      // A completed scan is exactly what moves presence and adds change events.
+      void refreshInventory();
+      void refreshChanges();
       if (settings.notifyOnChanges) announceChanges(comparison, toast.info);
     },
     historyRetention: settings.historyRetention,
@@ -133,7 +216,9 @@ export default function App() {
 
   useEffect(() => {
     void refreshHistory();
-  }, [refreshHistory]);
+    void refreshInventory();
+    void refreshChanges();
+  }, [refreshHistory, refreshInventory, refreshChanges]);
 
   // Scopes appear in Settings; refresh them whenever the panel opens so a
   // just-created scope (first scan of a new network) is namable immediately.
@@ -152,14 +237,18 @@ export default function App() {
       try {
         await api.renameNetworkScope(id, name);
         setScopes(await api.listNetworkScopes());
+        // The name appears in History, the Inventory and the Changes inbox, so
+        // all three are refreshed rather than left showing the old one.
         void refreshHistory();
+        void refreshInventory();
+        void refreshChanges();
         toast.success(`Network renamed to "${name}".`);
       } catch (error) {
         const { message, technical } = describeError(error);
         reportError(`ArcScan could not rename that network. ${message}`, technical);
       }
     },
-    [refreshHistory, toast, reportError],
+    [refreshHistory, refreshInventory, refreshChanges, toast, reportError],
   );
 
   // Adopt the device labels v1.6 kept in browser storage, once.
@@ -216,12 +305,37 @@ export default function App() {
     () => prepareRows(scan.rows, filter, sortKey, sortDir),
     [scan.rows, filter, sortKey, sortDir],
   );
-  const selectedRow = useMemo(
-    () => scan.rows.find((row) => row.host.ip === selectedIp) ?? null,
-    [scan.rows, selectedIp],
-  );
   const overlayDrawers = windowWidth < OVERLAY_BREAKPOINT;
-  const totalChanges = changeCount(scan.comparison);
+
+  const inventoryRows = useMemo(
+    () => prepareInventory(inventory?.rows ?? [], invFilter, invSortKey, invSortDir),
+    [inventory, invFilter, invSortKey, invSortDir],
+  );
+  const inventoryNetworks = inventory?.networks ?? [];
+  const inventoryColumns = useMemo(
+    () =>
+      visibleInventoryColumns(
+        windowWidth,
+        settings.inventoryColumns,
+        inventoryNetworks.length > 1,
+      ),
+    [windowWidth, settings.inventoryColumns, inventoryNetworks.length],
+  );
+  const visibleChanges = useMemo(
+    () => filterChanges(changes?.events ?? [], changeFilter),
+    [changes, changeFilter],
+  );
+
+  // The drawer describes either a row of the current scan or a row of the
+  // inventory. Resolving both to one shape keeps a single drawer rather than two
+  // that would drift apart.
+  const selectedRow = useMemo(() => {
+    if (drawerSource === "inventory") {
+      const row = inventory?.rows.find((r) => r.device_id === invSelectedId);
+      return row ? rowFromInventory(row) : null;
+    }
+    return scan.rows.find((row) => row.host.ip === selectedIp) ?? null;
+  }, [drawerSource, inventory, invSelectedId, scan.rows, selectedIp]);
 
   // Load the device's stored history when the selection changes.
   useEffect(() => {
@@ -257,7 +371,9 @@ export default function App() {
       setLastOptions(opts);
       setRecents(pushRecentTarget(opts.target));
       setView("results");
+      setScanTab("devices");
       setSelectedIp(null);
+      setDrawerSource("scan");
       setBanner(null);
       void scan.run(opts);
     },
@@ -278,7 +394,9 @@ export default function App() {
         scan.showSavedScan(detail, comparison);
         setTarget(detail.target);
         setSelectedIp(null);
+        setDrawerSource("scan");
         setView("results");
+        setScanTab("devices");
       } catch (error) {
         const { message, technical } = describeError(error);
         reportError(`ArcScan could not open that scan. ${message}`, technical);
@@ -290,7 +408,7 @@ export default function App() {
   const compareSavedScan = useCallback(
     async (id: number) => {
       await openSavedScan(id);
-      setView("changes");
+      setScanTab("comparison");
     },
     [openSavedScan],
   );
@@ -358,6 +476,224 @@ export default function App() {
     [toast, reportError],
   );
 
+  // --- Inventory and Changes ---------------------------------------------
+
+  const openInventoryDevice = useCallback((deviceId: number, eventId: number | null = null) => {
+    setInvSelectedId(deviceId);
+    setDrawerSource("inventory");
+    setHighlightEventId(eventId);
+    setDrawerOpen(true);
+  }, []);
+
+  /** What an inventory export would contain, said plainly before it runs. */
+  const inventoryExportScope = useMemo(() => {
+    if (invSelection.size > 0) {
+      return `Exports the ${formatPlural(invSelection.size, "selected device")}.`;
+    }
+    const network =
+      invFilter.networkId == null
+        ? null
+        : inventoryNetworks.find((n) => n.id === invFilter.networkId)?.name;
+    const filtered = inventoryRows.length !== (inventory?.rows.length ?? 0);
+    if (network) return `Exports the ${formatPlural(inventoryRows.length, "device")} on ${network}.`;
+    if (filtered) return `Exports the ${formatPlural(inventoryRows.length, "device")} shown.`;
+    return `Exports all ${formatPlural(inventoryRows.length, "device")} across every network.`;
+  }, [invSelection.size, invFilter.networkId, inventoryNetworks, inventoryRows.length, inventory]);
+
+  const exportInventory = useCallback(
+    async (format: ExportFormat) => {
+      setInvExportOpen(false);
+      const chosen =
+        invSelection.size > 0
+          ? inventoryRows.filter((row) => invSelection.has(row.device_id))
+          : inventoryRows;
+      if (chosen.length === 0) {
+        toast.info("There is nothing to export yet.", {
+          detail: "Run a scan, or clear the filters to include more devices.",
+        });
+        return;
+      }
+      const network =
+        invFilter.networkId == null
+          ? null
+          : (inventoryNetworks.find((n) => n.id === invFilter.networkId)?.name ?? null);
+      try {
+        const written = await api.exportInventory(chosen, format, network);
+        if (written) toast.success(`Exported ${formatPlural(chosen.length, "device")}.`);
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not write the export. ${message}`, technical);
+      }
+    },
+    [inventoryRows, invSelection, invFilter.networkId, inventoryNetworks, toast, reportError],
+  );
+
+  const applyBulkStatus = useCallback(
+    async (ids: number[], status: DeviceStatus, verb: string) => {
+      try {
+        const outcome = await api.setDeviceStatuses(ids, status);
+        await refreshInventory();
+        // The inbox hides an ignored device's changes, so it moves too.
+        if (status === "ignored") await refreshChanges();
+        if (outcome.missing.length > 0) {
+          // Partial failure is reported rather than swallowed, and the selection
+          // survives so the operator can see what is left.
+          toast.info(
+            `${verb} ${formatPlural(outcome.updated, "device")}. ${formatPlural(outcome.missing.length, "device")} could not be updated.`,
+            { detail: "Those devices are no longer in the inventory." },
+          );
+          return;
+        }
+        toast.success(`${verb} ${formatPlural(outcome.updated, "device")}.`);
+        setInvSelection(new Set());
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not update those devices. ${message}`, technical);
+      }
+    },
+    [refreshInventory, refreshChanges, toast, reportError],
+  );
+
+  const runBulkAction = useCallback(
+    (action: BulkAction) => {
+      const ids = [...invSelection];
+      if (ids.length === 0) return;
+      const chosen = inventoryRows.filter((row) => invSelection.has(row.device_id));
+
+      if (action === "copy") {
+        const addresses = chosen.map((row) => row.current_ip).filter(Boolean).join("\n");
+        void api.copyText(addresses);
+        toast.success(`Copied ${formatPlural(chosen.length, "address", "addresses")}.`);
+        return;
+      }
+      if (action === "export") {
+        setInvExportOpen(true);
+        return;
+      }
+
+      const label =
+        action === "trusted" ? "Marked trusted" : action === "ignored" ? "Ignored" : "Marked unreviewed";
+      // A large action confirms first; a handful of rows does not need a dialog.
+      if (ids.length > 25) {
+        setPendingBulk({
+          title: `${action === "ignored" ? "Ignore" : "Update"} ${formatPlural(ids.length, "device")}?`,
+          description:
+            action === "ignored"
+              ? "These devices stay in the inventory with all of their history. Their changes move out of the review inbox and can be filtered back in."
+              : "This changes how these devices are classified. Nothing is removed.",
+          confirmLabel: action === "ignored" ? "Ignore devices" : "Update devices",
+          run: () => void applyBulkStatus(ids, action, label),
+        });
+        return;
+      }
+      void applyBulkStatus(ids, action, label);
+    },
+    [invSelection, inventoryRows, applyBulkStatus, toast],
+  );
+
+  const setChangeStates = useCallback(
+    async (ids: number[], state: ChangeEvent["state"], message: string, undoTo?: ChangeEvent["state"]) => {
+      try {
+        const outcome = await api.setChangeState(ids, state);
+        await refreshChanges();
+        if (outcome.missing.length > 0) {
+          toast.info(`${message} ${formatPlural(outcome.missing.length, "change")} was already gone.`);
+          return;
+        }
+        toast.success(message, {
+          onUndo:
+            undoTo == null
+              ? undefined
+              : () => void setChangeStates(ids, undoTo, "Reopened.", undefined),
+        });
+      } catch (error) {
+        const { message: text, technical } = describeError(error);
+        reportError(`ArcScan could not update those changes. ${text}`, technical);
+      }
+    },
+    [refreshChanges, toast, reportError],
+  );
+
+  const runChangeAction = useCallback(
+    (action: ChangeAction, event: ChangeEvent) => {
+      switch (action) {
+        case "review":
+        case "rename":
+          if (event.device_id != null) openInventoryDevice(event.device_id, event.id);
+          return;
+        case "trust":
+          if (event.device_id == null) return;
+          void (async () => {
+            await applyBulkStatus([event.device_id as number], "trusted", "Marked trusted");
+            // Trust acknowledges the new-device entry it was offered on, and
+            // nothing else about the device.
+            await setChangeStates([event.id], "acknowledged", "Trusted and acknowledged.");
+          })();
+          return;
+        case "ignore":
+          if (event.device_id == null) return;
+          void applyBulkStatus([event.device_id], "ignored", "Ignored");
+          return;
+        case "acknowledge":
+          void setChangeStates([event.id], "acknowledged", "Acknowledged.", "unreviewed");
+          return;
+        case "reopen":
+          void setChangeStates([event.id], "unreviewed", "Moved back to unreviewed.");
+          return;
+      }
+    },
+    [openInventoryDevice, applyBulkStatus, setChangeStates],
+  );
+
+  const acknowledgeVisible = useCallback(() => {
+    // The captured set, not "whatever is visible when this finishes": a change
+    // arriving mid-action must not be acknowledged without being seen.
+    const ids = visibleChanges.filter((e) => e.state === "unreviewed").map((e) => e.id);
+    if (ids.length === 0) return;
+    const run = () =>
+      void setChangeStates(
+        ids,
+        "acknowledged",
+        `Acknowledged ${formatPlural(ids.length, "change")}.`,
+        "unreviewed",
+      );
+    if (ids.length > 25) {
+      setPendingBulk({
+        title: `Acknowledge ${formatPlural(ids.length, "change")}?`,
+        description:
+          "Every unreviewed change currently shown is marked as reviewed. Nothing is deleted, and ignored records are left alone.",
+        confirmLabel: "Acknowledge",
+        run,
+      });
+      return;
+    }
+    run();
+  }, [visibleChanges, setChangeStates]);
+
+  const changesExportScope = useMemo(
+    () => `Exports the ${formatPlural(visibleChanges.length, "change")} currently shown.`,
+    [visibleChanges.length],
+  );
+
+  const exportChanges = useCallback(
+    async (format: ExportFormat) => {
+      setChangeExportOpen(false);
+      if (visibleChanges.length === 0) return;
+      const network =
+        changeFilter.networkId == null
+          ? null
+          : (inventoryNetworks.find((n) => n.id === changeFilter.networkId)?.name ?? null);
+      try {
+        const written = await api.exportChanges(visibleChanges, format, network);
+        if (written) toast.success(`Exported ${formatPlural(visibleChanges.length, "change")}.`);
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not write the export. ${message}`, technical);
+      }
+    },
+    [visibleChanges, changeFilter.networkId, inventoryNetworks, toast, reportError],
+  );
+
   const runDeviceAction = useCallback(
     async (id: ActionId, row: NonNullable<typeof selectedRow>, port?: number) => {
       const ip = row.host.ip;
@@ -413,6 +749,10 @@ export default function App() {
             ? { ...current, device: { ...current.device, custom_name: name } }
             : current,
         );
+        // A name appears in the Inventory and in the Changes inbox, so both are
+        // refreshed rather than left showing the old one.
+        void refreshInventory();
+        void refreshChanges();
         toast.success(name ? `Renamed to "${name}".` : "Name cleared.", {
           onUndo: () => void renameDevice(deviceId, previous),
         });
@@ -421,7 +761,7 @@ export default function App() {
         reportError(`ArcScan could not save that name. ${message}`, technical);
       }
     },
-    [scan, toast, reportError],
+    [scan, refreshInventory, refreshChanges, toast, reportError],
   );
 
   const changeDeviceStatus = useCallback(
@@ -436,6 +776,8 @@ export default function App() {
             ? { ...current, device: { ...current.device, status } }
             : current,
         );
+        void refreshInventory();
+        if (status === "ignored" || previous === "ignored") void refreshChanges();
         if (status !== previous) {
           toast.success(`Marked as ${status}.`, {
             onUndo: () => void changeDeviceStatus(deviceId, previous),
@@ -446,7 +788,7 @@ export default function App() {
         reportError(`ArcScan could not change that status. ${message}`, technical);
       }
     },
-    [scan, toast, reportError],
+    [scan, refreshInventory, refreshChanges, toast, reportError],
   );
 
   const saveDeviceNotes = useCallback(
@@ -458,13 +800,14 @@ export default function App() {
             ? { ...current, device: { ...current.device, notes } }
             : current,
         );
+        void refreshInventory();
         toast.success("Notes saved.");
       } catch (error) {
         const { message, technical } = describeError(error);
         reportError(`ArcScan could not save those notes. ${message}`, technical);
       }
     },
-    [toast, reportError],
+    [refreshInventory, toast, reportError],
   );
 
   const toggleSort = useCallback(
@@ -491,21 +834,58 @@ export default function App() {
       setDrawerOpen(false);
       return;
     }
-    if (filter.query || filter.savedOnly || filter.changesOnly) {
+    // Then the current view's own state, before anything global. Clearing a
+    // selection comes before clearing filters, because it is the more recent and
+    // more surprising thing to leave behind.
+    if (view === "inventory") {
+      if (invSelection.size > 0) {
+        setInvSelection(new Set());
+        return;
+      }
+      if (
+        invFilter.query ||
+        invFilter.view !== "all" ||
+        invFilter.networkId != null
+      ) {
+        setInvFilter(EMPTY_INVENTORY_FILTER);
+        return;
+      }
+    } else if (view === "changes") {
+      if (
+        changeFilter.query ||
+        changeFilter.window !== "all" ||
+        changeFilter.networkId != null ||
+        changeFilter.view !== EMPTY_CHANGE_FILTER.view
+      ) {
+        setChangeFilter(EMPTY_CHANGE_FILTER);
+        return;
+      }
+    } else if (filter.query || filter.savedOnly || filter.changesOnly) {
       setFilter(EMPTY_FILTER);
       return;
     }
     if (scan.scanning) void scan.cancel();
-  }, [settingsOpen, drawerOpen, filter, scan]);
+  }, [settingsOpen, drawerOpen, view, invSelection, invFilter, changeFilter, filter, scan]);
 
   useHotkeys({
     onEscape,
+    // Focus the search of whichever view is open rather than always jumping to
+    // the scan results, which would throw away where the operator was.
     onFocusFilter: () => {
-      setView("results");
-      filterInput.current?.focus();
-      filterInput.current?.select();
+      const field =
+        view === "inventory"
+          ? inventorySearch.current
+          : view === "changes"
+            ? changesSearch.current
+            : (setView("results"), filterInput.current);
+      field?.focus();
+      field?.select();
     },
-    onExport: () => void exportRows("csv"),
+    onExport: () => {
+      if (view === "inventory") setInvExportOpen(true);
+      else if (view === "changes") setChangeExportOpen(true);
+      else void exportRows("csv");
+    },
     onRescan: rescan,
     onFocusTarget: () => {
       targetInput.current?.focus();
@@ -527,8 +907,8 @@ export default function App() {
       <TitleBar
         view={view}
         onViewChange={setView}
-        changeCount={totalChanges}
-        hasComparison={scan.comparison != null}
+        inventoryCount={inventory?.rows.length ?? 0}
+        unreviewedChanges={changes?.unreviewed ?? 0}
         theme={theme}
         onToggleTheme={() => updateSettings({ theme: theme === "dark" ? "light" : "dark" })}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
@@ -586,20 +966,65 @@ export default function App() {
               onDelete={(id) => setPendingDelete(history.find((s) => s.id === id) ?? null)}
               onExport={(id, format) => void exportSavedScan(id, format)}
             />
+          ) : view === "inventory" ? (
+            <InventoryPanel
+              ref={inventorySearch}
+              rows={inventoryRows}
+              totalRows={inventory?.rows.length ?? 0}
+              counts={{
+                present: inventory?.present ?? 0,
+                missing: inventory?.missing ?? 0,
+                unknown: inventory?.unknown ?? 0,
+              }}
+              networks={inventoryNetworks}
+              needsCompletedScan={inventory?.needs_completed_scan ?? false}
+              loading={inventoryLoading}
+              filter={invFilter}
+              onFilterChange={(patch) => setInvFilter((current) => ({ ...current, ...patch }))}
+              sortKey={invSortKey}
+              sortDir={invSortDir}
+              onSort={(key) => {
+                const nextDir = key === invSortKey && invSortDir === "asc" ? "desc" : "asc";
+                setInvSortKey(key);
+                setInvSortDir(nextDir);
+              }}
+              visibleColumns={inventoryColumns}
+              density={settings.density}
+              selectedId={invSelectedId}
+              onSelect={setInvSelectedId}
+              onOpen={(id) => openInventoryDevice(id)}
+              selection={invSelection}
+              onSelectionChange={setInvSelection}
+              onBulkAction={runBulkAction}
+              onExport={(format) => void exportInventory(format)}
+              exportOpen={invExportOpen}
+              onToggleExport={() => setInvExportOpen((v) => !v)}
+              onCloseExport={() => setInvExportOpen(false)}
+              exportScopeLabel={inventoryExportScope}
+              onStartScan={() => setView("results")}
+            />
           ) : view === "changes" ? (
-            scan.comparison ? (
-              <ComparisonPanel
-                comparison={scan.comparison}
-                currentLabel={scan.meta?.target ?? target}
-                partial={scan.meta?.cancelled ?? false}
-              />
-            ) : (
-              <EmptyState
-                title="No comparison yet"
-                description="Run a scan, and ArcScan will compare it with the most recent earlier completed scan that covered the same target with the same ports."
-                action={<Button onClick={() => setView("results")}>Back to devices</Button>}
-              />
-            )
+            <ChangesPanel
+              ref={changesSearch}
+              events={visibleChanges}
+              totalEvents={changes?.total ?? 0}
+              unreviewed={changes?.unreviewed ?? 0}
+              networks={inventoryNetworks}
+              loading={changesLoading}
+              truncated={changes?.truncated ?? false}
+              startsAfterScanId={changes?.starts_after_scan_id ?? 0}
+              filter={changeFilter}
+              onFilterChange={(patch) => setChangeFilter((current) => ({ ...current, ...patch }))}
+              onAction={runChangeAction}
+              onAcknowledgeVisible={acknowledgeVisible}
+              onExport={(format) => void exportChanges(format)}
+              exportOpen={changeExportOpen}
+              onToggleExport={() => setChangeExportOpen((v) => !v)}
+              onCloseExport={() => setChangeExportOpen(false)}
+              exportScopeLabel={changesExportScope}
+              onOpenScan={(id) => void compareSavedScan(id)}
+              onStartScan={() => setView("results")}
+            />
           ) : showStart ? (
             <ScanStart
               localNetworks={localNetworks}
@@ -631,10 +1056,26 @@ export default function App() {
                 total={scan.rows.length}
                 comparison={scan.comparison}
                 onExport={(format) => void exportRows(format)}
-                onViewChanges={() => setView("changes")}
+                onViewChanges={() => setScanTab((t) => (t === "comparison" ? "devices" : "comparison"))}
+                comparisonOpen={scanTab === "comparison"}
                 canExport={scan.rows.length > 0}
               />
-              {rows.length === 0 ? (
+              {scanTab === "comparison" ? (
+                scan.comparison ? (
+                  <ComparisonPanel
+                    comparison={scan.comparison}
+                    currentLabel={scan.meta?.target ?? target}
+                    partial={scan.meta?.cancelled ?? false}
+                    onBack={() => setScanTab("devices")}
+                  />
+                ) : (
+                  <EmptyState
+                    title="Nothing to compare yet"
+                    description="ArcScan compares a scan with the most recent earlier completed scan that covered the same target with the same ports."
+                    action={<Button onClick={() => setScanTab("devices")}>Back to devices</Button>}
+                  />
+                )
+              ) : rows.length === 0 ? (
                 <EmptyState
                   title={
                     scan.rows.length === 0
@@ -667,6 +1108,8 @@ export default function App() {
                   onSelect={setSelectedIp}
                   onOpen={(ip) => {
                     setSelectedIp(ip);
+                    setDrawerSource("scan");
+                    setHighlightEventId(null);
                     setDrawerOpen(true);
                   }}
                   density={settings.density}
@@ -689,7 +1132,13 @@ export default function App() {
           onRename={(deviceId, name) => void renameDevice(deviceId, name)}
           onStatusChange={(deviceId, status) => void changeDeviceStatus(deviceId, status)}
           onNotesChange={(deviceId, notes) => void saveDeviceNotes(deviceId, notes)}
-          scanKey={scan.meta?.savedScanId ?? scan.meta?.scanId ?? null}
+          scanKey={
+            drawerSource === "inventory"
+              ? "inventory"
+              : (scan.meta?.savedScanId ?? scan.meta?.scanId ?? null)
+          }
+          context={drawerSource}
+          highlightEventId={highlightEventId}
         />
 
         <SettingsPanel
@@ -746,8 +1195,27 @@ export default function App() {
           if (doomed) void deleteScan(doomed);
         }}
       />
+
+      <ConfirmDialog
+        open={pendingBulk != null}
+        title={pendingBulk?.title ?? ""}
+        description={pendingBulk?.description ?? ""}
+        confirmLabel={pendingBulk?.confirmLabel ?? "Continue"}
+        onCancel={() => setPendingBulk(null)}
+        onConfirm={() => {
+          const action = pendingBulk;
+          setPendingBulk(null);
+          action?.run();
+        }}
+      />
     </div>
   );
+}
+
+/** `1 device` / `9 devices`, with an explicit plural for irregular words. */
+function formatPlural(count: number, singular: string, plural?: string): string {
+  const word = count === 1 ? singular : (plural ?? `${singular}s`);
+  return `${count.toLocaleString()} ${word}`;
 }
 
 /** Summarise a comparison as one sentence, for the post-scan notification. */

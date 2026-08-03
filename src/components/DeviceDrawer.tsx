@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Copy,
   Eye,
+  EyeOff,
   FolderOpen,
   Globe,
   Monitor,
@@ -28,14 +29,18 @@ import {
 } from "../lib/format";
 import { deviceActions, primaryAction, type ActionId } from "../lib/actions";
 import { EMPTY_DRAFT, notesFromDetail, reconcileDraft } from "../lib/drawerDraft";
+import { PRESENCE_HINT } from "../lib/inventory";
+import { describeChange } from "../lib/changes";
+import { CHANGE_TYPE_LABEL } from "../lib/export";
 import { rowName, type DeviceRow } from "../lib/live";
-import type { DeviceDetail, DeviceStatus, FieldChange } from "../types";
+import type { ChangeEvent, DeviceDetail, DeviceStatus, FieldChange } from "../types";
 
 const STATUS_LABEL: Record<DeviceStatus, string> = {
   unclassified: "Not classified",
   known: "Known",
   trusted: "Trusted",
   watched: "Watched",
+  ignored: "Ignored",
 };
 
 const STATUS_HINT: Record<DeviceStatus, string> = {
@@ -43,6 +48,7 @@ const STATUS_HINT: Record<DeviceStatus, string> = {
   known: "Recognised and expected here.",
   trusted: "Recognised, and its open services are deliberate.",
   watched: "Recognised, and worth a look whenever it changes.",
+  ignored: "Kept in the inventory, with its changes out of the review inbox.",
 };
 
 export interface DeviceDrawerProps {
@@ -60,6 +66,16 @@ export interface DeviceDrawerProps {
   onNotesChange: (deviceId: number, notes: string | null) => void;
   /** Identity of the scan being shown, scoping drafts for rows not yet saved. */
   scanKey: number | string | null;
+  /**
+   * Where the drawer was opened from.
+   *
+   * `scan` shows the device as one scan saw it, so it can honestly say the
+   * device answered. `inventory` shows the persistent record, where the only
+   * truthful statement about presence is what the latest completed scan found.
+   */
+  context?: "scan" | "inventory";
+  /** A change event to call out first, when the drawer was opened from Changes. */
+  highlightEventId?: number | null;
 }
 
 export function DeviceDrawer({
@@ -76,6 +92,8 @@ export function DeviceDrawer({
   onStatusChange,
   onNotesChange,
   scanKey,
+  context = "scan",
+  highlightEventId = null,
 }: DeviceDrawerProps) {
   // Drafts are keyed by persistent device id (see lib/drawerDraft): they
   // survive IP changes, renames and incoming enrichment, reset when the panel
@@ -96,6 +114,9 @@ export function DeviceDrawer({
   // asynchronously and can briefly describe the previous selection.
   const rowDetail = detail && detail.device.id === row.device_id ? detail : null;
   const status = rowDetail?.device.status ?? row.status;
+  // Presence is a fact about the latest completed scan, so it is only ever the
+  // backend's answer; without one the honest value is Unknown.
+  const presence = rowDetail?.presence ?? "unknown";
   const storedNotes = notesFromDetail(row, detail);
 
   return (
@@ -201,13 +222,37 @@ export function DeviceDrawer({
           <SectionHeading>Details</SectionHeading>
           <dl>
             <DetailRow label="State">
-              <span className="inline-flex items-center gap-1.5">
-                <Badge tone="online">Online</Badge>
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                {context === "scan" ? (
+                  // In a scan the device demonstrably answered, which is a
+                  // different and stronger claim than a presence verdict.
+                  <Badge tone="online">Answered this scan</Badge>
+                ) : (
+                  <Badge
+                    tone={
+                      presence === "present"
+                        ? "online"
+                        : presence === "missing"
+                          ? "missing"
+                          : "neutral"
+                    }
+                    title={PRESENCE_HINT[presence]}
+                  >
+                    {presence === "present"
+                      ? "Present in latest scan"
+                      : presence === "missing"
+                        ? "Missing from latest scan"
+                        : "Presence unknown"}
+                  </Badge>
+                )}
                 {row.change === "new" ? <Badge tone="new">New device</Badge> : null}
                 {row.change === "returned" ? <Badge tone="accent">Returned</Badge> : null}
                 {row.change === "changed" ? <Badge tone="changed">Changed</Badge> : null}
               </span>
             </DetailRow>
+            {rowDetail?.network_name ? (
+              <DetailRow label="Network">{rowDetail.network_name}</DetailRow>
+            ) : null}
             <DetailRow label="IP address" mono>
               {row.host.ip}
             </DetailRow>
@@ -228,7 +273,12 @@ export function DeviceDrawer({
               {row.host.os_guess ?? <span className="text-text-muted">Unknown</span>}
             </DetailRow>
             <DetailRow label="TTL" mono>
-              {row.host.ttl ?? <span className="font-sans text-text-muted">No ICMP reply</span>}
+              {/* An inventory row carries no TTL of its own, so the value comes
+                  from the most recent stored observation rather than reading as
+                  "no reply" for a device that answered perfectly well. */}
+              {row.host.ttl ?? rowDetail?.observations[0]?.ttl ?? (
+                <span className="font-sans text-text-muted">No ICMP reply</span>
+              )}
             </DetailRow>
             <DetailRow label="ICMP" mono>
               {formatLatency(row.host.icmp_ms) ?? (
@@ -245,6 +295,11 @@ export function DeviceDrawer({
                 <DetailRow label="First seen">
                   <span title={rowDetail.device.first_seen}>
                     {formatDateTime(rowDetail.device.first_seen)}
+                  </span>
+                </DetailRow>
+                <DetailRow label="Last seen">
+                  <span title={rowDetail.device.last_seen}>
+                    {formatDateTime(rowDetail.device.last_seen)}
                   </span>
                 </DetailRow>
                 <DetailRow label="Observations">
@@ -294,11 +349,19 @@ export function DeviceDrawer({
           </>
         ) : null}
 
-        {rowDetail && rowDetail.recent_changes.length > 0 ? (
+        {rowDetail && rowDetail.events.length > 0 ? (
           <>
             <div className="divider" />
             <section>
-              <SectionHeading>Recent changes</SectionHeading>
+              <SectionHeading>Recorded changes</SectionHeading>
+              <EventList events={rowDetail.events} highlightId={highlightEventId} />
+            </section>
+          </>
+        ) : rowDetail && rowDetail.recent_changes.length > 0 ? (
+          <>
+            <div className="divider" />
+            <section>
+              <SectionHeading>Since the previous sighting</SectionHeading>
               <ChangeList changes={rowDetail.recent_changes} />
             </section>
           </>
@@ -415,4 +478,60 @@ export const STATUS_ICON: Record<DeviceStatus, React.ReactNode> = {
   known: <Star className="h-3.5 w-3.5" />,
   trusted: <ShieldCheck className="h-3.5 w-3.5" />,
   watched: <Eye className="h-3.5 w-3.5" />,
+  ignored: <EyeOff className="h-3.5 w-3.5" />,
 };
+
+/**
+ * Persisted change events for one device.
+ *
+ * Old and new values are read out in full rather than shown as a bare arrow, so
+ * a screen reader hears "IP address, from 192.168.1.28 to 192.168.1.31" instead
+ * of two numbers with a symbol between them.
+ */
+function EventList({
+  events,
+  highlightId,
+}: {
+  events: ChangeEvent[];
+  highlightId: number | null;
+}) {
+  return (
+    <ul className="space-y-2">
+      {events.slice(0, 12).map((event) => (
+        <li
+          key={event.id}
+          className={
+            event.id === highlightId
+              ? "rounded-md border border-accent/50 bg-accent-subtle px-2 py-1.5"
+              : undefined
+          }
+        >
+          <p className="flex flex-wrap items-baseline gap-x-2 text-xs font-semibold text-text-secondary">
+            {CHANGE_TYPE_LABEL[event.change_type]}
+            <span className="font-normal text-text-muted" title={event.scan_at ?? event.created_at}>
+              {formatRelative(event.scan_at ?? event.created_at)}
+            </span>
+            {event.state === "acknowledged" ? <Badge>Acknowledged</Badge> : null}
+            {event.state === "ignored" ? <Badge>Ignored</Badge> : null}
+          </p>
+          {event.change_type === "ports_changed" ? (
+            <div className="mt-0.5 space-y-0.5">
+              {event.opened_ports.map((port) => (
+                <p key={`add-${port}`} className="mono text-[13px] text-online">
+                  Opened {serviceWithPort(port)}
+                </p>
+              ))}
+              {event.closed_ports.map((port) => (
+                <p key={`rem-${port}`} className="mono text-[13px] text-missing">
+                  Closed {serviceWithPort(port)}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="mono mt-0.5 text-[13px] text-text">{describeChange(event)}</p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
