@@ -644,20 +644,40 @@ await step("axe-core finds no violations on either page", async () => {
   } catch {
     throw new Error("@axe-core/playwright is not installed; run npm i --no-save @axe-core/playwright");
   }
+  const tags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
   const results = [];
-  for (const path of ["/", "/privacy.html"]) {
+
+  // Desktop and a phone width for the home page, because the navigation and
+  // the release section lay out differently at each, plus the privacy page.
+  const passes = [
+    { label: "home desktop", path: "/", width: 1440, height: 900 },
+    { label: "home mobile", path: "/", width: 390, height: 844 },
+    { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
+  ];
+
+  for (const { label, path, width, height } of passes) {
+    await page.setViewportSize({ width, height });
     await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
-    const scan = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
-      .analyze();
-    if (scan.violations.length > 0) {
-      const summary = scan.violations
-        .map((v) => `${path} ${v.id} (${v.nodes.length}): ${v.help}`)
-        .join("; ");
-      throw new Error(summary);
+
+    // The switcher's other views are only in the tree once selected, so scan
+    // the page again with a non-default tab open.
+    if (path === "/") {
+      const tab = page.locator("#tab-partial");
+      if (await tab.count()) {
+        await tab.click();
+        await page.waitForTimeout(250);
+      }
     }
-    results.push(`${path}: ${scan.passes.length} checks passed`);
+
+    const scan = await new AxeBuilder({ page }).withTags(tags).analyze();
+    if (scan.violations.length > 0) {
+      throw new Error(
+        scan.violations.map((v) => `${label} ${v.id} (${v.nodes.length}): ${v.help}`).join("; "),
+      );
+    }
+    results.push(`${label}: ${scan.passes.length} checks passed`);
   }
+  await page.setViewportSize({ width: 1440, height: 900 });
   return results.join(", ");
 });
 
