@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Capture the product screenshots the website uses.
 //
-// Every shot comes from the real v1.7 interface driven in a browser against the
-// built-in demo network, so the images can never show an older UI. The network is
-// entirely fictional, so no real client, hostname, MAC address or public address
-// is ever in a published image.
+// Every shot comes from the real v1.8 interface driven in a browser against the
+// built-in demo network, so the images can never show an older UI. The networks
+// are entirely fictional, so no real client, hostname, MAC address or public
+// address is ever in a published image.
 //
 // Run it the same way as scripts/verify-ui.mjs:
 //
@@ -48,6 +48,8 @@ async function shot(name) {
   console.log(`  ${file}`);
 }
 
+const nav = (label) => page.locator("header nav button", { hasText: label });
+
 async function setTheme(theme) {
   await page.evaluate((value) => {
     const raw = localStorage.getItem("arcscan-settings");
@@ -57,20 +59,20 @@ async function setTheme(theme) {
     localStorage.setItem("arcscan-theme", value);
   }, theme);
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(300);
 }
 
 async function runScan() {
-  await page.locator("#scan-target").fill("192.168.10.0/24");
-  await page.getByRole("button", { name: "Scan", exact: true }).click();
+  await page.locator("#scan-target").fill("192.168.1.0/24");
+  await page.locator('form button[type="submit"]').click();
 }
 
 async function waitForScanEnd() {
   await page.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout: 30_000 });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(900);
 }
 
-console.log("Capturing ArcScan v1.7 screenshots");
+console.log("Capturing ArcScan v1.8 screenshots");
 
 // --- Dark theme -----------------------------------------------------------
 await page.goto(URL, { waitUntil: "networkidle" });
@@ -78,92 +80,138 @@ await setTheme("dark");
 
 await shot("empty-dark");
 
+// The populated Inventory, which is what the release is about.
+await nav("Inventory").click();
+await page.locator("tbody tr").first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(400);
+await shot("inventory-dark");
+
+// The same view filtered to the devices that stopped answering.
+await page.getByLabel("Filter the inventory").selectOption("missing");
+await page.waitForTimeout(400);
+await shot("inventory-missing-dark");
+await page.getByLabel("Filter the inventory").selectOption("all");
+await page.waitForTimeout(300);
+
+// Two recognised networks with friendly names, sorted so the grouping is
+// obvious. A native select cannot be screenshotted open, and would show the
+// operating system's menu rather than ArcScan's anyway.
+await page.getByRole("columnheader", { name: "Network" }).getByRole("button").click();
+await page.waitForTimeout(400);
+await shot("inventory-networks-dark");
+await page.getByRole("columnheader", { name: "Last seen" }).getByRole("button").click();
+await page.waitForTimeout(300);
+
+// The Changes inbox.
+await nav("Changes").click();
+await page.locator("main ul > li").first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(400);
+await shot("changes-dark");
+
+// A change opened in the device drawer, which is where a change is reviewed.
+// Scrolled to the recorded changes, since that is the point of the shot.
+await page.locator("main ul > li").first().getByRole("button", { name: "Review" }).click();
+const drawer = page.getByRole("complementary");
+await drawer.waitFor({ timeout: 5_000 });
+await drawer.getByText("Recorded changes").scrollIntoViewIfNeeded();
+await page.waitForTimeout(500);
+await shot("change-detail-dark");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(250);
+
+// --- Scanning -------------------------------------------------------------
+await nav("Scan").click();
+await page.waitForTimeout(250);
 await runScan();
 // Part-way through, so the shot genuinely shows results streaming in.
-await page.locator("tbody tr").nth(4).waitFor({ timeout: 10_000 });
+await page.locator("tbody tr").nth(3).waitFor({ timeout: 15_000 });
 await page.waitForTimeout(200);
 await shot("scanning-dark");
 
 await waitForScanEnd();
 await shot("results-dark");
 
-// Device drawer, on a device with a web interface and a change to show.
-await page.locator("tbody tr", { hasText: "Front Office Printer" }).dblclick();
+// The device drawer from the scan results.
+await page.locator("tbody tr", { hasText: "Office Printer" }).first().dblclick();
 await page.getByRole("complementary").waitFor({ timeout: 5_000 });
-await page.waitForTimeout(250);
+await page.waitForTimeout(300);
 await shot("device-dark");
 await page.keyboard.press("Escape");
-await page.waitForTimeout(150);
+await page.waitForTimeout(200);
 
-await page.locator("header nav button", { hasText: "Changes" }).click();
-await page.waitForTimeout(300);
-await shot("changes-dark");
-
-await page.locator("header nav button", { hasText: "History" }).click();
-await page.waitForTimeout(300);
+await nav("History").click();
+await page.waitForTimeout(400);
 await shot("history-dark");
 
 await page.getByRole("button", { name: "Settings" }).click();
-await page.waitForTimeout(300);
+await page.waitForTimeout(400);
 await shot("settings-dark");
 
-// The Networks section, scrolled into view. Scoping only means something with
-// more than one network, so the demo carries a second site.
+// The Networks section, scrolled into view.
 const settings = page.getByRole("complementary", { name: "Settings" });
 await settings.getByLabel(/^Name for /).first().scrollIntoViewIfNeeded();
-await page.waitForTimeout(300);
+await page.waitForTimeout(350);
 await shot("settings-networks-dark");
 await page.keyboard.press("Escape");
-await page.waitForTimeout(150);
+await page.waitForTimeout(200);
 
-// --- v1.7.1 partial-scan states -------------------------------------------
+// --- Partial-scan states --------------------------------------------------
 // A genuinely stopped scan, not a mocked-up screen: the scan is started and
 // then cancelled part-way, exactly as pressing Stop does.
-await page.locator("header nav button", { hasText: "Devices" }).click();
-await page.waitForTimeout(200);
+await nav("Scan").click();
+await page.waitForTimeout(250);
 await runScan();
-await page.locator("tbody tr").nth(4).waitFor({ timeout: 10_000 });
+await page.locator("tbody tr").nth(3).waitFor({ timeout: 15_000 });
 await page.waitForTimeout(250);
 await page.getByRole("button", { name: /^Stop/ }).click();
 await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 15_000 });
-await page.waitForTimeout(900);
+await page.waitForTimeout(1_000);
 
-await page.locator("header nav button", { hasText: "History" }).click();
-await page.waitForTimeout(400);
+await nav("History").click();
+await page.waitForTimeout(500);
 await shot("history-partial-dark");
 
-// The Changes view for that partial scan, which explains why it has none.
+// The comparison for that partial scan, which explains why it has none.
 await page.locator("main ul > li").first().locator("button").first().click();
-await page.waitForTimeout(400);
-await page.locator("header nav button", { hasText: "Changes" }).click();
-await page.waitForTimeout(350);
+await page.waitForTimeout(600);
+await page.getByRole("button", { name: "Why no comparison?" }).click();
+await page.waitForTimeout(500);
 await shot("changes-partial-dark");
 
-// Narrow window, to show the layout holding together.
-await page.locator("header nav button", { hasText: "Devices" }).click();
+// Narrow window, to show the layout holding together where it matters most.
+await nav("Inventory").click();
 await page.setViewportSize(NARROW);
-await page.waitForTimeout(300);
+await page.waitForTimeout(400);
 await shot("narrow-dark");
 await page.setViewportSize(WIDE);
 
 // --- Light theme ----------------------------------------------------------
 await setTheme("light");
+
+await nav("Inventory").click();
+await page.locator("tbody tr").first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(400);
+await shot("inventory-light");
+
+await nav("Changes").click();
+await page.locator("main ul > li").first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(400);
+await shot("changes-light");
+
+await nav("Scan").click();
+await page.waitForTimeout(250);
 await runScan();
 await waitForScanEnd();
 await shot("results-light");
 
-await page.locator("tbody tr", { hasText: "Backup NAS" }).dblclick();
+await page.locator("tbody tr", { hasText: "Home NAS" }).first().dblclick();
 await page.getByRole("complementary").waitFor({ timeout: 5_000 });
-await page.waitForTimeout(250);
+await page.waitForTimeout(300);
 await shot("device-light");
 await page.keyboard.press("Escape");
 
-await page.locator("header nav button", { hasText: "Changes" }).click();
-await page.waitForTimeout(300);
-await shot("changes-light");
-
-await page.locator("header nav button", { hasText: "History" }).click();
-await page.waitForTimeout(300);
+await nav("History").click();
+await page.waitForTimeout(400);
 await shot("history-light");
 
 await browser.close();

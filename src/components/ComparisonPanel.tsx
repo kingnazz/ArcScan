@@ -6,7 +6,7 @@
 // and green.
 
 import { ArrowRightLeft, MinusCircle, PlusCircle, RotateCcw } from "lucide-react";
-import { Badge, EmptyState, SectionHeading } from "../ui/primitives";
+import { Badge, Button, EmptyState, SectionHeading } from "../ui/primitives";
 import { ChangeList } from "./DeviceDrawer";
 import { formatDateTime, formatRelative } from "../lib/format";
 import type { DeviceDiff, ScanComparison } from "../types";
@@ -16,9 +16,11 @@ export interface ComparisonPanelProps {
   currentLabel: string;
   /** True when the shown scan was stopped early, so changes cannot exist. */
   partial?: boolean;
+  /** Return to the device table. */
+  onBack?: () => void;
 }
 
-export function ComparisonPanel({ comparison, currentLabel, partial }: ComparisonPanelProps) {
+export function ComparisonPanel({ comparison, currentLabel, partial, onBack }: ComparisonPanelProps) {
   const total = comparison.added.length + comparison.removed.length + comparison.changed.length;
 
   if (comparison.baseline_scan_id == null) {
@@ -31,6 +33,7 @@ export function ComparisonPanel({ comparison, currentLabel, partial }: Compariso
           comparison.reason ??
           "A comparison needs an earlier completed scan with the same target and coverage. Run this scan again later and the differences will appear here."
         }
+        action={onBack ? <Button onClick={onBack}>Back to devices</Button> : undefined}
       />
     );
   }
