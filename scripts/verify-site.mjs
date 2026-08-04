@@ -498,14 +498,14 @@ await step("the release section states the 1.8.0 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the release notes link points at the 1.8.0 tag", async () => {
+await step("the What changed link opens the local 1.8.0 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
-  // A tag URL, not /releases/latest: it must keep resolving to these notes
-  // after a later release ships, and without the GitHub API answering.
-  if (href !== "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0") {
-    throw new Error(`release link points at ${href}`);
+  // A first-party page, not GitHub: a visitor asking what changed should get
+  // something written for them before they get a commit list.
+  if (href !== "whats-new-1.8.0.html") {
+    throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
   if (!(await link.innerText()).includes(shown)) {
@@ -639,8 +639,344 @@ await step("download flow survives a GitHub API failure", async () => {
   return "all three links still point at the releases page";
 });
 
+
+// ---------------------------------------------------------------------------
+// The first-party What's New page for 1.8.0
+// ---------------------------------------------------------------------------
+
+const WHATS_NEW = "/whats-new-1.8.0.html";
+
+await step("the What's New page loads with the right title and metadata", async () => {
+  const response = await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
+  if (!response || !response.ok()) {
+    throw new Error(`the page returned ${response ? response.status() : "nothing"}`);
+  }
+
+  const title = await page.title();
+  if (!/what's new in arcscan 1\.8/i.test(title)) throw new Error(`unexpected title: ${title}`);
+  // Distinct from the home page's, or the two compete for the same query.
+  if (/free network scanner and inventory/i.test(title)) {
+    throw new Error("the page reuses the home page title");
+  }
+
+  const meta = async (selector) => page.getAttribute(selector, "content");
+  const description = await meta('meta[name="description"]');
+  if (!description || description.length < 80 || description.length > 320) {
+    throw new Error(`meta description is ${description ? description.length : 0} characters`);
+  }
+  const canonical = await page.getAttribute('link[rel="canonical"]', "href");
+  if (canonical !== `https://kingnazz.github.io/ArcScan${WHATS_NEW}`) {
+    throw new Error(`canonical is ${canonical}`);
+  }
+  for (const selector of [
+    'meta[property="og:title"]',
+    'meta[property="og:description"]',
+    'meta[property="og:image"]',
+    'meta[property="og:url"]',
+    'meta[name="twitter:card"]',
+    'meta[name="twitter:title"]',
+    'meta[name="twitter:image"]',
+  ]) {
+    const value = await meta(selector);
+    if (!value) throw new Error(`${selector} is missing or empty`);
+  }
+  // The social image has to be an image that exists, not a guess.
+  const ogImage = await meta('meta[property="og:image"]');
+  const reachable = await page.evaluate(
+    (src) =>
+      new Promise((resolve) => {
+        const probe = new Image();
+        probe.onload = () => resolve(true);
+        probe.onerror = () => resolve(false);
+        probe.src = src.replace("https://kingnazz.github.io/ArcScan/", "");
+      }),
+    ogImage,
+  );
+  if (!reachable) throw new Error(`og:image does not resolve: ${ogImage}`);
+  return `${title.length} char title, ${description.length} char description`;
+});
+
+await step("structured data names version 1.8.0 and parses", async () => {
+  const blocks = await page.$$eval('script[type="application/ld+json"]', (nodes) =>
+    nodes.map((n) => n.textContent),
+  );
+  if (blocks.length === 0) throw new Error("no structured data on the page");
+  const parsed = blocks.map((b) => JSON.parse(b));
+  const article = parsed.find((b) => b["@type"] === "Article");
+  if (!article) throw new Error("no Article block");
+  if (article.about?.softwareVersion !== "1.8.0") {
+    throw new Error(`structured data says version ${article.about?.softwareVersion}`);
+  }
+  if (!article.datePublished) throw new Error("no published date");
+  return `Article, softwareVersion ${article.about.softwareVersion}`;
+});
+
+await step("the page states the version and the release date visibly", async () => {
+  const text = await page.locator("main").innerText();
+  if (!/1\.8\.0/.test(text)) throw new Error("the version is not visible on the page");
+  if (!/free and open source/i.test(text)) throw new Error("the free and open source label is missing");
+  const date = await page.locator("time[datetime]").first().getAttribute("datetime");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "")) throw new Error(`unusable release date: ${date}`);
+  return `version 1.8.0, released ${date}`;
+});
+
+await step("the hero offers a download and a way back to the home page", async () => {
+  const download = page.locator("#hero-download");
+  if ((await download.count()) === 0) throw new Error("no hero download button");
+  if (!/github\.com\/kingnazz\/ArcScan\/releases/.test(await download.getAttribute("href"))) {
+    throw new Error("the hero download does not point at the releases");
+  }
+  const back = page.locator('.hero a[href="./"]');
+  if ((await back.count()) === 0) throw new Error("no link back to the home page");
+  return (await back.first().innerText()).trim();
+});
+
+await step("every required section is present and explained", async () => {
+  const sections = {
+    inventory: [/one row per device/i, /previous addresses/i, /csv, json and xml/i, /search/i],
+    changes: [/new devices/i, /missing devices/i, /opened and closed services/i, /acknowledge/i],
+    networks: [/separated automatically/i, /home wi-fi/i, /workshop/i, /hidden/i],
+    presence: [/present/i, /missing/i, /unknown/i],
+    exports: [/csv/i, /json/i, /xml/i, /arcscan-inventory-/i],
+    upgrade: [/without losing/i, /straight away|immediately/i, /history/i, /transaction/i],
+    local: [/no account/i, /no cloud/i, /no subscription/i, /ipv4 only/i, /tcp/i],
+  };
+  for (const [id, patterns] of Object.entries(sections)) {
+    const node = page.locator(`#${id}`);
+    if ((await node.count()) === 0) throw new Error(`no #${id} section`);
+    const text = await node.innerText();
+    for (const pattern of patterns) {
+      if (!pattern.test(text)) throw new Error(`#${id} does not cover ${pattern}`);
+    }
+  }
+  return `${Object.keys(sections).length} sections`;
+});
+
+await step("a partial scan is explicitly excluded from marking devices Missing", async () => {
+  const text = await page.locator("#presence").innerText();
+  if (!/stopped early never marks a device missing/i.test(text)) {
+    throw new Error("the page does not state that a partial scan never marks a device Missing");
+  }
+  // And presence is never described as live status.
+  if (/continuous monitoring(?! )/i.test(text) && !/not continuous monitoring/i.test(text)) {
+    throw new Error("the page implies continuous monitoring");
+  }
+});
+
+await step("the page avoids managed-service and monitoring language", async () => {
+  const text = (await page.locator("main").innerText()).toLowerCase();
+  for (const term of ["tenant", "msp", "managed service", "site management", "client site"]) {
+    if (text.includes(term)) throw new Error(`the page uses "${term}"`);
+  }
+  // "Not continuous monitoring" is a disclaimer, not a claim, so it is allowed
+  // only in that negated form.
+  const monitoring = text.indexOf("continuous monitoring");
+  if (monitoring >= 0 && !/not continuous monitoring/.test(text)) {
+    throw new Error("the page claims continuous monitoring");
+  }
+});
+
+await step("the technical release notes stay one click away", async () => {
+  const links = await page.$$eval("a[href]", (nodes) =>
+    nodes.map((n) => n.getAttribute("href")).filter(Boolean),
+  );
+  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0")) {
+    throw new Error("no link to the v1.8.0 release notes on GitHub");
+  }
+  if (!links.includes("https://github.com/kingnazz/ArcScan/releases")) {
+    throw new Error("no link to all releases");
+  }
+});
+
+await step("the download section covers every platform", async () => {
+  const cards = await page.$$eval("#download .dl", (els) =>
+    els.map((el) => ({
+      os: el.getAttribute("data-os"),
+      version: el.querySelector('[data-field="version"]')?.textContent?.trim(),
+      link: el.querySelector('[data-field="link"]')?.getAttribute("href"),
+      hasChecksum: Boolean(el.querySelector('[data-field="checksum"]')),
+    })),
+  );
+  const wanted = ["win-x64", "win-arm64", "mac"];
+  for (const os of wanted) {
+    const card = cards.find((c) => c.os === os);
+    if (!card) throw new Error(`no download card for ${os}`);
+    if (card.version !== "1.8.0") throw new Error(`${os} shows version ${card.version}`);
+    if (!card.link?.startsWith("https://github.com/")) throw new Error(`${os} has no link`);
+    if (!card.hasChecksum) throw new Error(`${os} has no checksum link`);
+  }
+  return `${cards.length} cards, all at 1.8.0`;
+});
+
+await step("both screenshots load at their stated size with real alt text", async () => {
+  const shots = ["assets/shots/inventory-dark.webp", "assets/shots/changes-dark.webp"];
+  for (const src of shots) {
+    const img = page.locator(`img[src="${src}"]`);
+    if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
+    await img.first().scrollIntoViewIfNeeded();
+    await page.waitForFunction(
+      (selector) => {
+        const el = document.querySelector(selector);
+        return el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0;
+      },
+      `img[src="${src}"]`,
+      { timeout: 5000 },
+    );
+    const info = await img.first().evaluate((el) => ({
+      natural: el.naturalWidth,
+      w: el.getAttribute("width"),
+      h: el.getAttribute("height"),
+      alt: el.getAttribute("alt") ?? "",
+      srcset: el.getAttribute("srcset") ?? "",
+    }));
+    if (info.natural === 0) throw new Error(`${src} did not load`);
+    // Intrinsic dimensions are what stop the section shifting as it loads.
+    if (!info.w || !info.h) throw new Error(`${src} has no width/height attributes`);
+    if (info.alt.trim().length < 60) throw new Error(`${src} needs descriptive alt text`);
+    // The responsive sources are the existing optimised assets, not a reshoot.
+    if (!/-800\.webp|@2x\.webp/.test(info.srcset)) {
+      throw new Error(`${src} does not use the responsive assets`);
+    }
+  }
+  return `${shots.length} screenshots`;
+});
+
+await step("the What's New page adds no new stylesheet, script or font", async () => {
+  const assets = await page.evaluate(() => ({
+    styles: Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map((n) => n.getAttribute("href")),
+    scripts: Array.from(document.querySelectorAll("script[src]")).map((n) => n.getAttribute("src")),
+    inline: document.querySelectorAll("script:not([src]):not([type='application/ld+json'])").length,
+    fonts: Array.from(document.querySelectorAll('link[rel="preconnect"], link[href*="fonts."]')).length,
+  }));
+  if (assets.styles.join() !== "arcscan.v5.css") {
+    throw new Error(`unexpected stylesheets: ${assets.styles.join(", ")}`);
+  }
+  if (assets.scripts.join() !== "arcscan.v5.js") {
+    throw new Error(`unexpected scripts: ${assets.scripts.join(", ")}`);
+  }
+  if (assets.inline > 0) throw new Error(`${assets.inline} inline scripts`);
+  if (assets.fonts > 0) throw new Error("an external font was linked");
+  return "one shared stylesheet, one shared script";
+});
+
+await step("heading levels on the What's New page never skip", async () => {
+  const levels = await page.$$eval("h1, h2, h3, h4", (nodes) =>
+    nodes.map((n) => Number(n.tagName[1])),
+  );
+  const h1s = levels.filter((l) => l === 1).length;
+  if (h1s !== 1) throw new Error(`expected 1 h1, found ${h1s}`);
+  for (let i = 1; i < levels.length; i++) {
+    if (levels[i] > levels[i - 1] + 1) {
+      throw new Error(`heading jumps from h${levels[i - 1]} to h${levels[i]}`);
+    }
+  }
+  return `${levels.length} headings`;
+});
+
+await step("no duplicate element ids on the What's New page", async () => {
+  const duplicates = await page.evaluate(() => {
+    const seen = new Map();
+    for (const el of document.querySelectorAll("[id]")) seen.set(el.id, (seen.get(el.id) ?? 0) + 1);
+    return [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
+  });
+  if (duplicates.length) throw new Error(`duplicate ids: ${duplicates.join(", ")}`);
+});
+
+await step("the What's New page is keyboard navigable from the skip link", async () => {
+  await page.keyboard.press("Tab");
+  const first = await page.evaluate(() => {
+    const el = document.activeElement;
+    return { text: el?.textContent?.trim(), href: el?.getAttribute("href") };
+  });
+  if (first.href !== "#main") throw new Error(`first tab stop is ${first.text}`);
+
+  // Every interactive control has to be reachable and show a visible focus ring.
+  const reachable = await page.evaluate(() => {
+    const focusable = Array.from(
+      document.querySelectorAll("a[href], button:not([disabled])"),
+    ).filter((el) => el.offsetParent !== null);
+    let ringed = 0;
+    for (const el of focusable) {
+      el.focus();
+      const style = getComputedStyle(el);
+      const outline = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
+      if (outline || style.boxShadow !== "none") ringed += 1;
+    }
+    return { total: focusable.length, ringed };
+  });
+  if (reachable.total === 0) throw new Error("nothing focusable on the page");
+  if (reachable.ringed < reachable.total) {
+    throw new Error(`${reachable.total - reachable.ringed} controls have no visible focus state`);
+  }
+  return `${reachable.total} focusable controls, all with a focus ring`;
+});
+
+await step("no em dashes in the What's New copy", async () => {
+  const found = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const index = text.indexOf("\u2014");
+    return index >= 0 ? text.slice(Math.max(0, index - 40), index + 40) : null;
+  });
+  if (found) throw new Error(`em dash found near: ${found}`);
+});
+
+await step("no horizontal overflow on the What's New page at any width", async () => {
+  const problems = [];
+  for (const width of WIDTHS) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(140);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    if (overflow > 0) problems.push(`${width}px overflows by ${overflow}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  if (problems.length) throw new Error(problems.join("; "));
+  return `${WIDTHS.length} widths clean`;
+});
+
+await step("the mobile menu works on the What's New page", async () => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: "networkidle" });
+  const toggle = page.locator("#nav-toggle");
+  const panel = page.locator("#nav-panel");
+  if (!(await toggle.isVisible())) throw new Error("no menu button at 390px");
+
+  await toggle.click();
+  await page.waitForTimeout(160);
+  if (!(await panel.isVisible())) throw new Error("the menu did not open");
+  const box = await panel.boundingBox();
+  if (!box || box.x < 0 || box.x + box.width > 390 + 1) {
+    throw new Error(`the menu escapes the viewport: x=${box?.x} w=${box?.width}`);
+  }
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(160);
+  if (await panel.isVisible()) throw new Error("Escape did not close the menu");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  return `menu is ${Math.round(box.height)}px tall at 390px`;
+});
+
+await step("the home page and the What's New page reach each other", async () => {
+  await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
+  await page.locator('.hero a[href="./"]').first().click();
+  await page.waitForLoadState("networkidle");
+  if (!/See every device/.test(await page.locator("h1").innerText())) {
+    throw new Error("the back link did not reach the home page");
+  }
+  await page.locator("#release-notes-link").click();
+  await page.waitForLoadState("networkidle");
+  const heading = await page.locator("h1").innerText();
+  if (!/What's new in ArcScan 1\.8/.test(heading)) {
+    throw new Error(`the What changed link landed on: ${heading}`);
+  }
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  return "round trip works in both directions";
+});
+
 // --- axe-core --------------------------------------------------------------
-await step("axe-core finds no violations on either page", async () => {
+await step("axe-core finds no violations on any page", async () => {
   let AxeBuilder;
   try {
     AxeBuilder = (await import("@axe-core/playwright")).default;
@@ -656,6 +992,8 @@ await step("axe-core finds no violations on either page", async () => {
     { label: "home desktop", path: "/", width: 1440, height: 900 },
     { label: "home mobile", path: "/", width: 390, height: 844 },
     { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
+    { label: "whats-new desktop", path: "/whats-new-1.8.0.html", width: 1440, height: 900 },
+    { label: "whats-new mobile", path: "/whats-new-1.8.0.html", width: 390, height: 844 },
   ];
 
   for (const { label, path, width, height } of passes) {

@@ -969,6 +969,15 @@ code,
   padding: 0 1.5rem;
   list-style: none;
 }
+/* Standing alone under a section heading the pills are centred, which is what
+ * the use-cases row wants. In a split column they sit beneath left-aligned copy,
+ * so they line up with it instead of floating in the middle of the column. */
+.split .tags {
+  justify-content: flex-start;
+  max-width: none;
+  margin: 1.6rem 0 0;
+  padding: 0;
+}
 .tags li {
   padding: 0.5rem 1rem;
   background: var(--elev);
