@@ -176,18 +176,21 @@ function PublicIp({
 
       <Button
         size="sm"
-        variant={state.status === "error" ? "secondary" : "ghost"}
+        // A real button in the states that ask for a press, quieter once it is
+        // only offering to repeat itself. Either way it stays well below the
+        // target field and the Scan action in weight.
+        variant={state.status === "ready" ? "ghost" : "secondary"}
         aria-label={action.label}
         // Deliberately not disabled while checking: disabling would drop the
         // button out of the focus order mid-interaction. A second press is
         // ignored by the hook rather than starting a second request.
         aria-busy={state.status === "checking" || undefined}
+        // No globe here: the status beside it already carries one, and two of
+        // the same mark in one control group is noise.
         icon={
           state.status === "checking" ? (
             <Spinner className="h-3.5 w-3.5" />
-          ) : state.status === "idle" ? (
-            <Globe className="h-3.5 w-3.5" />
-          ) : (
+          ) : state.status === "idle" ? undefined : (
             <RotateCw className="h-3.5 w-3.5" />
           )
         }
