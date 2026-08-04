@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, DownloadCloud, X } from "lucide-react";
-import { TitleBar, type View } from "./components/TitleBar";
+import { AppHeader, type View } from "./components/AppHeader";
 import { CommandBar } from "./components/CommandBar";
 import { ResultsToolbar } from "./components/ResultsToolbar";
 import { ResultsTable } from "./components/ResultsTable";
@@ -904,7 +904,7 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <TitleBar
+      <AppHeader
         view={view}
         onViewChange={setView}
         inventoryCount={inventory?.rows.length ?? 0}

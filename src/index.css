@@ -377,12 +377,31 @@
     transition-duration: var(--duration-fast);
   }
   .segmented-item:hover {
+    background: var(--surface-hover);
     color: var(--text);
   }
   .segmented-item[aria-current="page"] {
     background: var(--surface);
     color: var(--text);
     box-shadow: var(--shadow-sm);
+  }
+  /* The active tab keeps its own surface on hover rather than flattening back
+   * into the hover colour, so the selection never appears to move. */
+  .segmented-item[aria-current="page"]:hover {
+    background: var(--surface);
+  }
+
+  /* A count beside a tab label. Fixed minimum width and tabular figures so the
+   * tabs do not shift as counts grow, and so two badges line up with each
+   * other rather than drifting by a digit. */
+  .nav-badge {
+    @apply inline-flex items-center justify-center rounded px-1 text-[10.5px] font-semibold
+      leading-none;
+    min-width: 1.15rem;
+    height: 1.05rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--accent-subtle);
+    color: var(--accent-text);
   }
 
   /* --- Data table -------------------------------------------------------- */
