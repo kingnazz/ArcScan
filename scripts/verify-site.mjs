@@ -262,24 +262,24 @@ await step("exactly one platform is recommended, and only on that platform", asy
  * A release as GitHub actually returns one, including the signature and
  * updater assets that sit alongside the installers. Using the real asset names
  * is the point: the page picks assets by pattern, and a pattern that quietly
- * matched ArcScan_1.8.0_x64-setup.exe.sig would hand visitors a 400 byte file.
+ * matched ArcScan_1.8.1_x64-setup.exe.sig would hand visitors a 400 byte file.
  */
 const RELEASE_FIXTURE = {
-  tag_name: "v1.8.0",
-  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0",
+  tag_name: "v1.8.1",
+  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.1",
   published_at: "2026-08-01T06:28:00Z",
   assets: [
     { name: "ArcScan.app.tar.gz", size: 7505259 },
     { name: "ArcScan.app.tar.gz.sig", size: 404 },
-    { name: "ArcScan_1.8.0_arm64-setup.exe", size: 4285945 },
-    { name: "ArcScan_1.8.0_arm64-setup.exe.sig", size: 420 },
-    { name: "ArcScan_1.8.0_universal.dmg", size: 7576208 },
-    { name: "ArcScan_1.8.0_x64-setup.exe", size: 4543127 },
-    { name: "ArcScan_1.8.0_x64-setup.exe.sig", size: 416 },
+    { name: "ArcScan_1.8.1_arm64-setup.exe", size: 4285945 },
+    { name: "ArcScan_1.8.1_arm64-setup.exe.sig", size: 420 },
+    { name: "ArcScan_1.8.1_universal.dmg", size: 7576208 },
+    { name: "ArcScan_1.8.1_x64-setup.exe", size: 4543127 },
+    { name: "ArcScan_1.8.1_x64-setup.exe.sig", size: 416 },
     { name: "latest.json", size: 2376 },
   ].map((a) => ({
     ...a,
-    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.0/${a.name}`,
+    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.1/${a.name}`,
   })),
 };
 
@@ -322,9 +322,9 @@ await step("the release API fills every card with the right asset", async () => 
   await p.close();
 
   const expected = {
-    "win-x64": { file: "ArcScan_1.8.0_x64-setup.exe", size: "4.3 MB" },
-    "win-arm64": { file: "ArcScan_1.8.0_arm64-setup.exe", size: "4.1 MB" },
-    mac: { file: "ArcScan_1.8.0_universal.dmg", size: "7.2 MB" },
+    "win-x64": { file: "ArcScan_1.8.1_x64-setup.exe", size: "4.3 MB" },
+    "win-arm64": { file: "ArcScan_1.8.1_arm64-setup.exe", size: "4.1 MB" },
+    mac: { file: "ArcScan_1.8.1_universal.dmg", size: "7.2 MB" },
   };
   for (const card of cards) {
     const want = expected[card.os];
@@ -335,9 +335,9 @@ await step("the release API fills every card with the right asset", async () => 
     if (/\.sig$|\.tar\.gz$|latest\.json$/.test(card.link ?? "")) {
       throw new Error(`${card.os} links to a non-installer asset: ${card.link}`);
     }
-    if (card.version !== "1.8.0") throw new Error(`${card.os} shows version ${card.version}`);
+    if (card.version !== "1.8.1") throw new Error(`${card.os} shows version ${card.version}`);
     if (card.size !== want.size) throw new Error(`${card.os} shows size ${card.size}`);
-    if (!card.notes?.includes("/releases/tag/v1.8.0")) {
+    if (!card.notes?.includes("/releases/tag/v1.8.1")) {
       throw new Error(`${card.os} notes link is ${card.notes}`);
     }
   }
@@ -349,17 +349,17 @@ await step("each platform is recommended the build it can run", async () => {
     [
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
       "mac",
-      "ArcScan_1.8.0_universal.dmg",
+      "ArcScan_1.8.1_universal.dmg",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-x64",
-      "ArcScan_1.8.0_x64-setup.exe",
+      "ArcScan_1.8.1_x64-setup.exe",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; ARM64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-arm64",
-      "ArcScan_1.8.0_arm64-setup.exe",
+      "ArcScan_1.8.1_arm64-setup.exe",
     ],
   ];
   const seen = [];
@@ -471,26 +471,31 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.8.0 improvements", async () => {
+await step("the release section states the 1.8.1 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
   // The version has to be named, or the section could describe any release.
-  if (!text.includes("1.8.0")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.1")) throw new Error("the section does not name the version");
 
   // One assertion per improvement, phrased as the claim rather than as exact
   // wording, so the copy can be edited without the test becoming a transcript.
   const claims = [
-    [/persistent inventory/, "the persistent inventory"],
-    [/previous addresses/, "address history per device"],
-    [/present, missing or unknown|present.*missing.*unknown/, "the three presence states"],
-    [/partial scan never reports|never reports? a device as missing/, "partial-scan safety"],
-    [/review, trust, rename, ignore or acknowledge/, "the review actions"],
-    [/csv, json or xml/, "exports"],
+    [/name.*(twice|once)|second copy/, "the duplicated title being removed"],
+    [/window buttons|dragging|snapping/, "native window behaviour being kept"],
+    [/view switcher/, "the switcher moving to the first row"],
+    [/public ip/, "the public IP lookup"],
+    [/only when you press check|press check/, "the lookup being explicit"],
+    [/contrast/, "the contrast fixes"],
   ];
   for (const [pattern, label] of claims) {
     if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
+  }
+
+  // A polish release must not imply the scanner changed.
+  if (!/unchanged/.test(text)) {
+    throw new Error("the section does not say what stayed the same");
   }
 
   const headings = await section.locator("h3").allInnerTexts();
@@ -498,13 +503,13 @@ await step("the release section states the 1.8.0 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.8.0 page", async () => {
+await step("the What changed link opens the local 1.8.1 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A first-party page, not GitHub: a visitor asking what changed should get
   // something written for them before they get a commit list.
-  if (href !== "whats-new-1.8.0.html") {
+  if (href !== "whats-new-1.8.1.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -520,8 +525,8 @@ await step("the What changed link opens the local 1.8.0 page", async () => {
 
 await step("the new screenshots load at their stated size", async () => {
   const shots = [
-    "assets/shots/inventory-missing-dark.webp",
-    "assets/shots/changes-dark.webp",
+    "assets/shots/results-dark.webp",
+    "assets/shots/public-ip-dark.webp",
   ];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
@@ -608,8 +613,19 @@ await step("robots.txt and sitemap.xml are served", async () => {
 await step("privacy page loads and names the public IP providers", async () => {
   await page.goto(`${BASE}/privacy.html`, { waitUntil: "networkidle" });
   const text = await page.locator("main").innerText();
-  for (const needed of ["ipify", "icanhazip", "off by default", "GitHub"]) {
+  for (const needed of ["ipify", "icanhazip", "GitHub"]) {
     if (!text.includes(needed)) throw new Error(`privacy page does not mention "${needed}"`);
+  }
+  // The lookup being offered by default is not the same as it running by
+  // default, and the page has to be unambiguous about which one it means.
+  for (const [pattern, label] of [
+    [/never runs on its own/i, "that the lookup never runs on its own"],
+    [/press\s+<?\/?strong>?\s*check|press Check/i, "that a press is what starts it"],
+    [/never stored as inventory data|never written to the scan database/i,
+      "that the answer is not stored"],
+    [/switched off|switch(ed)? it off/i, "that it can be switched off"],
+  ]) {
+    if (!pattern.test(text)) throw new Error(`privacy page does not state ${label}`);
   }
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -641,10 +657,10 @@ await step("download flow survives a GitHub API failure", async () => {
 
 
 // ---------------------------------------------------------------------------
-// The first-party What's New page for 1.8.0
+// The first-party What's New page for 1.8.1
 // ---------------------------------------------------------------------------
 
-const WHATS_NEW = "/whats-new-1.8.0.html";
+const WHATS_NEW = "/whats-new-1.8.1.html";
 
 await step("the What's New page loads with the right title and metadata", async () => {
   const response = await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
@@ -696,7 +712,7 @@ await step("the What's New page loads with the right title and metadata", async 
   return `${title.length} char title, ${description.length} char description`;
 });
 
-await step("structured data names version 1.8.0 and parses", async () => {
+await step("structured data names version 1.8.1 and parses", async () => {
   const blocks = await page.$$eval('script[type="application/ld+json"]', (nodes) =>
     nodes.map((n) => n.textContent),
   );
@@ -704,7 +720,7 @@ await step("structured data names version 1.8.0 and parses", async () => {
   const parsed = blocks.map((b) => JSON.parse(b));
   const article = parsed.find((b) => b["@type"] === "Article");
   if (!article) throw new Error("no Article block");
-  if (article.about?.softwareVersion !== "1.8.0") {
+  if (article.about?.softwareVersion !== "1.8.1") {
     throw new Error(`structured data says version ${article.about?.softwareVersion}`);
   }
   if (!article.datePublished) throw new Error("no published date");
@@ -713,11 +729,11 @@ await step("structured data names version 1.8.0 and parses", async () => {
 
 await step("the page states the version and the release date visibly", async () => {
   const text = await page.locator("main").innerText();
-  if (!/1\.8\.0/.test(text)) throw new Error("the version is not visible on the page");
+  if (!/1\.8\.1/.test(text)) throw new Error("the version is not visible on the page");
   if (!/free and open source/i.test(text)) throw new Error("the free and open source label is missing");
   const date = await page.locator("time[datetime]").first().getAttribute("datetime");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "")) throw new Error(`unusable release date: ${date}`);
-  return `version 1.8.0, released ${date}`;
+  return `version 1.8.1, released ${date}`;
 });
 
 await step("the hero offers a download and a way back to the home page", async () => {
@@ -733,13 +749,11 @@ await step("the hero offers a download and a way back to the home page", async (
 
 await step("every required section is present and explained", async () => {
   const sections = {
-    inventory: [/one row per device/i, /previous addresses/i, /csv, json and xml/i, /search/i],
-    changes: [/new devices/i, /missing devices/i, /opened and closed services/i, /acknowledge/i],
-    networks: [/separated automatically/i, /home wi-fi/i, /workshop/i, /hidden/i],
-    presence: [/present/i, /missing/i, /unknown/i],
-    exports: [/csv/i, /json/i, /xml/i, /arcscan-inventory-/i],
-    upgrade: [/without losing/i, /straight away|immediately/i, /history/i, /transaction/i],
-    local: [/no account/i, /no cloud/i, /no subscription/i, /ipv4 only/i, /tcp/i],
+    window: [/one title/i, /one icon/i, /window buttons/i, /snapping/i, /view switcher|switcher/i],
+    "public-ip": [/optional/i, /press.*check/i, /api64\.ipify\.org/i, /icanhazip\.com/i],
+    refinements: [/contrast/i, /counts/i, /clear the search/i],
+    unchanged: [/same four views/i, /partial scans/i, /ipv4 only/i, /no account/i],
+    upgrade: [/without losing/i, /no database change|nothing to migrate/i, /settings are kept/i],
   };
   for (const [id, patterns] of Object.entries(sections)) {
     const node = page.locator(`#${id}`);
@@ -752,14 +766,72 @@ await step("every required section is present and explained", async () => {
   return `${Object.keys(sections).length} sections`;
 });
 
-await step("a partial scan is explicitly excluded from marking devices Missing", async () => {
-  const text = await page.locator("#presence").innerText();
-  if (!/stopped early never marks a device missing/i.test(text)) {
-    throw new Error("the page does not state that a partial scan never marks a device Missing");
+await step("the public IP wording states every part of the promise", async () => {
+  const text = await page.locator("#public-ip").innerText();
+  // Each of these is a separate promise, and a page that makes four of them is
+  // not making the fifth. They are asserted individually on purpose.
+  const promises = [
+    [/\boptional\b/i, "that the lookup is optional"],
+    [/only when you press check|press.*\bcheck\b/i, "that it runs only after Check"],
+    [/api64\.ipify\.org/, "the first provider by name"],
+    [/icanhazip\.com/, "the second provider by name"],
+    [/not part of scanning|scanning does not need it|not needed for scanning/i,
+      "that scanning does not need it"],
+    [/never sent to them|never sent/i, "that inventory is not sent to the providers"],
+    [/never stored as inventory data|not stored as inventory/i,
+      "that the answer is not stored as inventory data"],
+  ];
+  for (const [pattern, label] of promises) {
+    if (!pattern.test(text)) throw new Error(`the page does not state ${label}`);
   }
-  // And presence is never described as live status.
-  if (/continuous monitoring(?! )/i.test(text) && !/not continuous monitoring/i.test(text)) {
-    throw new Error("the page implies continuous monitoring");
+
+  // And it must not be sold as the reason to upgrade.
+  const h1 = await page.locator("h1").innerText();
+  if (/public ip/i.test(h1)) throw new Error("the headline leads with the public IP lookup");
+  return `${promises.length} statements present`;
+});
+
+await step("the release is not described as changing how scanning works", async () => {
+  const text = (await page.locator("main").innerText()).toLowerCase();
+  for (const pattern of [/new scan(ner|ning) engine/, /rewritten scanner/, /faster scans/]) {
+    if (pattern.test(text)) throw new Error(`the page overstates the release: ${pattern}`);
+  }
+  if (!/unchanged|the same/.test(text)) {
+    throw new Error("a polish release must say what stayed the same");
+  }
+});
+
+await step("the previous What's New page is still published and reachable", async () => {
+  // 1.8.1's page links back to it, and the 1.8.0 page itself must not 404:
+  // people land on it from search results and from older release notes.
+  const link = page.locator('#unchanged a[href="whats-new-1.8.0.html"]');
+  if ((await link.count()) === 0) {
+    throw new Error("the 1.8.1 page does not link back to the 1.8.0 page");
+  }
+
+  const previous = await context.newPage();
+  const response = await previous.goto(`${BASE}/whats-new-1.8.0.html`, {
+    waitUntil: "networkidle",
+  });
+  if (!response || !response.ok()) {
+    throw new Error(`the 1.8.0 page returned ${response ? response.status() : "nothing"}`);
+  }
+  const heading = await previous.locator("h1").innerText();
+  if (!/What's new in ArcScan 1\.8$/.test(heading.trim())) {
+    throw new Error(`the 1.8.0 page's heading is now "${heading}"`);
+  }
+  // Still the 1.8.0 page, not silently overwritten with 1.8.1 content.
+  const body = await previous.locator("main").innerText();
+  if (!/1\.8\.0/.test(body)) throw new Error("the 1.8.0 page no longer names 1.8.0");
+  if (!/inventory/i.test(body)) throw new Error("the 1.8.0 page lost its inventory content");
+  await previous.close();
+  return "whats-new-1.8.0.html intact";
+});
+
+await step("a partial scan is explicitly excluded from marking devices Missing", async () => {
+  const text = await page.locator("#unchanged").innerText();
+  if (!/partial scans still never mark a device missing/i.test(text)) {
+    throw new Error("the page does not state that a partial scan never marks a device Missing");
   }
 });
 
@@ -780,8 +852,8 @@ await step("the technical release notes stay one click away", async () => {
   const links = await page.$$eval("a[href]", (nodes) =>
     nodes.map((n) => n.getAttribute("href")).filter(Boolean),
   );
-  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.0")) {
-    throw new Error("no link to the v1.8.0 release notes on GitHub");
+  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.1")) {
+    throw new Error("no link to the v1.8.1 release notes on GitHub");
   }
   if (!links.includes("https://github.com/kingnazz/ArcScan/releases")) {
     throw new Error("no link to all releases");
@@ -801,15 +873,15 @@ await step("the download section covers every platform", async () => {
   for (const os of wanted) {
     const card = cards.find((c) => c.os === os);
     if (!card) throw new Error(`no download card for ${os}`);
-    if (card.version !== "1.8.0") throw new Error(`${os} shows version ${card.version}`);
+    if (card.version !== "1.8.1") throw new Error(`${os} shows version ${card.version}`);
     if (!card.link?.startsWith("https://github.com/")) throw new Error(`${os} has no link`);
     if (!card.hasChecksum) throw new Error(`${os} has no checksum link`);
   }
-  return `${cards.length} cards, all at 1.8.0`;
+  return `${cards.length} cards, all at 1.8.1`;
 });
 
 await step("both screenshots load at their stated size with real alt text", async () => {
-  const shots = ["assets/shots/inventory-dark.webp", "assets/shots/changes-dark.webp"];
+  const shots = ["assets/shots/results-dark.webp", "assets/shots/public-ip-dark.webp"];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
     if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
@@ -992,8 +1064,10 @@ await step("axe-core finds no violations on any page", async () => {
     { label: "home desktop", path: "/", width: 1440, height: 900 },
     { label: "home mobile", path: "/", width: 390, height: 844 },
     { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
-    { label: "whats-new desktop", path: "/whats-new-1.8.0.html", width: 1440, height: 900 },
-    { label: "whats-new mobile", path: "/whats-new-1.8.0.html", width: 390, height: 844 },
+    { label: "whats-new desktop", path: "/whats-new-1.8.1.html", width: 1440, height: 900 },
+    { label: "whats-new mobile", path: "/whats-new-1.8.1.html", width: 390, height: 844 },
+    // The previous release's page stays published, so it stays checked.
+    { label: "whats-new 1.8.0", path: "/whats-new-1.8.0.html", width: 1440, height: 900 },
   ];
 
   for (const { label, path, width, height } of passes) {

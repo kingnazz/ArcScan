@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ArcScan site build: v1.8.0 -->
+<!-- ArcScan site build: v1.8.1 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -319,8 +319,8 @@
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.0.html"
-              >What changed in 1.8.0</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.1.html"
+              >What changed in 1.8.1</a
             >
           </p>
 
@@ -794,7 +794,7 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.0 -->
+      <!-- ====================================================== new in 1.8.1 -->
       <!--
         Sits directly above the downloads, so what changed is in front of the
         person about to install it. Divided columns rather than another card
@@ -804,42 +804,43 @@
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.0</p>
-            <h2>A network you can keep track of.</h2>
+            <p class="eyebrow">New in 1.8.1</p>
+            <h2>A cleaner window over the same engine.</h2>
             <p>
-              ArcScan 1.8.0 turns a series of scans into something you can live with: one persistent
-              inventory of every device it has found, an honest answer about which of them the
-              latest completed scan reached, and a list of changes that stays until you have
-              actually read it.
+              ArcScan 1.8.1 is a tidying release. The window no longer shows the product name twice,
+              the Scan screen reads in a clearer order, and the optional public IP lookup has moved
+              somewhere you can reach it. Scanning, the inventory and the changes list are
+              unchanged from 1.8.0.
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>A persistent inventory</h3>
+              <h3>The name at the top, once</h3>
               <p>
-                Every device ArcScan has recorded, in one searchable list, with its previous
-                addresses, first-seen date, observation count, services and your own name and notes.
-                Filter it, sort it, select devices in bulk, and export it as CSV, JSON or XML.
+                Earlier versions drew an ArcScan icon and title of their own directly under the one
+                your operating system already draws. The second copy is gone, the standard window
+                buttons, dragging and snapping stay exactly as they were, and the view switcher
+                takes the start of the first row.
               </p>
             </article>
 
             <article>
-              <h3>Present, missing or unknown</h3>
+              <h3>Public IP where you can find it</h3>
               <p>
-                Presence comes only from the latest scan that completed and recorded which ports it
-                checked. A device is missing when that scan looked where it used to be and did not
-                find it, and unknown when nothing can say. A partial scan never reports a device as
-                missing.
+                The optional lookup has moved out of Settings and onto the Scan screen, beside the
+                local network. It stays optional: it runs only when you press Check, it is not
+                needed for scanning, and the answer is kept for the session rather than stored with
+                your inventory.
               </p>
             </article>
 
             <article>
-              <h3>Changes you can act on</h3>
+              <h3>Spacing, alignment and contrast</h3>
               <p>
-                New devices, missing devices, address changes and services that opened or closed are
-                kept as records rather than only appearing in one comparison. Review, trust, rename,
-                ignore or acknowledge each one, and export what is shown.
+                Controls in a row share a height, the tab counts no longer shift the tabs as they
+                grow, two colours that fell under the contrast standard have been darkened, and two
+                buttons that shared a name now say which is which.
               </p>
             </article>
           </div>
@@ -853,36 +854,36 @@
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/inventory-missing-dark.webp"
-                srcset="assets/shots/inventory-missing-dark-800.webp 800w, assets/shots/inventory-missing-dark.webp 1440w"
+                src="assets/shots/results-dark.webp"
+                srcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The ArcScan inventory filtered to missing devices, showing one tablet that was seen before and did not answer the latest completed scan."
+                alt="The ArcScan scan results with the view switcher at the very top of the window and no ArcScan icon or wordmark beside it, above the local network row and a table of discovered devices."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                Missing means a completed scan looked and did not find it, not that the device is
-                switched off.
+                The switcher is the first thing in the window, with nothing left in the space the
+                duplicate title used to take.
               </figcaption>
             </figure>
 
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/changes-dark.webp"
-                srcset="assets/shots/changes-dark-800.webp 800w, assets/shots/changes-dark.webp 1440w"
+                src="assets/shots/public-ip-dark.webp"
+                srcset="assets/shots/public-ip-dark-800.webp 800w, assets/shots/public-ip-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The ArcScan Changes list, showing a printer that changed address and opened HTTPS, a renamed laptop, a tablet that went missing and a new television, each with review actions."
+                alt="The row under the ArcScan view switcher, showing the local network on the left and, on the right, Public IP followed by an example address, the words Checked just now, and buttons to copy it or check again."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                Each change says what happened, to which device and on which network, and offers
-                only the actions that would do something.
+                The public IP lookup after it has been asked. It says Not checked until you press
+                Check, and the address here is one reserved for documentation.
               </figcaption>
             </figure>
           </div>
@@ -1255,6 +1256,7 @@
           <nav aria-label="Footer">
             <a href="#download">Download</a>
             <a href="#features">Features</a>
+            <a href="whats-new-1.8.1.html">What's new in 1.8.1</a>
             <a href="whats-new-1.8.0.html">What's new in 1.8</a>
             <a href="#faq">FAQ</a>
             <a href="privacy.html">Privacy</a>
