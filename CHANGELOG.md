@@ -3,6 +3,65 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - unreleased
+
+Visual polish and the public-IP lookup on the Scan screen. No scanner,
+Inventory, Changes or database change: this release is about the window and
+where one existing feature lives. Full notes:
+[docs/RELEASE-NOTES-1.8.1.md](docs/RELEASE-NOTES-1.8.1.md).
+
+### Fixed
+
+- **The duplicate ArcScan title and icon.** The packaged app showed the product
+  name and mark twice, stacked: once in the title bar the operating system
+  draws, and again in the app's own toolbar below it. The in-app block is
+  removed and the native title bar kept, so the OS keeps providing the window
+  controls, snapping, full-screen behaviour, keyboard window management and
+  accessibility hooks. The view switcher takes the start of the row, with no
+  blank strip where the brand block used to be. A browser has no native title
+  bar, which is why this was invisible in development and in every automated
+  check; the browser suite now asserts the app renders no title or icon of its
+  own.
+- **Two contrast failures that predate this release**, both now clearing WCAG AA
+  on every surface they appear on: the count badges beside the view tabs, and
+  the Stop button, which sat at 4.3:1 against its own hover tint for as long as
+  a scan was running.
+- **Two controls both called "Clear the filter"** in the results toolbar, now
+  "Clear the search" and "Clear all filters". The second is disabled rather than
+  hidden when there is nothing to clear.
+
+### Added
+
+- **Public IP on the Scan screen.** A compact utility in a new context row under
+  the view switcher, beside the local network the scan will run against. It
+  shows the address, how long ago it was checked, and offers Copy and Refresh;
+  a failure says so plainly, offers Retry, and keeps the raw provider errors
+  behind Technical details.
+- **A deterministic public-IP demo.** `?publicip=ok|fallback|fail|flaky|slow`
+  drives the browser demo's scripted providers through the real fallback code,
+  so first-provider failure, total failure, retry and a slow lookup are all
+  reachable without a network. The demo makes no outbound request at all, and
+  the addresses it shows are RFC 5737 documentation addresses.
+
+### Changed
+
+- **The public-IP lookup still never runs on its own.** Nothing is looked up at
+  startup, when the Scan screen opens, after a scan, on a view change, on a
+  timer or in the background; only Check, Refresh and Retry contact a provider.
+  The answer stays in memory for the session, is written to neither the database
+  nor your preferences, and is in no export.
+- **Settings keeps the explanation, not a second set of controls.** Checking,
+  copying and refreshing moved to the Scan screen; Settings retains the privacy
+  copy, the session value and Forget.
+- **The "Allow public IP lookups" switch is now "Offer the public IP lookup"**
+  and is on for new installs. It has only ever decided whether the control is
+  offered, never whether a request happens by itself. A preference explicitly
+  turned off in an earlier version is respected and left off.
+- **Repeated presses no longer stack up lookups**, a response that arrives after
+  the value was forgotten or after a newer lookup started is discarded, and a
+  provider that never answers now fails with a timeout instead of leaving the
+  control spinning.
+
 ## [1.8.0] - unreleased
 
 A persistent Inventory, honest presence states, and a Changes list that stays

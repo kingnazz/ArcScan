@@ -1,7 +1,7 @@
 {
   "name": "arcscan",
   "private": true,
-  "version": "1.8.0",
+  "version": "1.8.1",
   "type": "module",
   "description": "ArcScan - a fast, private network inventory and scanner for IT professionals",
   "author": "ArcScan",

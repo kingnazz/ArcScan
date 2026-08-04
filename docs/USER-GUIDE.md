@@ -449,16 +449,37 @@ event id, which is the only place a script has any use for one.
 
 ## The public IP lookup
 
-ArcScan can report the address your internet connection appears from. It is
-**off by default** and never runs on its own.
+ArcScan can report the address your internet connection appears from. It
+**never runs on its own**.
 
-Enable it in **Settings, Network requests**, then press **Check public IP**. The
-lookup contacts `api64.ipify.org` and, if that fails, `icanhazip.com`. Nothing but
-the request itself is sent: no target, no result, no device data. The answer is
-held for the current session only and is forgotten when you close ArcScan or press
-Forget.
+From v1.8.1 it sits on the **Scan** screen, in the row under the view switcher,
+beside the local network:
 
-v1.6 performed this lookup automatically at startup. v1.7 does not.
+```text
+Local network  192.168.1.0/24            Public IP  Not checked  [Check]
+```
+
+Press **Check**. Once it answers you get the address, how long ago it was
+checked, and buttons to copy it or check again. If no provider answers, it says
+so and offers **Retry**, with the raw provider errors behind **Technical
+details**.
+
+The lookup contacts `api64.ipify.org` and, if that does not answer,
+`icanhazip.com`. Nothing but the request itself is sent: no target, no result, no
+device data. Nothing is looked up at startup, when the Scan screen opens, after a
+scan, when you switch views, on a timer, or in the background — only Check,
+Refresh and Retry contact a provider.
+
+The answer is held in memory for the current session. It is not written to the
+database, not written to your preferences, and not included in any export. It is
+forgotten when you close ArcScan or press **Forget** in Settings.
+
+**Settings, Network requests** carries the full explanation, shows the session's
+value, and can forget it. Its switch decides whether the utility is offered at
+all; it is on for new installs, and if you explicitly turned it off in an earlier
+version it stays off.
+
+v1.6 performed this lookup automatically at startup. No version since v1.7 does.
 
 ## Settings
 
@@ -468,7 +489,7 @@ v1.6 performed this lookup automatically at startup. v1.7 does not.
 | Scanning | Default profile, ports, timeout, all three concurrency limits |
 | Results | Which columns are visible |
 | History | Scans to keep, change notifications |
-| Network requests | Public IP lookup, update checks |
+| Network requests | Whether the public IP lookup is offered, update checks |
 | Getting started | Whether the first-run guidance is shown |
 
 ## Keyboard shortcuts
@@ -503,8 +524,12 @@ separately by the application window and are not in this file.
 
 ## Upgrading
 
-Install v1.8.0 over v1.7.x or v1.6.x without deleting anything. On first launch
-ArcScan migrates the database in place.
+Install v1.8.1 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
+launch ArcScan migrates the database in place.
+
+From v1.8.0 the upgrade changes nothing in the database at all: v1.8.1 is a
+visual release plus the public-IP lookup moving from Settings to the Scan
+screen.
 
 From v1.7.1 the upgrade is small: the Inventory and the presence states are
 computed from the scans you already have, so they are populated the moment you
