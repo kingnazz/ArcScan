@@ -284,7 +284,7 @@ const RELEASE_FIXTURE = {
 };
 
 /** Load the page with the GitHub release API stubbed, and no other network. */
-async function pageWithRelease(payload, userAgent) {
+async function pageWithRelease(payload, userAgent, path = "/") {
   const p = await context.newPage();
   if (userAgent) {
     await p.addInitScript((ua) => {
@@ -299,7 +299,7 @@ async function pageWithRelease(payload, userAgent) {
       body: JSON.stringify(payload),
     }),
   );
-  await p.goto(BASE, { waitUntil: "domcontentloaded" });
+  await p.goto(`${BASE}${path}`, { waitUntil: "domcontentloaded" });
   // The fetch is fired after the page is interactive, so give it a beat.
   await p.waitForFunction(
     () => document.querySelector('.dl[data-os="mac"] [data-field="size"]')?.textContent !== "See the release page",
@@ -861,7 +861,14 @@ await step("the technical release notes stay one click away", async () => {
 });
 
 await step("the download section covers every platform", async () => {
-  const cards = await page.$$eval("#download .dl", (els) =>
+  // Against a stubbed release, not the live API. These cards are rewritten at
+  // runtime from whatever GitHub calls the latest release, so asserting this
+  // release's version against the real API would only pass once this release
+  // is published, and would fail every pre-release run in between. What
+  // belongs to this pull request is that the page renders a 1.8.1 release
+  // correctly, which is what the fixture pins.
+  const released = await pageWithRelease(RELEASE_FIXTURE, undefined, WHATS_NEW);
+  const cards = await released.$$eval("#download .dl", (els) =>
     els.map((el) => ({
       os: el.getAttribute("data-os"),
       version: el.querySelector('[data-field="version"]')?.textContent?.trim(),
@@ -877,7 +884,20 @@ await step("the download section covers every platform", async () => {
     if (!card.link?.startsWith("https://github.com/")) throw new Error(`${os} has no link`);
     if (!card.hasChecksum) throw new Error(`${os} has no checksum link`);
   }
-  return `${cards.length} cards, all at 1.8.1`;
+  await released.close();
+
+  // And the version the page ships, which is what a visitor sees before the
+  // API answers and what scripts/sync-version.mjs keeps in step, is checked
+  // from the served markup rather than from the filled-in DOM.
+  const markup = await (await fetch(`${BASE}${WHATS_NEW}`)).text();
+  const fallbacks = [...markup.matchAll(/<dd data-field="version">([^<]+)<\/dd>/g)].map(
+    (m) => m[1].trim(),
+  );
+  if (fallbacks.length !== 3) throw new Error(`${fallbacks.length} static version fallbacks`);
+  const stale = fallbacks.filter((v) => v !== "1.8.1");
+  if (stale.length > 0) throw new Error(`static fallback still says ${stale.join(", ")}`);
+
+  return `${cards.length} cards, all at 1.8.1, static fallback 1.8.1`;
 });
 
 await step("both screenshots load at their stated size with real alt text", async () => {
