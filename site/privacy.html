@@ -59,7 +59,7 @@
         <h1 class="page-title">What ArcScan sends, and what it keeps.</h1>
         <p class="lede">
           ArcScan is a local-first tool, and this page states precisely what that means rather than
-          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.0</span>
+          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.1</span>
           and this website.
         </p>
 
@@ -107,21 +107,28 @@
 
         <h3>Public IP lookup</h3>
         <p>
-          ArcScan can tell you the address your internet connection appears from. This is
-          <strong>off by default</strong> and never runs on its own. You have to enable it in
-          Settings and then press the button.
+          ArcScan can tell you the address your internet connection appears from. It
+          <strong>never runs on its own</strong>. From version 1.8.1 the control sits on the Scan
+          screen, beside the local network, and says <strong>Not checked</strong> until you press
+          <strong>Check</strong>. It is not needed for scanning, and it can be switched off entirely
+          in <strong>Settings, Network requests</strong>, which also lets you forget the current
+          session's answer.
         </p>
         <p>
           When you do, ArcScan requests <code>https://api64.ipify.org</code> and, if that does not
           answer, <code>https://icanhazip.com</code>. Those services see your public IP address,
           because that is what they exist to report back to you. Nothing else is sent: no scan
-          target, no result, no device data. The answer is held in memory for the current session
-          only and is forgotten when you close the application or press Forget.
+          target, no result, no device data, no inventory. The answer is held in memory for the
+          current session only. It is never written to the scan database, never stored as inventory
+          data and never included in an export, and it is forgotten when you close the application
+          or press Forget.
         </p>
         <p>
           Earlier versions of ArcScan performed this lookup automatically at startup. Version 1.7
           changed that, because a network tool should not make an outbound request before you have
-          asked it to do anything.
+          asked it to do anything, and no version since has looked it up without being asked. Moving
+          the control onto the Scan screen in 1.8.1 did not change that: nothing is looked up at
+          startup, after a scan, when you switch views or on a timer.
         </p>
 
         <h3>Release downloads</h3>

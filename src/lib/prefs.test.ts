@@ -27,12 +27,20 @@ describe("settings", () => {
     expect(loaded.historyRetention).toBe(42);
   });
 
-  it("keeps the public-IP lookup off unless it was explicitly enabled", () => {
-    expect(DEFAULT_SETTINGS.publicIpLookup).toBe(false);
-    // Absent, null and any non-true value all mean off.
-    localStorage.setItem("arcscan-settings", JSON.stringify({ publicIpLookup: "yes" }));
+  it("offers the public-IP lookup unless it was explicitly turned off", () => {
+    // 1.8.1 offers the utility by default. It still never runs on its own: the
+    // preference decides whether the control exists, not whether it fires.
+    expect(DEFAULT_SETTINGS.publicIpLookup).toBe(true);
+
+    // An operator who turned it off before 1.8.1 keeps it off.
+    localStorage.setItem("arcscan-settings", JSON.stringify({ publicIpLookup: false }));
     expect(loadSettings().publicIpLookup).toBe(false);
+
+    // Anything else, including a settings blob written before the key existed,
+    // takes the new default.
     localStorage.setItem("arcscan-settings", JSON.stringify({ publicIpLookup: true }));
+    expect(loadSettings().publicIpLookup).toBe(true);
+    localStorage.setItem("arcscan-settings", JSON.stringify({ density: "compact" }));
     expect(loadSettings().publicIpLookup).toBe(true);
   });
 

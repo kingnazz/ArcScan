@@ -36,6 +36,22 @@ page.on("console", (m) => {
 });
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 
+/**
+ * Every request the app makes to somewhere other than its own origin.
+ *
+ * ArcScan scans locally and sends nothing anywhere. The public-IP lookup is the
+ * only feature that contacts a third party at all, and only after an explicit
+ * press, so this list staying empty is what "nothing happens on its own" looks
+ * like as an assertion rather than as a promise.
+ */
+const externalRequests = [];
+const externalRequestCount = () => externalRequests.length;
+page.on("request", (request) => {
+  const url = request.url();
+  if (url.startsWith(URL) || url.startsWith("data:") || url.startsWith("blob:")) return;
+  externalRequests.push(`${request.method()} ${url}`);
+});
+
 const step = async (name, fn) => {
   try {
     const out = await fn();
@@ -696,21 +712,284 @@ await step("deleting a scan asks first and keeps the inventory", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. Layout, themes and accessibility
+// 9. The application shell and the Public IP utility
 // ---------------------------------------------------------------------------
 
-await step("settings keeps the public IP lookup off by default", async () => {
+const contextRow = () => page.locator("header + div").first();
+const publicIpStatus = () => contextRow().getByRole("status").first();
+
+await page.goto(URL, { waitUntil: "networkidle" });
+
+await step("the app names itself exactly once, and never twice", async () => {
+  // The window is titled by the operating system. Up to 1.8.0 the header drew
+  // its own ArcScan icon and wordmark underneath that, so a packaged build
+  // showed both, stacked. A browser has no native title bar, which is exactly
+  // why this needs asserting rather than eyeballing.
+  const header = page.locator("header").first();
+  const text = await header.innerText();
+  if (/arcscan/i.test(text)) throw new Error(`the header still renders a wordmark: ${text}`);
+  if (await header.locator("img").count()) throw new Error("the header still renders a logo");
+
+  // Nowhere else in the chrome either: the drawer titles and the table are
+  // content, but no second brand block may have moved somewhere else.
+  const brandMarks = await page.locator("main img[src*='icon'], header img").count();
+  if (brandMarks !== 0) throw new Error(`${brandMarks} brand marks in the chrome`);
+  return "no in-app title or icon; the OS provides both";
+});
+
+await step("navigation is the first thing in the header", async () => {
+  const first = await page.evaluate(() => {
+    const header = document.querySelector("header");
+    const child = header?.firstElementChild;
+    return { tag: child?.tagName ?? "", label: child?.getAttribute("aria-label") ?? "" };
+  });
+  if (first.tag !== "NAV") throw new Error(`the header starts with a ${first.tag}, not the nav`);
+
+  // And no empty spacer was left where the brand block used to be.
+  const gap = await page.evaluate(() => {
+    const nav = document.querySelector("header nav");
+    return nav ? nav.getBoundingClientRect().left : -1;
+  });
+  if (gap > 20) throw new Error(`the nav starts ${gap}px in, which looks like a leftover spacer`);
+  return `nav is first, ${Math.round(gap)}px from the edge`;
+});
+
+await step("the view switcher carries its counts accessibly", async () => {
+  for (const [label, noun] of [
+    ["Inventory", "devices"],
+    ["Changes", "unreviewed"],
+  ]) {
+    const name = await nav(label).first().getAttribute("aria-label");
+    const text = await nav(label).first().innerText();
+    // The badge is a number with no visible unit, so the unit has to be read
+    // out or "Changes 7" means nothing without sight of where it sits.
+    if (!new RegExp(`\\d+\\s*${noun}`).test(text.replace(/\n/g, " "))) {
+      throw new Error(`the ${label} badge does not say what it counts: ${JSON.stringify(text)}`);
+    }
+    if (name) throw new Error(`${label} overrides its own visible label with "${name}"`);
+  }
+  return "both badges name their unit";
+});
+
+await step("Public IP starts not checked, having asked nobody", async () => {
+  const text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/public ip/i.test(text)) throw new Error(`no Public IP utility on the Scan screen: ${text}`);
+  if (!/not checked/i.test(text)) throw new Error(`unexpected initial state: ${text}`);
+  await contextRow().getByRole("button", { name: "Check public IP" }).waitFor({ timeout: 3000 });
+
+  if (externalRequests.length > 0) {
+    throw new Error(`the app contacted ${externalRequests.join(", ")} without being asked`);
+  }
+  return "Not checked, zero outbound requests";
+});
+
+await step("switching views and running a scan never start a lookup", async () => {
+  for (const view of ["Inventory", "Changes", "History", "Scan"]) {
+    await nav(view).click();
+    await page.waitForTimeout(200);
+  }
+  await scanButton().click();
+  await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 40000 });
+  await page.waitForTimeout(400);
+
+  if (externalRequests.length > 0) {
+    throw new Error(`a lookup ran without a press: ${externalRequests.join(", ")}`);
+  }
+  const text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/not checked/i.test(text)) throw new Error(`the state changed on its own: ${text}`);
+  return "four view switches and a full scan, still Not checked";
+});
+
+await step("Check shows a loading state, then the address", async () => {
+  await page.goto(`${URL}?publicip=slow`, { waitUntil: "networkidle" });
+  const check = contextRow().getByRole("button", { name: "Check public IP" });
+  await check.click();
+
+  await page.waitForTimeout(250);
+  const loading = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/checking/i.test(loading)) throw new Error(`no loading state: ${loading}`);
+  const busy = await contextRow()
+    .getByRole("button", { name: "Checking the public IP" })
+    .getAttribute("aria-busy");
+  if (busy !== "true") throw new Error("the action does not report itself busy");
+
+  const refresh = contextRow().getByRole("button", { name: "Check the public IP again" });
+  await refresh.waitFor({ timeout: 12000 });
+  const ready = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/203\.0\.113\.24/.test(ready)) throw new Error(`no address after the lookup: ${ready}`);
+  if (!/checked just now/i.test(ready)) throw new Error(`no freshness indicator: ${ready}`);
+  return ready;
+});
+
+await step("the address can be copied and the copy is confirmed", async () => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await contextRow().getByRole("button", { name: "Copy public IP address" }).click();
+  await page.waitForTimeout(200);
+
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  if (clipboard.trim() !== "203.0.113.24") throw new Error(`clipboard holds "${clipboard}"`);
+  // Confirmed out loud, not only by an icon quietly swapping to a tick.
+  const spoken = await contextRow().getByRole("status").last().innerText();
+  const toast = await page.getByRole("status").filter({ hasText: /copied/i }).count();
+  if (!/copied/i.test(spoken) && toast === 0) throw new Error("the copy is never confirmed");
+  return "copied and confirmed";
+});
+
+await step("Refresh looks the address up again", async () => {
+  const before = externalRequestCount();
+  await contextRow().getByRole("button", { name: "Check the public IP again" }).click();
+  await page.waitForTimeout(200);
+  const during = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/checking/i.test(during)) throw new Error(`Refresh did not start a lookup: ${during}`);
+  await contextRow()
+    .getByRole("button", { name: "Check the public IP again" })
+    .waitFor({ timeout: 12000 });
+  return `still no outbound request in the demo (${before} before, ${externalRequestCount()} after)`;
+});
+
+await step("repeated presses do not stack up lookups", async () => {
+  await page.goto(`${URL}?publicip=slow`, { waitUntil: "networkidle" });
+  const check = contextRow().getByRole("button", { name: "Check public IP" });
+  await check.click();
+  // The button deliberately stays enabled so focus is not thrown to the body
+  // mid-interaction; the duplicate is refused underneath instead.
+  for (let i = 0; i < 4; i++) {
+    await contextRow().getByRole("button", { name: "Checking the public IP" }).click();
+    await page.waitForTimeout(60);
+  }
+  const focused = await page.evaluate(() => document.activeElement?.tagName ?? "");
+  if (focused !== "BUTTON") throw new Error(`focus escaped to ${focused} during the lookup`);
+
+  await contextRow()
+    .getByRole("button", { name: "Check the public IP again" })
+    .waitFor({ timeout: 12000 });
+  const text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/203\.0\.113\.24/.test(text)) throw new Error(`unexpected result: ${text}`);
+  return "five presses, one answer, focus kept";
+});
+
+await step("a failed provider falls back to the next one", async () => {
+  await page.goto(`${URL}?publicip=fallback`, { waitUntil: "networkidle" });
+  await contextRow().getByRole("button", { name: "Check public IP" }).click();
+  await contextRow()
+    .getByRole("button", { name: "Check the public IP again" })
+    .waitFor({ timeout: 12000 });
+
+  const text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  // The second provider's answer, so the fallback genuinely ran rather than
+  // the first provider quietly succeeding.
+  if (!/198\.51\.100\.17/.test(text)) throw new Error(`the fallback did not answer: ${text}`);
+  return text;
+});
+
+await step("a total failure says so plainly, and Retry recovers", async () => {
+  await page.goto(`${URL}?publicip=flaky`, { waitUntil: "networkidle" });
+  await contextRow().getByRole("button", { name: "Check public IP" }).click();
+
+  const retry = contextRow().getByRole("button", { name: "Try the public IP lookup again" });
+  await retry.waitFor({ timeout: 12000 });
+  const failed = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/public ip unavailable/i.test(failed)) throw new Error(`unexpected error copy: ${failed}`);
+  if (!/check your connection/i.test(failed)) throw new Error(`no recovery advice: ${failed}`);
+
+  // The raw provider errors are available without being shoved at anyone.
+  await contextRow().getByRole("button", { name: "Technical details" }).click();
+  const detail = await contextRow().locator("pre").innerText();
+  if (!/ipify/i.test(detail)) throw new Error(`the details name no provider: ${detail}`);
+
+  await retry.click();
+  await contextRow()
+    .getByRole("button", { name: "Check the public IP again" })
+    .waitFor({ timeout: 12000 });
+  const recovered = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/203\.0\.113\.24/.test(recovered)) throw new Error(`Retry did not recover: ${recovered}`);
+  if (await contextRow().locator("pre").count()) {
+    throw new Error("the previous failure's details are still open");
+  }
+  return "failure explained, details available, retry recovered";
+});
+
+await step("the address survives a view change and a scan, and is never stored", async () => {
+  for (const view of ["Inventory", "Changes", "History", "Scan"]) {
+    await nav(view).click();
+    await page.waitForTimeout(180);
+  }
+  let text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/203\.0\.113\.24/.test(text)) throw new Error(`the value was lost on a view change: ${text}`);
+
+  await scanButton().click();
+  await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 40000 });
+  await page.waitForTimeout(400);
+  text = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/203\.0\.113\.24/.test(text)) throw new Error(`the value was lost across a scan: ${text}`);
+
+  // Held in memory for the session and nowhere else: not in the preferences,
+  // not in the inventory, not in an export.
+  const leaked = await page.evaluate(() => {
+    const haystacks = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      haystacks.push(localStorage.getItem(localStorage.key(i)) ?? "");
+    }
+    for (let i = 0; i < sessionStorage.length; i++) {
+      haystacks.push(sessionStorage.getItem(sessionStorage.key(i)) ?? "");
+    }
+    return haystacks.filter((value) => value.includes("203.0.113.24"));
+  });
+  if (leaked.length > 0) throw new Error(`the address was persisted: ${leaked.join(" | ")}`);
+
+  // A reload is a new session, so the value is gone.
+  await page.reload({ waitUntil: "networkidle" });
+  const after = (await publicIpStatus().innerText()).replace(/\s+/g, " ");
+  if (!/not checked/i.test(after)) throw new Error(`the address outlived the session: ${after}`);
+  return "kept for the session, stored nowhere, gone on reload";
+});
+
+await step("settings explains the lookup without competing with it", async () => {
   await page.getByRole("button", { name: "Settings" }).click();
   const panel = page.getByRole("complementary", { name: "Settings" });
-  await panel.waitFor({ timeout: 3000 });
-  const checked = await panel.locator("#settings-public-ip").getAttribute("aria-checked");
-  if (checked !== "false") throw new Error(`public IP lookup should default off, got ${checked}`);
-  if (await panel.getByRole("button", { name: "Check public IP" }).count()) {
-    throw new Error("Check public IP offered while the lookup is disabled");
+  try {
+    await panel.waitFor({ timeout: 3000 });
+    const text = await panel.innerText();
+    for (const needed of ["api64.ipify.org", "icanhazip.com", "press Check", "this session"]) {
+      if (!text.includes(needed)) throw new Error(`settings does not mention "${needed}"`);
+    }
+    // Checking, copying and refreshing belong to the Scan screen now.
+    for (const name of ["Check public IP", "Copy public IP address"]) {
+      if (await panel.getByRole("button", { name }).count()) {
+        throw new Error(`settings still offers a competing "${name}"`);
+      }
+    }
+
+    // Turning it off removes the utility rather than leaving a dead control.
+    await panel.locator("#settings-public-ip").click();
+    await page.waitForTimeout(250);
+    if (await contextRow().getByRole("button", { name: "Check public IP" }).count()) {
+      throw new Error("the utility is still offered after being switched off");
+    }
+    await panel.locator("#settings-public-ip").click();
+    await page.waitForTimeout(250);
+    await contextRow().getByRole("button", { name: "Check public IP" }).waitFor({ timeout: 3000 });
+  } finally {
+    // Always close it: an open drawer's scrim swallows every later click.
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
   }
-  await page.keyboard.press("Escape");
-  return "opt-in confirmed";
+  return "explained in Settings, operated from the Scan screen";
 });
+
+await step("no request ever left the demo", async () => {
+  if (externalRequests.length > 0) {
+    throw new Error(`the browser demo reached out to ${externalRequests.join(", ")}`);
+  }
+  return "zero outbound requests across the whole run";
+});
+
+// Back to a clean, fully seeded demo for the layout and accessibility passes.
+await page.goto(URL, { waitUntil: "networkidle" });
+
+// ---------------------------------------------------------------------------
+// 10. Layout, themes and accessibility
+// ---------------------------------------------------------------------------
 
 for (const width of [1440, 1280, 1024, 940]) {
   await step(`no horizontal overflow at ${width}px`, async () => {
@@ -760,6 +1039,19 @@ await step("axe-core finds no violations across every view, in both themes", asy
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
       .analyze();
 
+  /** Scan whatever is on screen and fail with the label if anything is wrong. */
+  const sweep = async (label) => {
+    const result = await analyse();
+    if (result.violations.length > 0) {
+      throw new Error(
+        result.violations
+          .map((v) => `${label} ${v.id} (${v.nodes.length}): ${v.help}`)
+          .join("; "),
+      );
+    }
+    summary.push(`${label}: ${result.passes.length}`);
+  };
+
   for (const theme of ["dark", "light"]) {
     await page.evaluate((value) => {
       const raw = localStorage.getItem("arcscan-settings");
@@ -774,15 +1066,7 @@ await step("axe-core finds no violations across every view, in both themes", asy
     for (const view of ["Inventory", "Changes", "History"]) {
       await nav(view).click();
       await page.waitForTimeout(400);
-      const result = await analyse();
-      if (result.violations.length > 0) {
-        throw new Error(
-          result.violations
-            .map((v) => `${theme}/${view} ${v.id} (${v.nodes.length}): ${v.help}`)
-            .join("; "),
-        );
-      }
-      summary.push(`${theme}/${view}: ${result.passes.length}`);
+      await sweep(`${theme}/${view}`);
     }
 
     // A populated drawer with an active selection behind it, which a static
@@ -793,31 +1077,65 @@ await step("axe-core finds no violations across every view, in both themes", asy
     await page.locator("tbody tr").first().dblclick();
     await page.getByRole("complementary").waitFor({ timeout: 3000 });
     await page.waitForTimeout(400);
-    const drawer = await analyse();
-    if (drawer.violations.length > 0) {
-      throw new Error(
-        drawer.violations
-          .map((v) => `${theme}/drawer ${v.id} (${v.nodes.length}): ${v.help}`)
-          .join("; "),
-      );
-    }
-    summary.push(`${theme}/drawer: ${drawer.passes.length}`);
+    await sweep(`${theme}/drawer`);
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
     // The filtered-to-nothing state, which has its own heading and action.
     await page.getByPlaceholder("Search inventory").fill("zzzzz-no-such-device");
     await page.waitForTimeout(350);
-    const empty = await analyse();
-    if (empty.violations.length > 0) {
-      throw new Error(
-        empty.violations
-          .map((v) => `${theme}/empty ${v.id} (${v.nodes.length}): ${v.help}`)
-          .join("; "),
-      );
-    }
-    summary.push(`${theme}/no-matches: ${empty.passes.length}`);
+    await sweep(`${theme}/no-matches`);
     await page.getByPlaceholder("Search inventory").fill("");
+
+    // Settings, which carries the switches and the privacy copy.
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("complementary", { name: "Settings" }).waitFor({ timeout: 3000 });
+    await page.waitForTimeout(350);
+    await sweep(`${theme}/settings`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
+
+    // Every Public IP state, because each one renders different controls and a
+    // different live region, and only one of them is the happy path.
+    await page.goto(`${URL}?publicip=slow`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    await sweep(`${theme}/public-ip idle`);
+
+    await contextRow().getByRole("button", { name: "Check public IP" }).click();
+    await page.waitForTimeout(350);
+    await sweep(`${theme}/public-ip loading`);
+
+    await contextRow()
+      .getByRole("button", { name: "Check the public IP again" })
+      .waitFor({ timeout: 12000 });
+    await page.waitForTimeout(250);
+    await sweep(`${theme}/public-ip ready`);
+
+    await page.goto(`${URL}?publicip=fail`, { waitUntil: "networkidle" });
+    await contextRow().getByRole("button", { name: "Check public IP" }).click();
+    await contextRow()
+      .getByRole("button", { name: "Try the public IP lookup again" })
+      .waitFor({ timeout: 12000 });
+    await contextRow().getByRole("button", { name: "Technical details" }).click();
+    await page.waitForTimeout(250);
+    await sweep(`${theme}/public-ip error`);
+
+    // A scan in flight, where the progress strip and the Stop action appear.
+    await page.goto(URL, { waitUntil: "networkidle" });
+    await scanButton().click();
+    await page.locator("tbody tr").first().waitFor({ timeout: 8000 });
+    await sweep(`${theme}/scanning`);
+    await page.getByRole("button", { name: /^Stop/ }).click();
+    await page.getByRole("button", { name: /^Stop/ }).waitFor({ state: "detached", timeout: 20000 });
+    await page.waitForTimeout(300);
+    await sweep(`${theme}/scanned`);
+
+    // The narrowest supported window, where controls collapse and wrap.
+    await page.setViewportSize({ width: 940, height: 620 });
+    await page.waitForTimeout(350);
+    await sweep(`${theme}/940px`);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.waitForTimeout(250);
   }
   return summary.join(", ");
 });

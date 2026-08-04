@@ -39,7 +39,11 @@
     --accent-hover: #096a84;
     --accent-active: #075769;
     --accent-fg: #ffffff;
-    --accent-text: #0a6b84;
+    /* Accent-coloured text, always on a light surface. Dark enough to clear
+     * 4.5:1 not just on the plain surfaces but on an accent-subtle chip laid
+     * over the sunken one, which is the tightest pairing in the light theme
+     * (the count badges beside the view tabs). */
+    --accent-text: #075c73;
     --accent-subtle: rgba(11, 127, 156, 0.1);
     --accent-ring: rgba(11, 127, 156, 0.4);
 
@@ -51,12 +55,15 @@
     --new-subtle: rgba(91, 63, 214, 0.12);
     --changed: #96590a;
     --changed-subtle: rgba(150, 89, 10, 0.12);
-    --missing: #b8342a;
-    --missing-subtle: rgba(184, 52, 42, 0.1);
+    --missing: #a82c23;
+    --missing-subtle: rgba(168, 44, 35, 0.1);
     --warning: #96590a;
     --warning-subtle: rgba(150, 89, 10, 0.12);
-    --danger: #b8342a;
-    --danger-subtle: rgba(184, 52, 42, 0.1);
+    /* Dark enough to stay above 4.5:1 on its own tinted button, including the
+     * hover tint — the Stop button, which is under the pointer for as long as a
+     * scan is running, is the tightest pairing in the light theme. */
+    --danger: #a82c23;
+    --danger-subtle: rgba(168, 44, 35, 0.1);
     --unknown: var(--text-muted);
 
     --row-stripe: #f8f9fb;
@@ -377,12 +384,31 @@
     transition-duration: var(--duration-fast);
   }
   .segmented-item:hover {
+    background: var(--surface-hover);
     color: var(--text);
   }
   .segmented-item[aria-current="page"] {
     background: var(--surface);
     color: var(--text);
     box-shadow: var(--shadow-sm);
+  }
+  /* The active tab keeps its own surface on hover rather than flattening back
+   * into the hover colour, so the selection never appears to move. */
+  .segmented-item[aria-current="page"]:hover {
+    background: var(--surface);
+  }
+
+  /* A count beside a tab label. Fixed minimum width and tabular figures so the
+   * tabs do not shift as counts grow, and so two badges line up with each
+   * other rather than drifting by a digit. */
+  .nav-badge {
+    @apply inline-flex items-center justify-center rounded px-1 text-[10.5px] font-semibold
+      leading-none;
+    min-width: 1.15rem;
+    height: 1.05rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--accent-subtle);
+    color: var(--accent-text);
   }
 
   /* --- Data table -------------------------------------------------------- */

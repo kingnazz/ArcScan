@@ -34,6 +34,7 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
     const changedCount = comparison?.changed.length ?? 0;
     const missingCount = comparison?.removed.length ?? 0;
     const anyChanges = newCount + returnedCount + changedCount + missingCount > 0;
+    const anyFilter = filter.query.length > 0 || filter.savedOnly || filter.changesOnly;
 
     return (
       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
@@ -53,7 +54,7 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
           {filter.query ? (
             <button
               type="button"
-              aria-label="Clear the filter"
+              aria-label="Clear the search"
               onClick={() => onFilterChange({ query: "" })}
               className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text"
             >
@@ -182,7 +183,15 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
             </Popover>
           </div>
 
-          <IconButton label="Clear the filter" size="sm" onClick={() => onFilterChange({ query: "", savedOnly: false, changesOnly: false })}>
+          {/* Distinct from the field's own clear, which only empties the query,
+              and inert rather than absent when there is nothing to clear: a
+              control that disappears moves everything beside it. */}
+          <IconButton
+            label="Clear all filters"
+            size="sm"
+            disabled={!anyFilter}
+            onClick={() => onFilterChange({ query: "", savedOnly: false, changesOnly: false })}
+          >
             <X className="h-3.5 w-3.5" />
           </IconButton>
         </div>

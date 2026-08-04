@@ -46,6 +46,117 @@ console.log(`Policy under test:\n  ${policy.replace(/; /g, "\n  ")}\n`);
 const violations = [];
 const errors = [];
 
+const staticStep = (name, fn) => {
+  try {
+    const detail = fn();
+    console.log(`PASS  ${name}${detail ? ` — ${detail}` : ""}`);
+  } catch (e) {
+    console.log(`FAIL  ${name} — ${e.message}`);
+    process.exitCode = 1;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Static checks on the policy itself. A browser can only prove that what the
+// app does today is allowed; these prove that what the policy allows is still
+// narrow, which is the half that rots silently.
+// ---------------------------------------------------------------------------
+
+const devCsp = config.app?.security?.devCsp ?? {};
+const sources = (directive, policyObject) => {
+  const value = policyObject[directive];
+  if (value == null) return [];
+  return (Array.isArray(value) ? value.join(" ") : value).split(/\s+/).filter(Boolean);
+};
+
+staticStep("no wildcard or plaintext origin is allowed anywhere", () => {
+  for (const [label, policyObject] of [
+    ["production", csp],
+    ["development", devCsp],
+  ]) {
+    for (const [directive, value] of Object.entries(policyObject)) {
+      for (const source of sources(directive, policyObject)) {
+        if (source === "*" || source.startsWith("*.") || source.includes("://*")) {
+          throw new Error(`${label} ${directive} allows the wildcard ${source}`);
+        }
+        // http: is only ever acceptable for Tauri's own IPC origin and, in
+        // development, the local Vite server.
+        const localhost = /^(ws|http):\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(source);
+        const ipc = source === "ipc:" || source === "http://ipc.localhost";
+        if (/^https?:\/\//.test(source) && !source.startsWith("https://") && !localhost && !ipc) {
+          throw new Error(`${label} ${directive} allows plaintext ${source}`);
+        }
+        if (label === "production" && localhost) {
+          throw new Error(`production ${directive} allows the dev server ${source}`);
+        }
+      }
+      void value;
+    }
+  }
+  return "no wildcards, no plaintext beyond Tauri IPC";
+});
+
+staticStep("no script source can execute code from a string or a third party", () => {
+  const script = sources("script-src", csp);
+  const allowed = new Set(["'self'"]);
+  const extra = script.filter((s) => !allowed.has(s));
+  if (extra.length > 0) throw new Error(`production script-src also allows ${extra.join(", ")}`);
+  for (const [label, policyObject] of [
+    ["production", csp],
+    ["development", devCsp],
+  ]) {
+    for (const directive of ["script-src", "default-src", "style-src", "connect-src"]) {
+      if (sources(directive, policyObject).includes("'unsafe-eval'")) {
+        throw new Error(`${label} ${directive} allows 'unsafe-eval'`);
+      }
+    }
+  }
+  if (sources("object-src", csp)[0] !== "'none'") throw new Error("object-src is not 'none'");
+  if (sources("frame-src", csp)[0] !== "'none'") throw new Error("frame-src is not 'none'");
+  return "script-src 'self', no eval, no frames, no objects";
+});
+
+staticStep("Tauri's own IPC channel is still reachable", () => {
+  const connect = sources("connect-src", csp);
+  for (const needed of ["'self'", "ipc:", "http://ipc.localhost"]) {
+    if (!connect.includes(needed)) throw new Error(`connect-src has lost ${needed}`);
+  }
+  return "ipc: and http://ipc.localhost present";
+});
+
+staticStep("connect-src allows the public-IP providers and nothing else", () => {
+  // The provider list and the policy are edited in different files, so a new
+  // provider that nobody allowlisted would work in the browser demo and fail
+  // only once packaged. This is the check that stops that shipping.
+  const module = readFileSync(join(root, "src/lib/publicIp.ts"), "utf8");
+  const declared = [...module.matchAll(/url:\s*"(https:\/\/[^"]+)"/g)].map(
+    (m) => new URL(m[1]).origin,
+  );
+  if (declared.length === 0) throw new Error("no providers found in src/lib/publicIp.ts");
+
+  for (const [label, policyObject] of [
+    ["production", csp],
+    ["development", devCsp],
+  ]) {
+    const connect = sources("connect-src", policyObject);
+    for (const origin of declared) {
+      if (!connect.includes(origin)) {
+        throw new Error(`${label} connect-src does not allow the provider ${origin}`);
+      }
+    }
+    // And nothing beyond them: every remaining remote origin must be a provider.
+    const remote = connect.filter(
+      (s) => s.startsWith("https://") && !s.includes("ipc.localhost"),
+    );
+    const extra = remote.filter((s) => !declared.includes(s));
+    if (extra.length > 0) {
+      throw new Error(`${label} connect-src allows ${extra.join(", ")}, which is not a provider`);
+    }
+  }
+  return declared.join(", ");
+});
+
+
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH;
 const browser = await chromium.launch(executablePath ? { executablePath } : {});
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });

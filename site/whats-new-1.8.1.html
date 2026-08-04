@@ -1,0 +1,591 @@
+<!doctype html>
+<!-- ArcScan site build: v1.8.1 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- No maximum-scale and no user-scalable=no: pinch zoom stays available. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>What's new in ArcScan 1.8.1: a cleaner window and public IP on the Scan screen</title>
+    <meta
+      name="description"
+      content="ArcScan 1.8.1 removes the duplicated window title, tidies the layout of the Scan screen, and puts the optional public IP lookup where you can reach it. Scanning, inventory and changes are unchanged. Free and open source for Windows and macOS."
+    />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.1.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+
+    <!--
+      Identical to the home page: the only outbound request is the GitHub
+      release API that fills the download cards. No analytics, no web fonts, no
+      CDN, no third-party script of any kind.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'"
+    />
+
+    <link rel="stylesheet" href="arcscan.v5.css" />
+    <!-- The scan-results screenshot is the largest paint on this page. -->
+    <link
+      rel="preload"
+      as="image"
+      href="assets/shots/results-dark.webp"
+      imagesrcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w, assets/shots/results-dark@2x.webp 2880w"
+      imagesizes="(max-width: 62rem) 100vw, 34rem"
+      fetchpriority="high"
+    />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="ArcScan" />
+    <meta property="og:url" content="https://kingnazz.github.io/ArcScan/whats-new-1.8.1.html" />
+    <meta property="og:title" content="What's new in ArcScan 1.8.1" />
+    <meta
+      property="og:description"
+      content="A cleaner window with the product name shown once, a tidier Scan screen, and the optional public IP lookup where you can reach it."
+    />
+    <meta
+      property="og:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/results-dark.png"
+    />
+    <meta property="og:image:width" content="2880" />
+    <meta property="og:image:height" content="1800" />
+    <meta
+      property="og:image:alt"
+      content="The ArcScan scan results, with the view switcher at the top of the window, the local network and public IP on the row below it, and a table of discovered devices."
+    />
+    <meta property="article:published_time" content="2026-08-04" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="What's new in ArcScan 1.8.1" />
+    <meta
+      name="twitter:description"
+      content="A cleaner window with the product name shown once, a tidier Scan screen, and the optional public IP lookup where you can reach it."
+    />
+    <meta
+      name="twitter:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/results-dark.png"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "What's new in ArcScan 1.8.1",
+        "description": "ArcScan 1.8.1 removes the duplicated window title, tidies the layout of the Scan screen, and puts the optional public IP lookup where you can reach it. Scanning, inventory and changes are unchanged.",
+        "datePublished": "2026-08-04",
+        "inLanguage": "en",
+        "image": "https://kingnazz.github.io/ArcScan/assets/shots/results-dark.png",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kingnazz.github.io/ArcScan/whats-new-1.8.1.html"
+        },
+        "author": { "@type": "Organization", "name": "ArcScan" },
+        "publisher": { "@type": "Organization", "name": "ArcScan" },
+        "about": {
+          "@type": "SoftwareApplication",
+          "name": "ArcScan",
+          "applicationCategory": "UtilitiesApplication",
+          "applicationSubCategory": "Network Scanner",
+          "operatingSystem": "Windows 10, Windows 11, macOS 11 or later",
+          "softwareVersion": "1.8.1",
+          "url": "https://kingnazz.github.io/ArcScan/",
+          "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.1",
+          "license": "https://opensource.org/licenses/MIT",
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <img src="assets/logo.png" width="24" height="24" alt="" />
+          <span>ArcScan</span>
+        </a>
+
+        <nav aria-label="Primary">
+          <ul class="nav-links">
+            <li><a href="./#features">Features</a></li>
+            <li><a href="./#how">How it works</a></li>
+            <li><a href="./#faq">FAQ</a></li>
+            <li><a href="privacy.html">Privacy</a></li>
+            <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+          </ul>
+        </nav>
+
+        <a class="btn btn-primary btn-small nav-cta" href="#download">Download</a>
+
+        <button
+          class="nav-toggle"
+          type="button"
+          id="nav-toggle"
+          aria-expanded="false"
+          aria-controls="nav-panel"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          Menu
+        </button>
+      </div>
+
+      <div class="nav-panel" id="nav-panel" data-open="false">
+        <ul>
+          <li><a href="#window">The window</a></li>
+          <li><a href="#public-ip">Public IP</a></li>
+          <li><a href="#refinements">Refinements</a></li>
+          <li><a href="#unchanged">Unchanged</a></li>
+          <li><a href="./#features">Features</a></li>
+          <li><a href="./#faq">FAQ</a></li>
+          <li><a href="privacy.html">Privacy</a></li>
+          <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+        </ul>
+        <div class="wrap nav-panel-cta">
+          <a class="btn btn-primary" href="#download">Download ArcScan</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ============================================================ hero -->
+      <section class="hero" id="top">
+        <div class="wrap">
+          <p class="eyebrow">ArcScan 1.8.1</p>
+          <h1>
+            What's new in ArcScan 1.8.1
+          </h1>
+          <p class="lede">
+            A tidying release. ArcScan no longer prints its own name twice at the top of the window,
+            the Scan screen has a clearer order to it, and the optional public IP lookup has moved
+            somewhere you can actually find it. Scanning, the inventory and the changes list work
+            exactly as they did in 1.8.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-primary" id="hero-download" href="https://github.com/kingnazz/ArcScan/releases/latest">
+              <span class="os-glyph win" id="hero-glyph" aria-hidden="true"></span>
+              <span id="hero-label">Download ArcScan</span>
+            </a>
+            <a class="btn btn-secondary" href="./">Back to the ArcScan homepage</a>
+          </div>
+
+          <p class="release-line">
+            Version 1.8.1<span aria-hidden="true"> &middot; </span>released
+            <time datetime="2026-08-04">4 August 2026</time><span aria-hidden="true"> &middot; </span>free
+            and open source
+            <span aria-hidden="true"> &middot; </span
+            ><a
+              class="release-link"
+              id="release-notes-link"
+              href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.1"
+              rel="noopener"
+              >Full technical release notes on GitHub</a
+            >
+          </p>
+
+          <ul class="hero-facts">
+            <li>
+              <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>
+              Installs over 1.8 with no database change
+            </li>
+            <li>
+              <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>
+              Windows 10 and 11, macOS 11 or later
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ========================================================== window -->
+      <section class="section" id="window">
+        <div class="split">
+          <div>
+            <p class="eyebrow">The window</p>
+            <h2>The name at the top, once.</h2>
+            <p class="lede">
+              Earlier versions showed ArcScan twice when you opened the app: once in the title bar
+              that Windows and macOS draw, and again on the row immediately below it, where ArcScan
+              added an icon and its own name. 1.8.1 removes the second one.
+            </p>
+            <ul class="tags">
+              <li>One title</li>
+              <li>One icon</li>
+              <li>No blank strip left behind</li>
+              <li>Standard window buttons</li>
+              <li>Standard dragging and snapping</li>
+              <li>Standard full screen</li>
+            </ul>
+            <p>
+              The title bar that stays is the one your operating system provides, so the window
+              buttons, dragging, snapping, full screen, keyboard window shortcuts and screen reader
+              support are all the ones you already know. With the duplicate gone, the
+              <span class="mono">Scan</span>, <span class="mono">Inventory</span>,
+              <span class="mono">Changes</span> and <span class="mono">History</span> switcher moves
+              up to the start of the first row, which is where it belongs.
+            </p>
+          </div>
+
+          <figure class="frame">
+            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+            <img
+              src="assets/shots/results-dark.webp"
+              srcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w, assets/shots/results-dark@2x.webp 2880w"
+              sizes="(max-width: 62rem) 100vw, 34rem"
+              width="1440"
+              height="900"
+              alt="The ArcScan scan results. The view switcher for Scan, Inventory, Changes and History sits at the very top of the window, with no ArcScan icon or wordmark beside it. Below it are the local network, the scan controls and a table of ten discovered devices."
+              fetchpriority="high"
+              decoding="async"
+            />
+            <figcaption>
+              The switcher is now the first thing in the window, with the search and results tools
+              lined up underneath it.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ======================================================= public-ip -->
+      <section class="section section-alt" id="public-ip">
+        <div class="split">
+          <div>
+            <p class="eyebrow">Public IP</p>
+            <h2>Your public address, if you ask for it.</h2>
+            <p class="lede">
+              ArcScan can tell you the address your internet connection appears from. That has been
+              possible since 1.7, buried at the bottom of Settings. In 1.8.1 it sits on the Scan
+              screen, next to the local network, as a small control that says
+              <span class="mono">Not checked</span> until you press
+              <span class="mono">Check</span>.
+            </p>
+            <ul class="tags">
+              <li>Optional</li>
+              <li>Runs only when you press Check</li>
+              <li>Copy the address</li>
+              <li>Check again</li>
+              <li>Kept for the session only</li>
+              <li>Switch it off entirely</li>
+            </ul>
+            <p>
+              It is not part of scanning and scanning does not need it. Nothing is looked up when
+              ArcScan starts, when you open the Scan screen, after a scan finishes, when you switch
+              views, or on any kind of timer. The only thing that asks anybody anything is your
+              press on Check, Refresh or Retry.
+            </p>
+            <p>
+              The lookup asks <span class="mono">api64.ipify.org</span> and, if that does not
+              answer, <span class="mono">icanhazip.com</span>. Those are the only two third parties
+              involved, and all they are asked for is the address. Your scan targets, your results,
+              your device names, your MAC addresses and your notes are never sent to them, and the
+              answer is never stored as inventory data: it is held in memory for the session, kept
+              out of the database and out of every export, and forgotten when you close ArcScan.
+            </p>
+          </div>
+
+          <figure class="frame">
+            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+            <img
+              src="assets/shots/public-ip-dark.webp"
+              srcset="assets/shots/public-ip-dark-800.webp 800w, assets/shots/public-ip-dark.webp 1440w, assets/shots/public-ip-dark@2x.webp 2880w"
+              sizes="(max-width: 62rem) 100vw, 34rem"
+              width="1440"
+              height="900"
+              alt="The ArcScan Scan screen after the public IP lookup has been used. The row under the view switcher shows the local network on the left and, on the right, Public IP followed by an example address, the words Checked just now, and buttons to copy it or check again."
+              loading="lazy"
+              decoding="async"
+            />
+            <figcaption>
+              After a check, with how long ago it ran. The address shown here is reserved for
+              documentation and belongs to nobody.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ===================================================== refinements -->
+      <section class="section" id="refinements">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Refinements</p>
+            <h2>Smaller things, in the places you look most.</h2>
+            <p>
+              None of this changes what ArcScan does. It is spacing, alignment and contrast in the
+              parts of the window you spend your time in.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>A clearer order</h3>
+              <p>
+                The window reads top to bottom: the view switcher, then the network you are on,
+                then the scan controls, then the search and results tools. Controls in the same row
+                share a height, so nothing sits half a step out of line with its neighbours.
+              </p>
+            </article>
+
+            <article>
+              <h3>Counts that stay put</h3>
+              <p>
+                The counts beside Inventory and Changes now sit on a fixed-width badge, so the tabs
+                stop shifting sideways as the numbers grow, and the two badges line up with each
+                other.
+              </p>
+            </article>
+
+            <article>
+              <h3>Easier to read</h3>
+              <p>
+                Two colours that fell just under the accessibility contrast standard have been
+                darkened: the tab counts, and the Stop button, which is under your pointer for as
+                long as a scan is running. Both now pass in the light theme and the dark one.
+              </p>
+            </article>
+
+            <article>
+              <h3>Buttons that say what they do</h3>
+              <p>
+                Two different controls above the results table were both called Clear the filter.
+                They are now Clear the search and Clear all filters, and the second one is greyed
+                out when there is nothing to clear.
+              </p>
+            </article>
+
+            <article>
+              <h3>Nothing lost when narrow</h3>
+              <p>
+                At the smallest supported window size the scan target, the Scan button, the search
+                box and the public IP control are all still reachable. Lower priority details step
+                aside first.
+              </p>
+            </article>
+
+            <article>
+              <h3>Both themes</h3>
+              <p>
+                Every change above was checked in the light theme and the dark theme, at four window
+                widths, with reduced motion on and with an automated accessibility sweep across
+                every view.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= unchanged -->
+      <section class="section section-alt" id="unchanged">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Unchanged</p>
+            <h2>Everything 1.8 does, it still does.</h2>
+            <p>
+              This release deliberately leaves the working parts alone. If you upgraded for the
+              inventory and the changes list, nothing below has moved.
+            </p>
+          </div>
+
+          <ul class="tags">
+            <li>The same four views</li>
+            <li>The same scanning behaviour</li>
+            <li>The same present, missing and unknown rules</li>
+            <li>Partial scans still never mark a device missing</li>
+            <li>The same networks and network names</li>
+            <li>The same changes list and review actions</li>
+            <li>The same history and comparisons</li>
+            <li>The same CSV, JSON and XML exports</li>
+            <li>No account, no cloud, no subscription</li>
+            <li>Scans and inventory stay on your computer</li>
+            <li>IPv4 only</li>
+            <li>Installers are not code signed</li>
+          </ul>
+
+          <p class="footnote">
+            Because the installers carry no paid publisher certificate, Windows and macOS both warn
+            the first time you open one. The
+            <a href="privacy.html">privacy page</a> states exactly which requests ArcScan makes, and
+            the <a href="https://github.com/kingnazz/ArcScan" rel="noopener">source</a> is public.
+            Coming from 1.7 or earlier? Read
+            <a href="whats-new-1.8.0.html">what's new in ArcScan 1.8</a> for the inventory, presence
+            and changes work this release builds on.
+          </p>
+        </div>
+      </section>
+
+      <!-- ========================================================= upgrade -->
+      <section class="section" id="upgrade">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Upgrading</p>
+            <h2>Install it over 1.8 and carry on.</h2>
+            <p>
+              Install ArcScan 1.8.1 over 1.8, 1.7 or 1.6 without losing scans, device names, notes,
+              statuses, network names or history.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>No database change</h3>
+              <p>
+                Coming from 1.8, there is nothing to migrate at all. Every scan, device, name, note,
+                status, network and date carries straight over. Coming from 1.7 or 1.6, the usual
+                1.8 upgrade runs once, in place.
+              </p>
+            </article>
+
+            <article>
+              <h3>Your settings are kept</h3>
+              <p>
+                Theme, density, columns, profiles, ports and limits are all preserved. The public IP
+                lookup is offered by default on a new install; if you turned it off in an earlier
+                version, it stays off and the control does not appear until you turn it back on.
+              </p>
+            </article>
+
+            <article>
+              <h3>Nothing new to learn</h3>
+              <p>
+                The four views, their keyboard shortcuts and their exports are unchanged. The only
+                thing in a new place is the public IP control, and it explains itself.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== download -->
+      <section class="section section-alt" id="download">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Get ArcScan 1.8.1.</h2>
+            <p>
+              Installers are published on GitHub Releases and downloaded directly from there, so
+              this site never re-hosts a binary.
+            </p>
+          </div>
+
+          <ul class="downloads" id="download-list">
+            <li class="dl" data-os="win-x64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>x64 (Intel or AMD)</dd>
+                <dt>Installer</dt>
+                <dd>NSIS setup (.exe)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.1</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for Windows x64
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="win-arm64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows on ARM</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>ARM64</dd>
+                <dt>Installer</dt>
+                <dd>NSIS setup (.exe)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.1</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for Windows ARM64
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="mac">
+              <div class="dl-top">
+                <span class="os-glyph apple" aria-hidden="true"></span>
+                <h3>macOS</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>Universal (Apple Silicon and Intel)</dd>
+                <dt>Installer</dt>
+                <dd>Disk image (.dmg)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.1</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for macOS
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+          </ul>
+
+          <p class="footnote" id="download-status">
+            Every link above points at the latest release. Exact file sizes are filled in from the
+            GitHub API when it is reachable.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">All releases</a>
+            <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.1" rel="noopener">
+              Full technical release notes
+            </a>
+            <a href="whats-new-1.8.0.html" class="link-arrow">What's new in ArcScan 1.8</a>
+            <a href="./" class="link-arrow">Back to the ArcScan homepage</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-inner">
+          <a class="brand" href="./">
+            <img src="assets/logo.png" width="22" height="22" alt="" />
+            <span>ArcScan</span>
+          </a>
+          <nav aria-label="Footer">
+            <a href="./#download">Download</a>
+            <a href="whats-new-1.8.1.html" aria-current="page">What's new</a>
+            <a href="whats-new-1.8.0.html">What's new in 1.8</a>
+            <a href="./#faq">FAQ</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/kingnazz/ArcScan" rel="noopener">Source</a>
+            <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Releases</a>
+          </nav>
+        </div>
+        <p class="footer-note">
+          ArcScan is a read-only network discovery tool, for networks you own or are authorised to
+          inspect. Free and open source under the MIT license. Every screenshot on this page shows a
+          fictional demo network, and the public address shown is one reserved for documentation.
+        </p>
+      </div>
+    </footer>
+
+    <script src="arcscan.v5.js" defer></script>
+  </body>
+</html>

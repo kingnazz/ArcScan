@@ -112,7 +112,18 @@ describe("stale event rejection", () => {
 });
 
 describe("wide scans", () => {
-  it("keeps the table bounded and correct through thousands of events", () => {
+  // The timeout is generous on purpose. What is under test here is the merging
+  // and the ordering, not the clock: eight thousand upserts against a growing
+  // immutable list is genuinely a lot of work, and the default five seconds is
+  // close enough to it that a busy shared CI runner fails the test without
+  // anything being wrong. The bound is here to catch a hang, not to assert a
+  // speed. The budgets that are meant to be enforced live in the Rust suite,
+  // where they are asserted deliberately.
+  const WIDE_SCAN_TIMEOUT_MS = 30_000;
+
+  it(
+    "keeps the table bounded and correct through thousands of events",
+    () => {
     // A /20-scale sweep: 4,000 discovery events plus an enrichment event per
     // host, applied through the same path the live queue flushes into. The
     // table must end at one row per device, fully merged, in address order.
@@ -131,7 +142,9 @@ describe("wide scans", () => {
     expect(list.every((r) => r.host.open_ports.length === 1)).toBe(true);
     expect(list[0].host.ip).toBe("10.0.0.1");
     expect(list[list.length - 1].host.ip).toBe("10.0.15.250");
-  });
+    },
+    WIDE_SCAN_TIMEOUT_MS,
+  );
 
   it("collapses repeated updates for one address into a single row", () => {
     let list: DeviceRow[] = [];

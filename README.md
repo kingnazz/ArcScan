@@ -93,9 +93,11 @@ ArcScan makes exactly two optional outbound requests:
 
 - **Update check**, on launch, against GitHub. It sends only the version being
   checked. Switchable off in Settings.
-- **Public IP lookup**, which is **off by default** and only runs when you press
-  the button. It contacts `api64.ipify.org`, then `icanhazip.com`, sends nothing
-  but the request, and keeps the answer for the session only.
+- **Public IP lookup**, which **only runs when you press Check** on the Scan
+  screen. It contacts `api64.ipify.org`, then `icanhazip.com`, sends nothing but
+  the request, and keeps the answer in memory for the session only. It is never
+  looked up at startup, after a scan, on a view change or on a timer, and it can
+  be switched off entirely in Settings.
 
 There is no telemetry, no analytics and no account. The
 [privacy page](https://kingnazz.github.io/ArcScan/privacy.html) states all of

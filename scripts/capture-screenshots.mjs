@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Capture the product screenshots the website uses.
 //
-// Every shot comes from the real v1.8 interface driven in a browser against the
+// Every shot comes from the real v1.8.1 interface driven in a browser against the
 // built-in demo network, so the images can never show an older UI. The networks
 // are entirely fictional, so no real client, hostname, MAC address or public
 // address is ever in a published image.
@@ -72,7 +72,7 @@ async function waitForScanEnd() {
   await page.waitForTimeout(900);
 }
 
-console.log("Capturing ArcScan v1.8 screenshots");
+console.log("Capturing ArcScan v1.8.1 screenshots");
 
 // --- Dark theme -----------------------------------------------------------
 await page.goto(URL, { waitUntil: "networkidle" });
@@ -130,6 +130,19 @@ await shot("scanning-dark");
 
 await waitForScanEnd();
 await shot("results-dark");
+
+// The optional public-IP lookup, after it has been asked. The demo answers from
+// scripted providers with an address reserved for documentation by RFC 5737, so
+// a published image can never contain a real one.
+const contextRow = page.locator("header + div").first();
+await contextRow.getByRole("button", { name: "Check public IP" }).click();
+await contextRow
+  .getByRole("button", { name: "Check the public IP again" })
+  .waitFor({ timeout: 12_000 });
+// Away from the controls, so no shot catches a hover state.
+await page.mouse.move(4, 880);
+await page.waitForTimeout(400);
+await shot("public-ip-dark");
 
 // The device drawer from the scan results.
 await page.locator("tbody tr", { hasText: "Office Printer" }).first().dblclick();
