@@ -3,7 +3,7 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.1] - unreleased
+## [1.8.1] - 2026-08-04
 
 Visual polish and the public-IP lookup on the Scan screen. No scanner,
 Inventory, Changes or database change: this release is about the window and
@@ -62,7 +62,7 @@ where one existing feature lives. Full notes:
   provider that never answers now fails with a timeout instead of leaving the
   control spinning.
 
-## [1.8.0] - unreleased
+## [1.8.0] - 2026-08-03
 
 A persistent Inventory, honest presence states, and a Changes list that stays
 until you have read it. Navigation becomes `Scan · Inventory · Changes · History`.
@@ -155,7 +155,7 @@ already held. Full notes: [docs/RELEASE-NOTES-1.8.0.md](docs/RELEASE-NOTES-1.8.0
   and would create a backlog nobody asked to review. Those differences are still
   in each scan's own comparison.
 
-## [1.7.1] - unreleased
+## [1.7.1] - 2026-08-01
 
 A correctness, reliability and security hardening release. No new product
 surface: v1.7.1 fixes the ways v1.7.0 could tell you something untrue about a
