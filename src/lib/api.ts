@@ -38,6 +38,7 @@ import {
   exportFilename,
 } from "./export";
 import { mock } from "./mock";
+import { lookupPublicIp } from "./publicIp";
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -55,16 +56,6 @@ export interface ScanListeners {
   onHostDiscovered?: (event: HostEvent) => void;
   onHostUpdated?: (event: HostEvent) => void;
   onHostRemoved?: (event: HostRemovedEvent) => void;
-}
-
-/** Public-IP lookup providers, in the order they are tried. */
-export const PUBLIC_IP_PROVIDERS = [
-  { name: "ipify", url: "https://api64.ipify.org?format=json", json: true },
-  { name: "icanhazip", url: "https://icanhazip.com", json: false },
-] as const;
-
-function looksLikeIp(value: string): boolean {
-  return /^(\d{1,3}\.){3}\d{1,3}$/.test(value) || (/:/.test(value) && /^[0-9a-fA-F:.]+$/.test(value));
 }
 
 export const api = {
@@ -247,27 +238,18 @@ export const api = {
   /**
    * Look up this machine's public address.
    *
-   * Only ever called from the explicit "Check public IP" action. It contacts a
-   * third-party service and sends nothing but the request itself: no scan
+   * Only ever called from an explicit Check, Refresh or Retry. It contacts a
+   * third-party provider and sends nothing but the request itself: no scan
    * target, no result, no device data.
+   *
+   * The browser build answers from scripted providers instead of the real ones,
+   * so the demo, the screenshots and the browser suite never make an outbound
+   * request and never display a real person's address. The fallback logic
+   * itself is the same code in both builds.
    */
   async publicIp(signal?: AbortSignal): Promise<string> {
-    for (const provider of PUBLIC_IP_PROVIDERS) {
-      try {
-        const response = await fetch(provider.url, { signal });
-        if (!response.ok) continue;
-        const value = provider.json
-          ? String(((await response.json()) as { ip?: unknown }).ip ?? "").trim()
-          : (await response.text()).trim();
-        if (looksLikeIp(value)) return value;
-      } catch (error) {
-        // An aborted request is the operator navigating away, not a failure.
-        if (error instanceof DOMException && error.name === "AbortError") throw error;
-      }
-    }
-    throw new Error(
-      "Could not reach a public-IP service. Check your internet connection and try again.",
-    );
+    if (!isTauri()) return mock.publicIp(signal);
+    return lookupPublicIp(fetch, signal);
   },
 
   async wakeOnLan(mac: string): Promise<void> {

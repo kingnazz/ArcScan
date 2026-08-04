@@ -6,8 +6,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify("0.0.0-test"),
   },
   test: {
-    // jsdom, because the preferences module talks to localStorage and the
-    // keyboard helpers to window. Nothing here renders React.
+    // jsdom, because the preferences module talks to localStorage, the keyboard
+    // helpers talk to window, and the public-IP hook is exercised through a
+    // real React render.
     environment: "jsdom",
     include: ["src/**/*.test.ts"],
     restoreMocks: true,

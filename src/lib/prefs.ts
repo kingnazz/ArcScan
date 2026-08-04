@@ -40,7 +40,16 @@ export interface Settings {
   sortDir: SortDir;
   /** Scans kept before the oldest are pruned. */
   historyRetention: number;
-  /** Off by default: the lookup contacts a third party, so it is opt-in. */
+  /**
+   * Whether the public-IP lookup is offered at all.
+   *
+   * This has never controlled whether a request is made automatically: nothing
+   * in ArcScan has ever looked the address up without an explicit press, and
+   * that is still true. It controls whether the utility appears on the Scan
+   * screen, which is why 1.8.1 turns it on for new installs — every lookup is
+   * still opt-in, one press at a time. An operator who explicitly turned it off
+   * in an earlier version keeps it off.
+   */
   publicIpLookup: boolean;
   checkForUpdates: boolean;
   notifyOnChanges: boolean;
@@ -63,7 +72,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sortKey: "ip",
   sortDir: "asc",
   historyRetention: 100,
-  publicIpLookup: false,
+  publicIpLookup: true,
   checkForUpdates: true,
   notifyOnChanges: true,
   reducedMotion: false,
@@ -154,7 +163,10 @@ export function loadSettings(): Settings {
     sortKey: oneOf(stored.sortKey, SORT_KEYS, d.sortKey),
     sortDir: oneOf(stored.sortDir, ["asc", "desc"] as const, d.sortDir),
     historyRetention: clampNumber(stored.historyRetention, 5, 5_000, d.historyRetention),
-    publicIpLookup: stored.publicIpLookup === true,
+    // `!== false` rather than `=== true`, so an operator who explicitly turned
+    // the lookup off before 1.8.1 keeps it off while everyone else picks up the
+    // new default. Their stored choice is never rewritten.
+    publicIpLookup: stored.publicIpLookup !== false,
     checkForUpdates: stored.checkForUpdates !== false,
     notifyOnChanges: stored.notifyOnChanges !== false,
     reducedMotion: stored.reducedMotion === true,
