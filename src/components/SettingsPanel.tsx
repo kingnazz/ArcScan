@@ -5,7 +5,7 @@
 // with the privacy-relevant switches stated plainly rather than buried.
 
 import { useState } from "react";
-import { ExternalLink, Globe, RotateCcw } from "lucide-react";
+import { ExternalLink, RotateCcw } from "lucide-react";
 import { Button, Field, FieldRow, SectionHeading, Select } from "../ui/primitives";
 import { Drawer } from "../ui/Drawer";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -29,9 +29,7 @@ export interface SettingsPanelProps {
   version: string;
   native: boolean;
   publicIp: PublicIpState;
-  onCheckPublicIp: () => void;
   onClearPublicIp: () => void;
-  onCopyPublicIp: (ip: string) => void;
   onOpenPrivacy: () => void;
   /** Known network scopes; empty until a scan has been saved. */
   scopes: NetworkScope[];
@@ -303,8 +301,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
             <Toggle
               id="settings-public-ip"
-              label="Allow public IP lookups"
-              description="Enables the Check public IP action, which asks a third-party service (api64.ipify.org, then icanhazip.com) for the address your internet connection appears from. Nothing else is sent, and the result is kept for this session only."
+              label="Offer the public IP lookup"
+              description="Shows the Public IP utility on the Scan screen. It never looks anything up on its own: each check happens only when you press Check, and asks a third-party provider (api64.ipify.org, then icanhazip.com) for the address your internet connection appears from. Your targets, results and device details are never sent to them, and the answer is kept in memory for this session only."
               checked={settings.publicIpLookup}
               onChange={(publicIpLookup) => {
                 onChange({ publicIpLookup });
@@ -312,43 +310,20 @@ export function SettingsPanel(props: SettingsPanelProps) {
               }}
             />
 
-            {settings.publicIpLookup ? (
-              <div className="mt-2.5 rounded-md border border-border bg-surface-sunken px-2.5 py-2">
-                {props.publicIp.status === "ready" ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="mono text-[13px] text-text">{props.publicIp.ip}</span>
-                    <div className="flex gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          props.publicIp.status === "ready" && props.onCopyPublicIp(props.publicIp.ip)
-                        }
-                      >
-                        Copy
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={props.onClearPublicIp}>
-                        Forget
-                      </Button>
-                    </div>
-                  </div>
-                ) : props.publicIp.status === "error" ? (
-                  <div className="space-y-2">
-                    <p className="text-xs text-danger">{props.publicIp.message}</p>
-                    <Button size="sm" onClick={props.onCheckPublicIp}>
-                      Try again
-                    </Button>
-                  </div>
-                ) : (
-                  <Button
-                    size="sm"
-                    icon={<Globe className="h-3.5 w-3.5" />}
-                    busy={props.publicIp.status === "checking"}
-                    onClick={props.onCheckPublicIp}
-                  >
-                    Check public IP
-                  </Button>
-                )}
+            {/* The checking, copying and refreshing all live on the Scan screen,
+                so this is the session value and one way to forget it, not a
+                second set of controls competing with the first. */}
+            {settings.publicIpLookup && props.publicIp.status === "ready" ? (
+              <div className="mt-2.5 flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-2.5 py-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-wide text-text-muted">
+                    This session
+                  </p>
+                  <p className="mono truncate text-[13px] text-text">{props.publicIp.ip}</p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={props.onClearPublicIp}>
+                  Forget
+                </Button>
               </div>
             ) : null}
 

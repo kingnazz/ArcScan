@@ -42,6 +42,7 @@ import type {
 import type { ScanListeners } from "./api";
 import { DEFAULT_PORTS } from "./profiles";
 import { parsePorts, serviceWithPort } from "./format";
+import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
 
 /** The network the demo's live scans run against. */
 const DEMO_CIDR = "192.168.1.0/24";
@@ -993,6 +994,108 @@ function refreshedEvent(event: ChangeEvent): ChangeEvent {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// --- Public IP --------------------------------------------------------------
+//
+// The demo answers the lookup from scripted providers rather than the real
+// ones, for two reasons: the browser demo must never make an outbound request
+// on a visitor's behalf, and a screenshot must never contain a real public
+// address. The scripted providers are driven through the same
+// `lookupPublicIp` used in the packaged app, so the fallback order, the
+// response validation and the error normalisation under test are the real
+// ones rather than a second implementation of them.
+
+/** Reserved for documentation by RFC 5737, so it can never be anyone's address. */
+const DEMO_PUBLIC_IP = "203.0.113.24";
+/** A second documentation address, returned only by the fallback provider. */
+const DEMO_FALLBACK_PUBLIC_IP = "198.51.100.17";
+
+/** Selected with `?publicip=` in the browser demo. */
+export type PublicIpScenario = "ok" | "fallback" | "fail" | "flaky" | "slow";
+
+const PUBLIC_IP_SCENARIOS: PublicIpScenario[] = ["ok", "fallback", "fail", "flaky", "slow"];
+
+function publicIpScenario(): PublicIpScenario {
+  if (typeof window === "undefined") return "ok";
+  const value = new URLSearchParams(window.location.search).get("publicip");
+  return PUBLIC_IP_SCENARIOS.includes(value as PublicIpScenario)
+    ? (value as PublicIpScenario)
+    : "ok";
+}
+
+/** Attempts so far, so `flaky` can fail the first lookup and pass the retry. */
+let publicIpAttempts = 0;
+
+function abortableSleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * A `fetch` that answers only the two provider URLs, according to `scenario`.
+ *
+ * Delays are long enough that the loading state is a state a person can
+ * actually see and a test can actually assert on, and short enough that the
+ * suite is not slowed down by them.
+ */
+function scriptedProviderFetch(scenario: PublicIpScenario, attempt: number): typeof fetch {
+  const primaryUrl = PUBLIC_IP_PROVIDERS[0].url;
+
+  return async (input, init) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+    const primary = url === primaryUrl;
+
+    await abortableSleep(scenario === "slow" ? 3_400 : 420, init?.signal);
+
+    // A provider the demo cannot reach fails exactly as a browser would.
+    const unreachable = () => {
+      throw new TypeError("Failed to fetch");
+    };
+
+    switch (scenario) {
+      case "fail":
+        return unreachable();
+      case "flaky":
+        if (attempt <= 1) return unreachable();
+        break;
+      case "fallback":
+        // The first provider is up but broken, which is the case the fallback
+        // exists for and the one that never happens on demand.
+        if (primary) return new Response("upstream error", { status: 503 });
+        return new Response(`${DEMO_FALLBACK_PUBLIC_IP}\n`, {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        });
+      default:
+        break;
+    }
+
+    if (!primary) {
+      return new Response(`${DEMO_FALLBACK_PUBLIC_IP}\n`, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    return new Response(JSON.stringify({ ip: DEMO_PUBLIC_IP }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
 export const mock = {
   async scan(opts: ScanOptions, listeners: ScanListeners): Promise<ScanResult> {
     cancelRequested = false;
@@ -1381,6 +1484,16 @@ export const mock = {
     return [
       { interface: "Wi-Fi", ip: "192.168.1.27", prefix: 24, cidr: DEMO_CIDR, is_private: true },
     ];
+  },
+
+  /**
+   * The demo's public-IP lookup. Runs the real provider fallback against
+   * scripted providers, so no request leaves the browser and the address shown
+   * is always a documentation address.
+   */
+  async publicIp(signal?: AbortSignal): Promise<string> {
+    publicIpAttempts += 1;
+    return lookupPublicIp(scriptedProviderFetch(publicIpScenario(), publicIpAttempts), signal);
   },
 };
 

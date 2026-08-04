@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, DownloadCloud, X } from "lucide-react";
 import { AppHeader, type View } from "./components/AppHeader";
 import { CommandBar } from "./components/CommandBar";
+import { ContextBar } from "./components/ContextBar";
 import { ResultsToolbar } from "./components/ResultsToolbar";
 import { ResultsTable } from "./components/ResultsTable";
 import { DeviceDrawer } from "./components/DeviceDrawer";
@@ -897,6 +898,13 @@ export default function App() {
 
   const showStart = scan.mode === "idle" && scan.rows.length === 0;
   const localCidrs = useMemo(() => localNetworks.map((n) => n.cidr), [localNetworks]);
+  const copyPublicIp = useCallback(
+    (ip: string) => {
+      void api.copyText(ip);
+      toast.success("Public IP copied.");
+    },
+    [toast],
+  );
   const recommendFor = useCallback(
     (candidate: string) => recommendedProfile(candidate, localCidrs),
     [localCidrs],
@@ -919,6 +927,20 @@ export default function App() {
         }}
         updateBusy={updater.status === "checking"}
       />
+
+      {/* Scan-screen context only: which network this machine is on, and the
+          optional public-IP lookup. Inventory, Changes and History describe
+          stored data rather than the current connection, so they do not pay the
+          vertical space for it. */}
+      {view === "results" ? (
+        <ContextBar
+          localNetworks={localNetworks}
+          publicIp={publicIp.state}
+          publicIpEnabled={settings.publicIpLookup}
+          onCheckPublicIp={() => void publicIp.check()}
+          onCopyPublicIp={copyPublicIp}
+        />
+      ) : null}
 
       <CommandBar
         ref={targetInput}
@@ -1156,12 +1178,7 @@ export default function App() {
           version={APP_VERSION}
           native={api.native}
           publicIp={publicIp.state}
-          onCheckPublicIp={() => void publicIp.check()}
           onClearPublicIp={publicIp.clear}
-          onCopyPublicIp={(ip) => {
-            void api.copyText(ip);
-            toast.success("Public IP copied.");
-          }}
           onOpenPrivacy={() => void api.openPrivacy()}
           scopes={scopes}
           onRenameScope={(id, name) => void renameScope(id, name)}
