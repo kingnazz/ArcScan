@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Capture the product screenshots the website uses.
 //
-// Every shot comes from the real v1.8.1 interface driven in a browser against the
+// Every shot comes from the real v1.8.2 interface driven in a browser against the
 // built-in demo network, so the images can never show an older UI. The networks
 // are entirely fictional, so no real client, hostname, MAC address or public
 // address is ever in a published image.
@@ -72,7 +72,7 @@ async function waitForScanEnd() {
   await page.waitForTimeout(900);
 }
 
-console.log("Capturing ArcScan v1.8.1 screenshots");
+console.log("Capturing ArcScan v1.8.2 screenshots");
 
 // --- Dark theme -----------------------------------------------------------
 await page.goto(URL, { waitUntil: "networkidle" });
@@ -91,6 +91,35 @@ await page.getByLabel("Filter the inventory").selectOption("missing");
 await page.waitForTimeout(400);
 await shot("inventory-missing-dark");
 await page.getByLabel("Filter the inventory").selectOption("all");
+await page.waitForTimeout(300);
+
+// The Inventory with the device types discovery established, which is what
+// v1.8.2 is about. The Type column is optional, so it has to be turned on the
+// same way an operator would.
+await page.getByRole("button", { name: "Settings" }).click();
+{
+  const panel = page.getByRole("complementary", { name: "Settings" });
+  for (const key of ["type", "model"]) {
+    await panel.locator(`#settings-inventory-column-${key}`).click();
+    await page.waitForTimeout(120);
+  }
+}
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);
+await nav("Inventory").click();
+await page.locator("tbody tr").first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(400);
+await shot("inventory-types-dark");
+// Put the table back the way the other shots expect it.
+await page.getByRole("button", { name: "Settings" }).click();
+{
+  const panel = page.getByRole("complementary", { name: "Settings" });
+  for (const key of ["type", "model"]) {
+    await panel.locator(`#settings-inventory-column-${key}`).click();
+    await page.waitForTimeout(120);
+  }
+}
+await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
 
 // Two recognised networks with friendly names, sorted so the grouping is
@@ -149,6 +178,15 @@ await page.locator("tbody tr", { hasText: "Office Printer" }).first().dblclick()
 await page.getByRole("complementary").waitFor({ timeout: 5_000 });
 await page.waitForTimeout(300);
 await shot("device-dark");
+
+// The same drawer, scrolled to the Discovery section: the detected name, the
+// device type with its confidence, and the evidence behind it.
+{
+  const drawer = page.getByRole("complementary").last();
+  await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  await shot("device-discovery-dark");
+}
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 

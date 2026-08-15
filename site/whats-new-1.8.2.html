@@ -1,0 +1,606 @@
+<!doctype html>
+<!-- ArcScan site build: v1.8.2 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- No maximum-scale and no user-scalable=no: pinch zoom stays available. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>What's new in ArcScan 1.8.2: it now recognises more of what it finds</title>
+    <meta
+      name="description"
+      content="ArcScan 1.8.2 asks the local network what its devices are, using mDNS and SSDP, and shows detected names and device types with the evidence behind them. Local only, no credentials, no cloud service. Free and open source for Windows and macOS."
+    />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.2.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+
+    <!--
+      Identical to the home page: the only outbound request is the GitHub
+      release API that fills the download cards. No analytics, no web fonts, no
+      CDN, no third-party script of any kind.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'"
+    />
+
+    <link rel="stylesheet" href="arcscan.v5.css" />
+    <!-- The Inventory screenshot is the largest paint on this page. -->
+    <link
+      rel="preload"
+      as="image"
+      href="assets/shots/inventory-types-dark.webp"
+      imagesrcset="assets/shots/inventory-types-dark-800.webp 800w, assets/shots/inventory-types-dark.webp 1440w, assets/shots/inventory-types-dark@2x.webp 2880w"
+      imagesizes="(max-width: 62rem) 100vw, 34rem"
+      fetchpriority="high"
+    />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="ArcScan" />
+    <meta property="og:url" content="https://kingnazz.github.io/ArcScan/whats-new-1.8.2.html" />
+    <meta property="og:title" content="What's new in ArcScan 1.8.2" />
+    <meta
+      property="og:description"
+      content="ArcScan can now recognise more devices using mDNS and SSDP, while showing where each detected name and type came from."
+    />
+    <meta
+      property="og:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/inventory-types-dark.png"
+    />
+    <meta property="og:image:width" content="2880" />
+    <meta property="og:image:height" content="1800" />
+    <meta
+      property="og:image:alt"
+      content="The ArcScan Inventory with a Type column, showing a router, a computer, a printer, a television, a NAS, a camera and a game console, each with a confidence badge."
+    />
+    <meta property="article:published_time" content="2026-08-15" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="What's new in ArcScan 1.8.2" />
+    <meta
+      name="twitter:description"
+      content="ArcScan can now recognise more devices using mDNS and SSDP, while showing where each detected name and type came from."
+    />
+    <meta
+      name="twitter:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/inventory-types-dark.png"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "What's new in ArcScan 1.8.2",
+        "description": "ArcScan 1.8.2 asks the local network what its devices are, using mDNS and SSDP, and shows detected names and device types with the evidence behind them.",
+        "datePublished": "2026-08-15",
+        "inLanguage": "en",
+        "image": "https://kingnazz.github.io/ArcScan/assets/shots/inventory-types-dark.png",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kingnazz.github.io/ArcScan/whats-new-1.8.2.html"
+        },
+        "author": { "@type": "Organization", "name": "ArcScan" },
+        "publisher": { "@type": "Organization", "name": "ArcScan" },
+        "about": {
+          "@type": "SoftwareApplication",
+          "name": "ArcScan",
+          "applicationCategory": "UtilitiesApplication",
+          "applicationSubCategory": "Network Scanner",
+          "operatingSystem": "Windows 10, Windows 11, macOS 11 or later",
+          "softwareVersion": "1.8.2",
+          "url": "https://kingnazz.github.io/ArcScan/",
+          "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.2",
+          "license": "https://opensource.org/licenses/MIT",
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <img src="assets/logo.png" width="24" height="24" alt="" />
+          <span>ArcScan</span>
+        </a>
+
+        <nav aria-label="Primary">
+          <ul class="nav-links">
+            <li><a href="./#features">Features</a></li>
+            <li><a href="./#how">How it works</a></li>
+            <li><a href="./#faq">FAQ</a></li>
+            <li><a href="privacy.html">Privacy</a></li>
+            <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+          </ul>
+        </nav>
+
+        <a class="btn btn-primary btn-small nav-cta" href="#download">Download</a>
+
+        <button
+          class="nav-toggle"
+          type="button"
+          id="nav-toggle"
+          aria-expanded="false"
+          aria-controls="nav-panel"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          Menu
+        </button>
+      </div>
+
+      <div class="nav-panel" id="nav-panel" data-open="false">
+        <ul>
+          <li><a href="#names">Better names</a></li>
+          <li><a href="#types">Device types</a></li>
+          <li><a href="#local">Local only</a></li>
+          <li><a href="#unchanged">Unchanged</a></li>
+          <li><a href="./#features">Features</a></li>
+          <li><a href="./#faq">FAQ</a></li>
+          <li><a href="privacy.html">Privacy</a></li>
+          <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+        </ul>
+        <div class="wrap nav-panel-cta">
+          <a class="btn btn-primary" href="#download">Download ArcScan</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ============================================================ hero -->
+      <section class="hero" id="top">
+        <div class="wrap">
+          <p class="eyebrow">ArcScan 1.8.2</p>
+          <h1>
+            What's new in ArcScan 1.8.2
+          </h1>
+          <p class="lede">
+            ArcScan can now recognise more devices using mDNS and SSDP, while showing where each
+            detected name and type came from. Printers, televisions, routers, cameras and media
+            players already announce what they are on the local network. ArcScan asks, and tells you
+            what it heard, along with how much of it to believe.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-primary" id="hero-download" href="https://github.com/kingnazz/ArcScan/releases/latest">
+              <span class="os-glyph win" id="hero-glyph" aria-hidden="true"></span>
+              <span id="hero-label">Download ArcScan</span>
+            </a>
+            <a class="btn btn-secondary" href="./">Back to the ArcScan homepage</a>
+          </div>
+
+          <p class="release-line">
+            Version 1.8.2<span aria-hidden="true"> &middot; </span>free
+            and open source
+            <span aria-hidden="true"> &middot; </span
+            ><a
+              class="release-link"
+              id="release-notes-link"
+              href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.2"
+              rel="noopener"
+              >Full technical release notes on GitHub</a
+            >
+          </p>
+
+          <ul class="hero-facts">
+            <li>
+              <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>
+              Local network only, and no credentials
+            </li>
+            <li>
+              <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>
+              Installs over 1.8 and keeps everything
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- =========================================================== names -->
+      <section class="section" id="names">
+        <div class="split">
+          <div>
+            <p class="eyebrow">Better names</p>
+            <h2>Devices that have a name now show it.</h2>
+            <p class="lede">
+              A printer that publishes <span class="mono">Acme LaserFast 400</span> on the network
+              used to appear as <span class="mono">192.168.1.31</span>. Now it appears as what it
+              calls itself, and the Inventory says which protocol that came from.
+            </p>
+            <ul class="tags">
+              <li>Names devices publish over mDNS</li>
+              <li>Names devices publish over SSDP</li>
+              <li>Manufacturer and model</li>
+              <li>Advertised services</li>
+              <li>Searchable</li>
+              <li>In every export</li>
+            </ul>
+            <p>
+              <strong>A name you typed always wins.</strong> That rule comes before every other one.
+              ArcScan can name a device that had no name; it will never rename one you named. Where
+              both exist, the drawer shows yours as the name and the detected one underneath, so
+              nothing you chose is quietly replaced.
+            </p>
+            <p>
+              Names that describe a category rather than a device, such as
+              <span class="mono">printer</span>, <span class="mono">android</span> or
+              <span class="mono">UPnP Device</span>, are set aside, because two of them on one
+              network would read as the same thing. A device calling itself
+              <span class="mono">printer</span> keeps its hostname; one calling itself
+              <span class="mono">Front Office Printer</span> does not.
+            </p>
+          </div>
+
+          <figure class="frame">
+            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+            <img
+              src="assets/shots/inventory-types-dark.webp"
+              srcset="assets/shots/inventory-types-dark-800.webp 800w, assets/shots/inventory-types-dark.webp 1440w, assets/shots/inventory-types-dark@2x.webp 2880w"
+              sizes="(max-width: 62rem) 100vw, 34rem"
+              width="1440"
+              height="900"
+              alt="The ArcScan Inventory with an added Type column. A router, a computer, a printer, a television, a NAS, a camera and a game console each show a device type with a confidence badge reading HIGH, MEDIUM or LOW, and two devices show no type at all."
+              fetchpriority="high"
+              decoding="async"
+            />
+            <figcaption>
+              The Inventory with the optional Type and Model columns turned on. Two devices
+              advertise nothing, so they carry no type, which is the honest answer.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- =========================================================== types -->
+      <section class="section section-alt" id="types">
+        <div class="split">
+          <div>
+            <p class="eyebrow">Device types</p>
+            <h2>What it is, and how sure that is.</h2>
+            <p class="lede">
+              ArcScan will call a device a printer, a router, a television, a camera, a NAS and ten
+              other things, but only when something it saw actually supports that, and it always
+              says how strong the support was.
+            </p>
+            <p>
+              Every type carries one of four confidence words:
+            </p>
+            <ul class="tags">
+              <li>High confidence: the device declared it, and something agrees</li>
+              <li>Medium confidence: one declaration, uncorroborated</li>
+              <li>Low confidence: inferred from a port or a manufacturer</li>
+              <li>Unknown: preferred over a guess</li>
+            </ul>
+            <p>
+              Four words rather than a percentage, because there is no sense in which a printing
+              service is 0.7 of a printer, and a number invites arithmetic that is not justified.
+              The confidence sits beside the type everywhere it appears, including in exports.
+            </p>
+            <p>
+              The device panel shows what the answer rests on, not just the answer. Where the
+              evidence supports two readings, both are shown, because a storage device that also
+              serves media is not a contradiction worth hiding. A wrong type is worse than no type,
+              so ArcScan says Unknown rather than guessing.
+            </p>
+          </div>
+
+          <figure class="frame">
+            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+            <img
+              src="assets/shots/device-discovery-dark.webp"
+              srcset="assets/shots/device-discovery-dark-800.webp 800w, assets/shots/device-discovery-dark.webp 1440w, assets/shots/device-discovery-dark@2x.webp 2880w"
+              sizes="(max-width: 62rem) 100vw, 34rem"
+              width="1440"
+              height="900"
+              alt="The ArcScan device panel for a printer, scrolled to a Discovery section. It shows Detected as Acme LaserFast 400 with a note that the operator's name is used instead, Device type Printer with a High confidence badge, the manufacturer, the model, the mDNS host name, the SSDP name, and that it was discovered by mDNS and SSDP."
+              loading="lazy"
+              decoding="async"
+            />
+            <figcaption>
+              The operator named this printer, so their name is what shows. The detected name is
+              kept and offered underneath rather than thrown away.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- =========================================================== local -->
+      <section class="section" id="local">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Local only</p>
+            <h2>It asks your network, and nothing else.</h2>
+            <p>
+              Discovery is the kind of feature that could quietly start talking to the internet.
+              This one does not, and the rules are worth stating plainly.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>Your network, or nothing</h3>
+              <p>
+                Discovery runs only when what you are scanning is inside a network this computer is
+                actually attached to. Remote subnets, routed targets and public addresses never
+                receive a single query. The queries are sent with a time-to-live of one, so they
+                cannot leave the local link even if a router would have carried them.
+              </p>
+            </article>
+
+            <article>
+              <h3>No credentials, ever</h3>
+              <p>
+                ArcScan sends no username, no password, no community string and no key. It has none
+                and asks for none. Everything it learns comes from what devices announce to anyone
+                who listens.
+              </p>
+            </article>
+
+            <article>
+              <h3>No cloud service</h3>
+              <p>
+                Nothing about your network, your devices or your inventory is sent anywhere.
+                There is no lookup service, no fingerprint database and no telemetry. Discovery
+                talks to your local link and to nothing else.
+              </p>
+            </article>
+
+            <article>
+              <h3>Read-only, and bounded</h3>
+              <p>
+                ArcScan asks questions. It configures nothing, changes nothing and logs into
+                nothing. Every listening window, every count and every document size has a hard
+                limit, so a busy or misbehaving network costs the same few seconds as a quiet one.
+              </p>
+            </article>
+
+            <article>
+              <h3>Device pages are checked before they are read</h3>
+              <p>
+                When a device offers a description page, ArcScan reads it for the manufacturer and
+                model, but only after checking that the address really is on the network being
+                scanned. Public addresses, loopback, other private subnets, redirects and
+                addresses carrying credentials are all refused, and the address that was checked is
+                the address that gets used.
+              </p>
+            </article>
+
+            <article>
+              <h3>Everything a device says is treated as text</h3>
+              <p>
+                Names, models and descriptions come from unauthenticated devices, so ArcScan treats
+                them as hostile input: bounded in length, stripped of control characters, and shown
+                as text rather than interpreted. Nothing a device sends can act on your machine.
+              </p>
+            </article>
+          </div>
+
+          <p class="footnote">
+            You can switch all of it off in Settings, and switch off the description-page reading
+            on its own. The <a href="privacy.html">privacy page</a> lists every request ArcScan
+            makes.
+          </p>
+        </div>
+      </section>
+
+      <!-- ========================================================= upgrade -->
+      <section class="section" id="upgrade">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Upgrading</p>
+            <h2>Install it over 1.8 and carry on.</h2>
+            <p>
+              Install ArcScan 1.8.2 over 1.8, 1.7 or 1.6 without losing scans, device names, notes,
+              statuses, network names or history.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>Your inventory is kept</h3>
+              <p>
+                Every scan, device, name, note, status, network and date carries straight over. The
+                database gains two tables for what devices announce, and nothing already in it is
+                rewritten. No database change is needed beyond that, and coming from 1.7 or 1.6 the
+                usual 1.8 upgrade runs once, in place.
+              </p>
+            </article>
+
+            <article>
+              <h3>Your settings are kept</h3>
+              <p>
+                Theme, density, columns, profiles, ports and limits are all preserved. Local
+                discovery is switched on for new installs and for upgrades, and can be switched off
+                in Settings at any time, along with the reading of device description pages on its
+                own.
+              </p>
+            </article>
+
+            <article>
+              <h3>Nothing is renamed</h3>
+              <p>
+                A device you named keeps your name for it. A device you never named may gain a name
+                it announces, shown alongside the address it used to show. Nothing you wrote is
+                overwritten, and no device is merged with another because two of them announce the
+                same thing.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= unchanged -->
+      <section class="section section-alt" id="unchanged">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Unchanged</p>
+            <h2>Everything 1.8 does, it still does.</h2>
+            <p>
+              Discovery adds to what ArcScan knows about a device. It changes nothing about how
+              devices are recognised, or what a scan means.
+            </p>
+          </div>
+
+          <ul class="tags">
+            <li>The same four views</li>
+            <li>The same scanning behaviour</li>
+            <li>Devices still matched by MAC, then hostname, then address</li>
+            <li>A detected name never merges two devices</li>
+            <li>The same present, missing and unknown rules</li>
+            <li>Partial scans still never mark a device missing</li>
+            <li>The same networks and network names</li>
+            <li>The same history and comparisons</li>
+            <li>The same CSV, JSON and XML exports</li>
+            <li>No account, no cloud, no subscription</li>
+            <li>Scans and inventory stay on your computer</li>
+            <li>IPv4 only</li>
+            <li>Installers are not code signed</li>
+          </ul>
+
+          <p class="footnote">
+            An IPv6 address a device announces is shown as extra information, with a note saying so.
+            ArcScan scans IPv4 only, and showing an address is not a claim that anything was scanned
+            at it. Because the installers carry no paid publisher certificate, Windows and macOS
+            both warn the first time you open one. Coming from an earlier version? Read
+            <a href="whats-new-1.8.1.html">what's new in ArcScan 1.8.1</a> and
+            <a href="whats-new-1.8.0.html">what's new in ArcScan 1.8</a>.
+          </p>
+        </div>
+      </section>
+
+      <section class="section section-alt" id="download">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Get ArcScan 1.8.2.</h2>
+            <p>
+              Installers are published on GitHub Releases and downloaded directly from there, so
+              this site never re-hosts a binary.
+            </p>
+          </div>
+
+          <ul class="downloads" id="download-list">
+            <li class="dl" data-os="win-x64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>x64 (Intel or AMD)</dd>
+                <dt>Installer</dt>
+                <dd>NSIS setup (.exe)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.2</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for Windows x64
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="win-arm64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows on ARM</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>ARM64</dd>
+                <dt>Installer</dt>
+                <dd>NSIS setup (.exe)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.2</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for Windows ARM64
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="mac">
+              <div class="dl-top">
+                <span class="os-glyph apple" aria-hidden="true"></span>
+                <h3>macOS</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>Universal (Apple Silicon and Intel)</dd>
+                <dt>Installer</dt>
+                <dd>Disk image (.dmg)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.2</dd>
+                <dt>Size</dt>
+                <dd data-field="size">See the release page</dd>
+              </dl>
+              <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                Download for macOS
+              </a>
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+          </ul>
+
+          <p class="footnote" id="download-status">
+            Every link above points at the latest release. Exact file sizes are filled in from the
+            GitHub API when it is reachable.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">All releases</a>
+            <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.2" rel="noopener">
+              Full technical release notes
+            </a>
+            <a href="whats-new-1.8.1.html" class="link-arrow">What's new in ArcScan 1.8.1</a>
+            <a href="whats-new-1.8.0.html" class="link-arrow">What's new in ArcScan 1.8</a>
+            <a href="./" class="link-arrow">Back to the ArcScan homepage</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-inner">
+          <a class="brand" href="./">
+            <img src="assets/logo.png" width="22" height="22" alt="" />
+            <span>ArcScan</span>
+          </a>
+          <nav aria-label="Footer">
+            <a href="./#download">Download</a>
+            <a href="whats-new-1.8.2.html" aria-current="page">What's new</a>
+            <a href="whats-new-1.8.1.html">What's new in 1.8.1</a>
+            <a href="whats-new-1.8.0.html">What's new in 1.8</a>
+            <a href="./#faq">FAQ</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/kingnazz/ArcScan" rel="noopener">Source</a>
+            <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Releases</a>
+          </nav>
+        </div>
+        <p class="footer-note">
+          ArcScan is a read-only network discovery tool, for networks you own or are authorised to
+          inspect. Free and open source under the MIT license. Every screenshot on this page shows a
+          fictional demo network, and the public address shown is one reserved for documentation.
+        </p>
+      </div>
+    </footer>
+
+    <script src="arcscan.v5.js" defer></script>
+  </body>
+</html>
