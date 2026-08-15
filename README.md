@@ -105,10 +105,11 @@ this precisely, including what GitHub sees when you download a release.
 
 ## Documentation
 
-The [user guide](docs/USER-GUIDE.md) covers profiles, targets, live results, the
-Inventory, the presence rules, Changes, networks, history, exporting, device
-actions, keyboard shortcuts, where the database lives, upgrading, uninstalling,
-troubleshooting, known limitations, and responsible scanning.
+The [user guide](docs/USER-GUIDE.md) covers profiles, targets, live results,
+local device discovery, the Inventory, the presence rules, Changes, networks,
+history, exporting, device actions, keyboard shortcuts, where the database
+lives, upgrading, uninstalling, troubleshooting, known limitations, and
+responsible scanning.
 
 - [Auto-update setup](docs/AUTO_UPDATE.md)
 - [Website](site/README.md)

@@ -14,6 +14,7 @@ Everything ArcScan does, in one document. For a shorter overview see the
 - [Advanced scan settings](#advanced-scan-settings)
 - [Live results](#live-results)
 - [Reading the results table](#reading-the-results-table)
+- [Local device discovery](#local-device-discovery)
 - [The Inventory](#the-inventory)
 - [Present, missing and unknown](#present-missing-and-unknown)
 - [Names, status and notes](#names-status-and-notes)
@@ -177,6 +178,97 @@ turned off individually in Settings. Name, IP address and State are always shown
 Note that **Response** is not a ping time. It is the fastest of the ICMP
 round-trip and the TCP connection time, because a device that ignores ICMP still
 has a measurable latency. The tooltip shows both.
+
+## Local device discovery
+
+From v1.8.2, a scan of a network this computer is attached to also asks that
+network what its devices are. Printers, televisions, routers, cameras, media
+players and smart-home equipment already announce themselves over two protocols
+built for the purpose, and ArcScan listens for a few seconds.
+
+### What it asks, and where
+
+| Protocol | What ArcScan sends | Where |
+|---|---|---|
+| mDNS | A query for the services on the link, then a query about the ones it named | `224.0.0.251:5353` |
+| SSDP | An `M-SEARCH` for `ssdp:all` and `upnp:rootdevice` | `239.255.255.250:1900` |
+
+Both are sent with a time-to-live of one, so they cannot leave the local link
+even if a router would have forwarded them.
+
+Where a device advertises a description page over SSDP, ArcScan reads it for the
+manufacturer and model. It connects only to an address on the network being
+scanned, and refuses public addresses, loopback, link-local addresses, other
+private subnets, redirects, addresses carrying credentials, and `https` — see
+[Known limitations](#known-limitations) for why that last one.
+
+### When it does not run
+
+- The target is not inside a network this computer is attached to
+- The Remote subnet profile is selected
+- Local discovery is switched off in Settings
+- No local interface address is available to send from
+
+In every one of those cases no multicast query is sent at all, and History says
+so rather than leaving you to guess.
+
+### What you get
+
+**Detected names.** A printer that publishes `Acme LaserFast 400` shows that
+instead of its address. **A name you typed always wins** — discovery can name a
+device that had no name, but it will never rename one you named. Names that
+describe a category rather than a device (`printer`, `android`, `UPnP Device`)
+are set aside, because two of them on one network would read as the same thing.
+
+**Device types**, one of: router, printer, computer, phone, tablet, television,
+media device, camera, NAS, game console, smart-home device, network equipment,
+speaker, or unknown.
+
+**A confidence**, which is a word rather than a number:
+
+| Confidence | What it means |
+|---|---|
+| High | The device declared its own kind through a protocol built for the purpose, *and* something independent agrees |
+| Medium | One protocol-level declaration, uncorroborated |
+| Low | Inferred from an open port, a manufacturer or a name |
+| Unknown | Nothing supports a type. Preferred over a guess |
+
+**The evidence**, in the device panel, so you can see what an answer rests on
+rather than taking it on trust. Where the evidence supports two readings, both
+are shown.
+
+### In the Inventory
+
+Five optional columns — Type, Detected name, Model, Discovered by, Last
+discovered — and a device-type filter, all off by default. Search reaches
+detected names, models, types and advertised services, and finds a service by
+either name: `_ipp._tcp` and `IPP printing` both reach the printer.
+
+### What it never does
+
+- Sends no credentials of any kind
+- Contacts no cloud service, lookup service or fingerprint database
+- Configures nothing and changes nothing on any device
+- Never sends anything about your network anywhere
+- Never opens a device's own web page by itself
+
+Everything a device says is treated as hostile input: bounded in length,
+stripped of control characters, and shown as text rather than interpreted.
+
+### Discovery and Changes
+
+Discovery adds to the Changes list only for changes worth reviewing: a
+high-confidence detected name that changed materially, a high-confidence device
+type that changed, a meaningful service that appeared or stopped being
+advertised, and a manufacturer or model change.
+
+It stays quiet about the first time it hears a device, about anything below high
+confidence, about whitespace and casing, about TTLs, cache lifetimes, boot ids
+and server banners, and about a description it could not fetch. A service is
+only reported as gone after **two consecutive** discovery-complete scans miss
+it, because one missed multicast response is ordinary on Wi-Fi.
+
+A scan you stopped records no discovery changes at all.
 
 ## The Inventory
 
@@ -524,12 +616,18 @@ separately by the application window and are not in this file.
 
 ## Upgrading
 
-Install v1.8.1 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
+Install v1.8.2 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
 launch ArcScan migrates the database in place.
 
-From v1.8.0 the upgrade changes nothing in the database at all: v1.8.1 is a
-visual release plus the public-IP lookup moving from Settings to the Scan
-screen.
+From v1.8.x the upgrade adds two tables for what devices announce about
+themselves, and rewrites nothing already stored. Every scan, device, name, note,
+status, network and date carries straight over. No discovery data is
+backfilled: there is no historical record to derive it from, because an older
+scan recorded which ports answered rather than what any device advertised. Every
+device simply gains a discovery record the next time its network is scanned.
+
+Local discovery is on after the upgrade. Switch it off in Settings if you would
+rather a scan behave exactly as it did in v1.8.1.
 
 From v1.7.1 the upgrade is small: the Inventory and the presence states are
 computed from the scans you already have, so they are populated the moment you
@@ -607,7 +705,25 @@ is a broadcast, so it does not cross a router.
 
 ## Known limitations
 
-- **IPv4 only.** IPv6 discovery is not implemented.
+- **IPv4 only.** IPv6 scanning is not implemented. An IPv6 address a device
+  announces over mDNS is shown as supplemental information, and showing it is
+  not a claim that anything was scanned at it.
+- **Some devices are not heard by discovery.** ArcScan asks from an ephemeral
+  port with the reply directed back to it, rather than binding port 5353, which
+  would collide with the Bonjour or Avahi responder already running on your
+  machine. A device that ignores that and answers only to the multicast group is
+  not heard.
+- **A firewall that blocks outbound multicast** means discovery finds nothing.
+  ArcScan reports that as no discovery rather than as no devices.
+- **`https` device description pages are never read.** A local device serves one
+  under a self-signed certificate for an address, which nothing can verify;
+  reading it would mean accepting a certificate ArcScan cannot check. The SSDP
+  headers still yield a manufacturer and a device type.
+- **Discovery does not reach routed targets.** Multicast does not cross a
+  router, so a remote scan identifies devices exactly as v1.8.1 did.
+- **A device that advertises nothing gains nothing.** Discovery reports what
+  devices announce; a machine that announces nothing is as identifiable as it
+  was before.
 - **No continuous monitoring.** ArcScan scans when you ask and compares with the
   previous scan. It does not watch a network or send alerts. Present and missing
   describe what the latest completed scan found, not what is true right now.
