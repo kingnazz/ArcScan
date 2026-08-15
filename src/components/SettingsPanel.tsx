@@ -292,6 +292,39 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <div className="divider" />
 
           <section>
+            <SectionHeading>Local discovery</SectionHeading>
+            <p className="mb-3 text-xs leading-relaxed text-text-secondary">
+              Printers, TVs, routers, cameras and media devices announce themselves on the local
+              network. ArcScan can ask, which is how it recognises more of what it finds. It sends
+              multicast queries on your own network only, uses no credentials, and contacts no
+              cloud service. A scan of a remote or routed target never sends them at all, and
+              results stay on this computer.
+            </p>
+
+            <Toggle
+              id="settings-local-discovery"
+              label="Use local device discovery"
+              description="Sends mDNS and SSDP queries on the network being scanned, and uses the replies to work out device names and types. Turning this off makes a scan behave exactly as it did before this feature existed."
+              checked={settings.localDiscovery}
+              onChange={(localDiscovery) => onChange({ localDiscovery })}
+            />
+
+            {settings.localDiscovery ? (
+              <div className="mt-3">
+                <Toggle
+                  id="settings-device-descriptions"
+                  label="Read local device descriptions"
+                  description="When a device advertises a description page over SSDP, ArcScan reads it for the manufacturer and model. It only ever connects to an address on the network being scanned — never to the internet, another subnet, or a redirect — and it fetches nothing else."
+                  checked={settings.readDeviceDescriptions}
+                  onChange={(readDeviceDescriptions) => onChange({ readDeviceDescriptions })}
+                />
+              </div>
+            ) : null}
+          </section>
+
+          <div className="divider" />
+
+          <section>
             <SectionHeading>Network requests</SectionHeading>
             <p className="mb-3 text-xs leading-relaxed text-text-secondary">
               Scanning is entirely local. ArcScan never sends your targets, results, device names,

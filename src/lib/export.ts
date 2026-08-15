@@ -8,6 +8,7 @@ import type { ChangeEvent, ExportFormat, HostResult, InventoryRow } from "../typ
 import type { DeviceRow } from "./live";
 import { rowName } from "./live";
 import { serviceWithPort } from "./format";
+import { deviceTypeLabel, serviceName, sourceLabel } from "./discovery";
 
 function csvField(value: string): string {
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
@@ -159,6 +160,11 @@ export const CHANGE_TYPE_LABEL: Record<ChangeEvent["change_type"], string> = {
   os_changed: "Operating system change",
   mac_changed: "MAC address change",
   ports_changed: "Service change",
+  detected_name_changed: "Detected name change",
+  device_type_changed: "Device type change",
+  service_appeared: "Service appeared",
+  service_disappeared: "Service no longer advertised",
+  model_changed: "Model change",
 };
 
 const CHANGE_STATE_LABEL: Record<ChangeEvent["state"], string> = {
@@ -183,6 +189,14 @@ const INVENTORY_HEADERS = [
   "First seen",
   "Last seen",
   "Observations",
+  "Detected name",
+  "Device type",
+  "Type confidence",
+  "Discovered by",
+  "Detected manufacturer",
+  "Model",
+  "Advertised services",
+  "Last discovered",
   "Notes",
 ];
 
@@ -206,6 +220,21 @@ function inventoryRecord(row: InventoryRow, notes: string): Record<string, strin
     first_seen: row.first_seen,
     last_seen: row.last_seen,
     observations: String(row.observation_count),
+    // Discovery columns. Empty rather than "Unknown" when no discovery-capable
+    // scan has reached the device: a blank cell says "not established", where
+    // the word would read as an answer.
+    detected_name: row.discovery?.detected_name ?? "",
+    device_type: row.discovery ? deviceTypeLabel(row.discovery.device_type) : "",
+    type_confidence: row.discovery?.type_confidence ?? "",
+    discovered_by: (row.discovery?.sources ?? []).map(sourceLabel).join(" "),
+    detected_manufacturer: row.discovery?.manufacturer ?? "",
+    model: row.discovery?.model_name ?? "",
+    // Both spellings, space-separated: the protocol name a script would match
+    // on and the words a person would read.
+    advertised_services: (row.discovery?.services ?? [])
+      .map((service) => `${service} (${serviceName(service)})`)
+      .join(", "),
+    last_discovered: row.discovery?.last_discovered_at ?? "",
     notes,
   };
 }

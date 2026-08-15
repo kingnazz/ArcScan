@@ -196,7 +196,7 @@ describe("inventory export", () => {
     const csv = buildInventoryExport([inventoryRow()], "csv");
     const lines = csv.trimEnd().split("\n");
     expect(lines[0]).toBe(
-      "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Notes",
+      "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type confidence,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes",
     );
     expect(lines).toHaveLength(2);
   });

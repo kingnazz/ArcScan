@@ -5,6 +5,7 @@
 
 import type { ChangeEvent, ChangeType } from "../types";
 import { serviceWithPort } from "./format";
+import { deviceTypeLabel, serviceName } from "./discovery";
 
 /** The filters the inbox header offers, in the order they appear. */
 export type ChangeView =
@@ -203,6 +204,14 @@ export function describeChange(event: ChangeEvent): string {
       }
       return parts.join(" · ") || "Open services changed";
     }
+    case "service_appeared":
+      return `Now advertising ${serviceName(event.new_value ?? "a service")}`;
+    case "service_disappeared":
+      // The wording is careful: ArcScan knows the device stopped *advertising*
+      // it, which is not the same as the service being switched off.
+      return `No longer advertising ${serviceName(event.old_value ?? "a service")}`;
+    case "device_type_changed":
+      return `${deviceTypeLabel(event.old_value)} → ${deviceTypeLabel(event.new_value)}`;
     default:
       return `${event.old_value ?? "none"} → ${event.new_value ?? "none"}`;
   }

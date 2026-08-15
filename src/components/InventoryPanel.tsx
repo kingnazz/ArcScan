@@ -36,6 +36,7 @@ import {
   type InventorySortKey,
   type SortDirection,
 } from "../lib/inventory";
+import { confidenceTone, deviceTypeLabel, sourcesLabel } from "../lib/discovery";
 import type { Density } from "../lib/prefs";
 import type { ExportFormat, InventoryRow, NetworkOption, PresenceState } from "../types";
 
@@ -72,6 +73,8 @@ export interface InventoryPanelProps {
   /** Says exactly what an export would contain, e.g. "Exports 9 selected devices". */
   exportScopeLabel: string;
   onStartScan: () => void;
+  /** Device types present in the unfiltered set, for the type filter. */
+  deviceTypes: string[];
 }
 
 export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
@@ -213,6 +216,29 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
             </Select>
           ) : null}
 
+          {/* Offered only once discovery has actually typed something: a
+              filter whose every option is Unknown is a control that does
+              nothing. */}
+          {props.deviceTypes.length > 1 ? (
+            <Select
+              aria-label="Filter by device type"
+              className="w-40 shrink-0"
+              value={filter.deviceType ?? ""}
+              onChange={(event) =>
+                onFilterChange({
+                  deviceType: event.target.value === "" ? null : event.target.value,
+                })
+              }
+            >
+              <option value="">All types</option>
+              {props.deviceTypes.map((type) => (
+                <option key={type} value={type}>
+                  {deviceTypeLabel(type)}
+                </option>
+              ))}
+            </Select>
+          ) : null}
+
           <p className="shrink-0 text-xs text-text-muted" aria-live="polite">
             {rows.length === totalRows
               ? inventoryHeadline({ total: totalRows, ...counts })
@@ -325,7 +351,12 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
               action={
                 <Button
                   onClick={() =>
-                    onFilterChange({ query: "", view: "all", networkId: null })
+                    onFilterChange({
+                      query: "",
+                      view: "all",
+                      networkId: null,
+                      deviceType: null,
+                    })
                   }
                 >
                   Clear the filters
@@ -567,8 +598,63 @@ function InventoryRowView({
           {row.previous_ips[0] ?? <span className="empty-value" />}
         </td>
       ) : null}
+
+      {show("type") ? (
+        <td className="max-w-[11rem]">
+          {row.discovery && row.discovery.device_type !== "unknown" ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="truncate">{deviceTypeLabel(row.discovery.device_type)}</span>
+              <Badge tone={confidenceTone(row.discovery.type_confidence)}>
+                {row.discovery.type_confidence}
+              </Badge>
+            </span>
+          ) : (
+            <span className="empty-value" />
+          )}
+        </td>
+      ) : null}
+
+      {show("detected_name") ? (
+        <td
+          className="max-w-[14rem] truncate text-text-secondary"
+          title={row.discovery?.detected_name ?? ""}
+        >
+          {row.discovery?.detected_name ?? <span className="empty-value" />}
+        </td>
+      ) : null}
+
+      {show("model") ? (
+        <td className="max-w-[12rem] truncate text-text-secondary" title={modelTitle(row)}>
+          {modelTitle(row) || <span className="empty-value" />}
+        </td>
+      ) : null}
+
+      {show("discovery_sources") ? (
+        <td className="max-w-[10rem] truncate text-text-secondary">
+          {row.discovery ? sourcesLabel(row.discovery.sources) : <span className="empty-value" />}
+        </td>
+      ) : null}
+
+      {show("last_discovered") ? (
+        <td className="text-right text-text-muted" title={row.discovery?.last_discovered_at ?? ""}>
+          {row.discovery?.last_discovered_at ? (
+            formatRelative(row.discovery.last_discovered_at)
+          ) : (
+            <span className="empty-value" />
+          )}
+        </td>
+      ) : null}
     </tr>
   );
+}
+
+/** Manufacturer and model as one cell, without repeating the manufacturer. */
+function modelTitle(row: InventoryRow): string {
+  const make = row.discovery?.manufacturer?.trim() ?? "";
+  const model = row.discovery?.model_name?.trim() ?? "";
+  if (!model) return make;
+  if (make && !model.toLowerCase().startsWith(make.toLowerCase())) return `${make} ${model}`;
+  return model;
 }
 
 /**

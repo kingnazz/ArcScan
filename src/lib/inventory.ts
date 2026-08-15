@@ -6,6 +6,7 @@
 
 import type { InventoryRow, PresenceState } from "../types";
 import { ipToNum, serviceLabel } from "./format";
+import { deviceTypeLabel, discoveryHaystack, serviceName } from "./discovery";
 
 export type InventoryColumn =
   | "device"
@@ -20,7 +21,12 @@ export type InventoryColumn =
   | "first_seen"
   | "observations"
   | "response"
-  | "previous";
+  | "previous"
+  | "type"
+  | "detected_name"
+  | "model"
+  | "discovery_sources"
+  | "last_discovered";
 
 export interface InventoryColumnDef {
   key: InventoryColumn;
@@ -56,6 +62,14 @@ export const INVENTORY_COLUMNS: InventoryColumnDef[] = [
   { key: "observations", label: "Scans", priority: 3, optional: true, align: "right" },
   { key: "response", label: "Response", priority: 3, optional: true, align: "right" },
   { key: "previous", label: "Previous address", priority: 3, optional: true },
+  // Discovery columns are optional and off by default. The compact default set
+  // is the point of the table; someone who cares about device types turns the
+  // column on once and it stays on.
+  { key: "type", label: "Type", priority: 3, optional: true },
+  { key: "detected_name", label: "Detected name", priority: 3, optional: true },
+  { key: "model", label: "Model", priority: 3, optional: true },
+  { key: "discovery_sources", label: "Discovered by", priority: 3, optional: true },
+  { key: "last_discovered", label: "Last discovered", priority: 3, optional: true, align: "right" },
 ];
 
 export const OPTIONAL_INVENTORY_COLUMNS = INVENTORY_COLUMNS.filter((c) => c.optional);
@@ -125,12 +139,22 @@ export interface InventoryFilter {
   view: InventoryView;
   /** Null means every network. */
   networkId: number | null;
+  /**
+   * Null means every type.
+   *
+   * `"unknown"` selects devices discovery could not type *and* devices it never
+   * reached — from the operator's side those are the same question ("what does
+   * ArcScan not recognise?"), and splitting them would need a fourth state
+   * nobody asked for.
+   */
+  deviceType: string | null;
 }
 
 export const EMPTY_INVENTORY_FILTER: InventoryFilter = {
   query: "",
   view: "all",
   networkId: null,
+  deviceType: null,
 };
 
 /**
@@ -157,6 +181,9 @@ export function inventoryHaystack(row: InventoryRow): string {
     row.open_ports.join(" "),
     row.open_ports.map(serviceLabel).join(" "),
     row.notes_excerpt ?? "",
+    // Detected name, model, type and advertised services, each reachable by
+    // both its protocol spelling and its friendly one.
+    discoveryHaystack(row.discovery),
   ]
     .join(" ")
     .toLowerCase();
@@ -192,10 +219,32 @@ export function filterInventory(rows: InventoryRow[], filter: InventoryFilter): 
   const terms = query ? query.split(/\s+/) : [];
   return rows.filter((row) => {
     if (filter.networkId != null && row.network_scope_id !== filter.networkId) return false;
+    if (filter.deviceType != null && !matchesDeviceType(row, filter.deviceType)) return false;
     if (!matchesView(row, filter.view)) return false;
     if (terms.length === 0) return true;
     const hay = inventoryHaystack(row);
     return terms.every((term) => hay.includes(term));
+  });
+}
+
+/** True when a row belongs under a device-type filter. */
+export function matchesDeviceType(row: InventoryRow, deviceType: string): boolean {
+  const actual = row.discovery?.device_type ?? "unknown";
+  return actual === deviceType;
+}
+
+/** The device types actually present in a set of rows, for the filter menu. */
+export function presentDeviceTypes(rows: InventoryRow[]): string[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const type = row.discovery?.device_type ?? "unknown";
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  // Alphabetical by the word a person reads, with Unknown last however it sorts.
+  return [...counts.keys()].sort((a, b) => {
+    if (a === "unknown") return 1;
+    if (b === "unknown") return -1;
+    return deviceTypeLabel(a).localeCompare(deviceTypeLabel(b));
   });
 }
 
@@ -256,6 +305,21 @@ function compareBy(a: InventoryRow, b: InventoryRow, key: InventorySortKey): num
       );
     case "previous":
       return blankLast(a.previous_ips[0] ?? null, b.previous_ips[0] ?? null);
+    case "type":
+      return deviceTypeLabel(a.discovery?.device_type).localeCompare(
+        deviceTypeLabel(b.discovery?.device_type),
+      );
+    case "detected_name":
+      return blankLast(a.discovery?.detected_name ?? null, b.discovery?.detected_name ?? null);
+    case "model":
+      return blankLast(a.discovery?.model_name ?? null, b.discovery?.model_name ?? null);
+    case "discovery_sources":
+      return (a.discovery?.sources.length ?? 0) - (b.discovery?.sources.length ?? 0);
+    case "last_discovered":
+      return blankLast(
+        a.discovery?.last_discovered_at ?? null,
+        b.discovery?.last_discovered_at ?? null,
+      );
   }
 }
 
@@ -297,6 +361,11 @@ export function inventoryHeadline(counts: {
   if (counts.missing > 0) parts.push(`${counts.missing.toLocaleString()} missing`);
   if (counts.unknown > 0) parts.push(`${counts.unknown.toLocaleString()} unknown`);
   return parts.join(" · ");
+}
+
+/** The services a row advertises, for the table cell. */
+export function rowServices(row: InventoryRow): string[] {
+  return (row.discovery?.services ?? []).map(serviceName);
 }
 
 export const PRESENCE_LABEL: Record<PresenceState, string> = {
