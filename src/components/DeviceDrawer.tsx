@@ -33,7 +33,21 @@ import { PRESENCE_HINT } from "../lib/inventory";
 import { describeChange } from "../lib/changes";
 import { CHANGE_TYPE_LABEL } from "../lib/export";
 import { rowName, type DeviceRow } from "../lib/live";
-import type { ChangeEvent, DeviceDetail, DeviceStatus, FieldChange } from "../types";
+import {
+  CONFIDENCE_HINT,
+  confidenceLabel,
+  confidenceTone,
+  deviceTypeLabel,
+  serviceName,
+  sourcesLabel,
+} from "../lib/discovery";
+import type {
+  ChangeEvent,
+  DeviceDetail,
+  DeviceDiscovery,
+  DeviceStatus,
+  FieldChange,
+} from "../types";
 
 const STATUS_LABEL: Record<DeviceStatus, string> = {
   unclassified: "Not classified",
@@ -335,6 +349,16 @@ export function DeviceDrawer({
           )}
         </section>
 
+        {rowDetail?.discovery ? (
+          <>
+            <div className="divider" />
+            <DiscoverySection
+              discovery={rowDetail.discovery}
+              hasUserName={Boolean(row.custom_name?.trim())}
+            />
+          </>
+        ) : null}
+
         {rowDetail && rowDetail.previous_ips.length > 1 ? (
           <>
             <div className="divider" />
@@ -417,6 +441,166 @@ export function DeviceDrawer({
         ) : null}
       </div>
     </Drawer>
+  );
+}
+
+/**
+ * What local discovery established about a device, and what it was based on.
+ *
+ * Two things this section is careful about. It never competes with the name at
+ * the top of the drawer: when the operator has named the device, the detected
+ * name is shown as something ArcScan found, not as a correction. And every
+ * value here came off the network from an unauthenticated device, so it is
+ * rendered as text — React escapes it, the Rust parsers already bounded its
+ * length and stripped its control characters, and `break-words` keeps a device
+ * that advertises a 128-character model number from breaking the layout.
+ */
+function DiscoverySection({
+  discovery,
+  hasUserName,
+}: {
+  discovery: DeviceDiscovery;
+  hasUserName: boolean;
+}) {
+  const typed = discovery.device_type !== "unknown";
+  return (
+    <section>
+      <SectionHeading>Discovery</SectionHeading>
+      <dl>
+        {discovery.detected_name ? (
+          <DetailRow label="Detected as">
+            <span className="break-words">{discovery.detected_name}</span>
+            {hasUserName ? (
+              <p className="mt-0.5 text-xs text-text-muted">
+                Your name is used everywhere instead.
+              </p>
+            ) : null}
+          </DetailRow>
+        ) : null}
+
+        <DetailRow label="Device type">
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <span>{deviceTypeLabel(discovery.device_type)}</span>
+            {typed ? (
+              <Badge
+                tone={confidenceTone(discovery.type_confidence)}
+                title={CONFIDENCE_HINT[discovery.type_confidence]}
+              >
+                {confidenceLabel(discovery.type_confidence)}
+              </Badge>
+            ) : null}
+          </span>
+        </DetailRow>
+
+        {discovery.manufacturer ? (
+          <DetailRow label="Manufacturer">
+            <span className="break-words">{discovery.manufacturer}</span>
+          </DetailRow>
+        ) : null}
+        {discovery.model_name ? (
+          <DetailRow label="Model">
+            <span className="break-words">
+              {discovery.model_name}
+              {discovery.model_number && discovery.model_number !== discovery.model_name
+                ? ` (${discovery.model_number})`
+                : ""}
+            </span>
+          </DetailRow>
+        ) : null}
+        {discovery.mdns_hostname ? (
+          <DetailRow label="mDNS host name" mono>
+            <span className="break-words">{discovery.mdns_hostname}</span>
+          </DetailRow>
+        ) : null}
+        {discovery.ssdp_friendly_name &&
+        discovery.ssdp_friendly_name !== discovery.detected_name ? (
+          <DetailRow label="SSDP name">
+            <span className="break-words">{discovery.ssdp_friendly_name}</span>
+          </DetailRow>
+        ) : null}
+        <DetailRow label="Discovered by">{sourcesLabel(discovery.sources)}</DetailRow>
+        {discovery.last_discovered_at ? (
+          <DetailRow label="Last discovered">
+            <span title={discovery.last_discovered_at}>
+              {formatRelative(discovery.last_discovered_at)}
+            </span>
+          </DetailRow>
+        ) : null}
+        {discovery.ipv6_addresses.length > 0 ? (
+          <DetailRow label="IPv6 addresses" mono>
+            <span className="break-words">{discovery.ipv6_addresses.join(", ")}</span>
+            {/* Said plainly, because showing a v6 address next to a scanner
+                that only speaks v4 would otherwise imply it was scanned. */}
+            <p className="font-sans text-xs text-text-muted">
+              Learned from mDNS. ArcScan scans IPv4 only.
+            </p>
+          </DetailRow>
+        ) : null}
+      </dl>
+
+      {discovery.services.length > 0 ? (
+        <div className="mt-2">
+          <p className="field-label">Advertised services</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {discovery.services.map((service) => (
+              <li key={service} className="text-[13px] text-text-secondary">
+                <span className="break-words">{serviceName(service)}</span>
+                <span className="mono ml-1.5 text-xs text-text-muted">{service}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {discovery.type_evidence.length > 0 ? (
+        <div className="mt-2">
+          <p className="field-label">Evidence</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {discovery.type_evidence.map((line) => (
+              <li key={line} className="break-words text-[13px] text-text-secondary">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* A device that looks like two things is shown as such rather than
+          having the disagreement resolved silently. */}
+      {discovery.type_conflicts.length > 0 ? (
+        <div className="mt-2">
+          <p className="field-label">Also consistent with</p>
+          <p className="mt-0.5 text-[13px] text-text-secondary">
+            {discovery.type_conflicts.join(" · ")}
+          </p>
+        </div>
+      ) : null}
+
+      {discovery.alternate_names.length > 0 ? (
+        <div className="mt-2">
+          <p className="field-label">Other names it advertised</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {discovery.alternate_names.map((name) => (
+              <li key={name} className="break-words text-[13px] text-text-secondary">
+                {name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {discovery.presentation_url ? (
+        <p className="mt-2 text-xs text-text-muted">
+          {/* Recorded, never opened: the Web action below validates the address
+              itself, and a device-supplied URL is not a link to hand a person. */}
+          This device advertises its own page at{" "}
+          <span className="mono break-all text-text-secondary">
+            {discovery.presentation_url}
+          </span>
+          .
+        </p>
+      ) : null}
+    </section>
   );
 }
 

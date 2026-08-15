@@ -178,6 +178,12 @@ export function phaseLabel(phase: string): string {
       return "Probing addresses";
     case "confirming":
       return "Confirming quiet devices";
+    case "discovering":
+      return "Discovering local services";
+    case "describing":
+      return "Reading device descriptions";
+    case "classifying":
+      return "Classifying devices";
     case "resolving":
       return "Resolving names and vendors";
     case "done":

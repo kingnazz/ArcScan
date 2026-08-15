@@ -704,6 +704,10 @@ function recordScan(options: {
     network_scope_id: scopeId,
     scope_name: scope?.display_name ?? null,
     coverage_key: coverageKey,
+    // The demo runs discovery for every completed local scan and none for a
+    // cancelled one, exactly as the backend's rule would.
+    discovery_mode: cancelled ? "none" : "full",
+    discovery_summary: null,
     hosts,
   };
   scans.push(scan);
