@@ -9,6 +9,7 @@ import { Download, FolderOpen, GitCompare, Trash2 } from "lucide-react";
 import { Badge, EmptyState, IconButton } from "../ui/primitives";
 import { Popover } from "../ui/Popover";
 import { formatCount, formatDateTime, formatDuration } from "../lib/format";
+import { discoveryModeLabel } from "../lib/discovery";
 import { profileName } from "../lib/profiles";
 import type { ExportFormat, ScanSummary } from "../types";
 
@@ -105,6 +106,16 @@ export function HistoryPanel({
                     : `${formatCount(scan.scanned)} addresses`}
                   {" · "}
                   {formatDuration(scan.duration_ms)}
+                  {/* What the discovery pass managed, so a scan that heard
+                      nothing reads as "no discovery" rather than as a network
+                      with nothing on it. Only shown once a scan has recorded
+                      one, so history from before this version stays unchanged. */}
+                  {scan.discovery_mode && scan.discovery_mode !== "none" ? (
+                    <>
+                      {" · "}
+                      {discoveryModeLabel(scan.discovery_mode)}
+                    </>
+                  ) : null}
                 </p>
               </button>
 
