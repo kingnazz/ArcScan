@@ -113,7 +113,7 @@ pub fn parse(datagram: &[u8]) -> Option<Response> {
     // Header text is ASCII by specification; anything else is replaced rather
     // than rejected so one stray byte does not lose the device.
     let text = String::from_utf8_lossy(datagram);
-    let mut lines = text.split(|c| c == '\n');
+    let mut lines = text.split('\n');
 
     let status = lines.next()?.trim_end_matches('\r').trim();
     if !status.to_ascii_uppercase().starts_with("HTTP/1.") {
@@ -185,8 +185,9 @@ mod tests {
         assert!(packet.contains(&format!("MX: {MX_SECONDS}\r\n")));
         assert!(packet.contains("ST: ssdp:all\r\n"));
         assert!(packet.ends_with("\r\n\r\n"));
-        // A small MX keeps the response window inside the discovery budget.
-        assert!(MX_SECONDS <= 3);
+        // A small MX keeps the response window inside the discovery budget;
+        // `const_assert`-style, so a future edit that raises it fails here.
+        const _: () = assert!(MX_SECONDS <= 3);
     }
 
     #[test]
@@ -211,7 +212,8 @@ mod tests {
 
     #[test]
     fn bare_newlines_and_missing_trailing_blank_line_still_parse() {
-        let r = response("HTTP/1.1 200 OK\nLOCATION: http://192.0.2.5/d.xml\nST: ssdp:all").unwrap();
+        let r =
+            response("HTTP/1.1 200 OK\nLOCATION: http://192.0.2.5/d.xml\nST: ssdp:all").unwrap();
         assert_eq!(r.location(), Some("http://192.0.2.5/d.xml"));
     }
 
@@ -221,10 +223,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nUSN: uuid:11111111-2222-3333-4444-555555555555::urn:schemas-upnp-org:device:MediaRenderer:1\r\n",
         )
         .unwrap();
-        assert_eq!(
-            r.udn(),
-            Some("uuid:11111111-2222-3333-4444-555555555555")
-        );
+        assert_eq!(r.udn(), Some("uuid:11111111-2222-3333-4444-555555555555"));
 
         // A USN with no uuid prefix identifies nothing.
         let odd = response("HTTP/1.1 200 OK\r\nUSN: something-else::upnp:rootdevice\r\n").unwrap();
@@ -264,7 +263,10 @@ mod tests {
         body.push_str(&format!("{}: x\r\n", "N".repeat(MAX_HEADER_NAME * 2)));
         let r = response(&body).unwrap();
         assert_eq!(r.headers.len(), MAX_HEADERS);
-        assert!(r.headers.keys().all(|k| k.chars().count() <= MAX_HEADER_NAME));
+        assert!(r
+            .headers
+            .keys()
+            .all(|k| k.chars().count() <= MAX_HEADER_NAME));
 
         let long_value = format!(
             "HTTP/1.1 200 OK\r\nSERVER: {}\r\n",
@@ -323,7 +325,10 @@ mod tests {
             urn_device_type("URN:SCHEMAS-UPNP-ORG:DEVICE:MediaRenderer:2").as_deref(),
             Some("MediaRenderer")
         );
-        assert_eq!(urn_device_type("urn:schemas-upnp-org:service:AVTransport:1"), None);
+        assert_eq!(
+            urn_device_type("urn:schemas-upnp-org:service:AVTransport:1"),
+            None
+        );
         assert_eq!(urn_device_type("upnp:rootdevice"), None);
         assert_eq!(urn_device_type(""), None);
     }

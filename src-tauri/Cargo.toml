@@ -28,6 +28,11 @@ futures = "0.3"
 
 rusqlite = { version = "0.32", features = ["bundled"] }
 dns-lookup = "2"
+# Parsing an SSDP LOCATION, which is hostile input. Already in the dependency
+# graph via tauri, so this adds no code to the build — and a battle-tested URL
+# parser is exactly what should be deciding whether `http://0x7f.0.0.1/` is
+# loopback, rather than anything hand-rolled here.
+url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 if-addrs = "0.13"
 

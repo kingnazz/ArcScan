@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod discovery;
 mod inventory;
 mod ipparse;
 mod netinfo;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::preview_scan,
             commands::parse_port_spec,
             commands::service_catalog,
+            commands::device_type_catalog,
             commands::save_scan,
             commands::list_scans,
             commands::get_scan,

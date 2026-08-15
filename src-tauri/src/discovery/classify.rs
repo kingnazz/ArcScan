@@ -61,21 +61,6 @@ impl Default for Classification {
     }
 }
 
-impl Classification {
-    /// A one-line summary for the table and the export, e.g.
-    /// `Printer · High confidence`.
-    pub fn summary(&self) -> String {
-        if self.device_type == DeviceType::Unknown {
-            return "Unknown".to_string();
-        }
-        format!(
-            "{} · {} confidence",
-            self.device_type.label(),
-            self.confidence.as_str()
-        )
-    }
-}
-
 /// Facts from the scan itself, alongside what discovery advertised.
 #[derive(Debug, Clone, Default)]
 pub struct ClassifyFacts<'a> {
@@ -98,27 +83,80 @@ const PRINTER_MAKERS: &[&str] = &[
     "zebra", "dymo", "sharp", "konica",
 ];
 const TV_MAKERS: &[&str] = &[
-    "samsung", "lg", "sony", "vizio", "tcl", "hisense", "philips", "panasonic", "roku", "sceptre",
+    "samsung",
+    "lg",
+    "sony",
+    "vizio",
+    "tcl",
+    "hisense",
+    "philips",
+    "panasonic",
+    "roku",
+    "sceptre",
 ];
 const CAMERA_MAKERS: &[&str] = &[
-    "hikvision", "dahua", "axis", "amcrest", "reolink", "wyze", "arlo", "lorex", "foscam",
-    "vivotek", "swann",
+    "hikvision",
+    "dahua",
+    "axis",
+    "amcrest",
+    "reolink",
+    "wyze",
+    "arlo",
+    "lorex",
+    "foscam",
+    "vivotek",
+    "swann",
 ];
 const NAS_MAKERS: &[&str] = &[
-    "synology", "qnap", "asustor", "terramaster", "buffalo", "drobo", "western digital", "wd",
+    "synology",
+    "qnap",
+    "asustor",
+    "terramaster",
+    "buffalo",
+    "drobo",
+    "western digital",
+    "wd",
 ];
 const NETWORK_MAKERS: &[&str] = &[
-    "cisco", "netgear", "tp-link", "tplink", "ubiquiti", "mikrotik", "aruba", "ruckus", "zyxel",
-    "d-link", "dlink", "linksys", "eero", "arris", "technicolor", "sagemcom", "actiontec",
-    "juniper", "fortinet", "meraki",
+    "cisco",
+    "netgear",
+    "tp-link",
+    "tplink",
+    "ubiquiti",
+    "mikrotik",
+    "aruba",
+    "ruckus",
+    "zyxel",
+    "d-link",
+    "dlink",
+    "linksys",
+    "eero",
+    "arris",
+    "technicolor",
+    "sagemcom",
+    "actiontec",
+    "juniper",
+    "fortinet",
+    "meraki",
 ];
 const COMPUTER_MAKERS: &[&str] = &[
-    "apple", "dell", "lenovo", "intel", "micro-star", "asustek", "gigabyte", "acer", "framework",
-    "system76", "raspberry",
+    "apple",
+    "dell",
+    "lenovo",
+    "intel",
+    "micro-star",
+    "asustek",
+    "gigabyte",
+    "acer",
+    "framework",
+    "system76",
+    "raspberry",
 ];
 const CONSOLE_MAKERS: &[&str] = &["nintendo", "sony interactive", "microsoft"];
 const SPEAKER_MAKERS: &[&str] = &["sonos", "bose", "denon", "yamaha", "marantz", "harman"];
-const PHONE_MAKERS: &[&str] = &["apple", "samsung", "google", "oneplus", "xiaomi", "motorola"];
+const PHONE_MAKERS: &[&str] = &[
+    "apple", "samsung", "google", "oneplus", "xiaomi", "motorola",
+];
 
 /// True when `haystack` contains `needle` as a whole word.
 fn has_word(haystack: &str, needle: &str) -> bool {
@@ -224,7 +262,10 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     let print_port = ports.contains(&9100) || ports.contains(&631) || ports.contains(&515);
     if printer_service && (made_by(facts.vendor, PRINTER_MAKERS) || print_port) {
         let mut evidence = vec![printer_service_label(&services)];
-        if let Some(vendor) = facts.vendor.filter(|_| made_by(facts.vendor, PRINTER_MAKERS)) {
+        if let Some(vendor) = facts
+            .vendor
+            .filter(|_| made_by(facts.vendor, PRINTER_MAKERS))
+        {
             evidence.push(format!("{vendor} manufacturer"));
         }
         if print_port {
@@ -300,7 +341,8 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Speaker ----------------------------------------------------------
-    if has_service("_sonos._tcp") || (made_by(facts.vendor, SPEAKER_MAKERS) && has_service("_raop._tcp"))
+    if has_service("_sonos._tcp")
+        || (made_by(facts.vendor, SPEAKER_MAKERS) && has_service("_raop._tcp"))
     {
         claim(
             DeviceType::Speaker,
@@ -393,8 +435,7 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Game console -----------------------------------------------------
-    if made_by(facts.vendor, CONSOLE_MAKERS) && (model_says("playstation") || model_says("xbox"))
-    {
+    if made_by(facts.vendor, CONSOLE_MAKERS) && (model_says("playstation") || model_says("xbox")) {
         claim(
             DeviceType::GameConsole,
             Confidence::High,
@@ -469,7 +510,9 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Network equipment ------------------------------------------------
-    if !facts.is_gateway && made_by(facts.vendor, NETWORK_MAKERS) && facts.os_guess.as_deref() == Some("Network device")
+    if !facts.is_gateway
+        && made_by(facts.vendor, NETWORK_MAKERS)
+        && facts.os_guess == Some("Network device")
     {
         claim(
             DeviceType::NetworkEquipment,
@@ -486,7 +529,12 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
 
 /// The mDNS or SSDP service that made the printer call, named exactly.
 fn printer_service_label(services: &BTreeSet<String>) -> String {
-    for name in ["_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp"] {
+    for name in [
+        "_ipp._tcp",
+        "_ipps._tcp",
+        "_printer._tcp",
+        "_pdl-datastream._tcp",
+    ] {
         if services.iter().any(|s| s.contains(name)) {
             return format!("mDNS {name}");
         }
@@ -653,7 +701,6 @@ mod tests {
         assert_eq!(c.device_type, DeviceType::Unknown);
         assert_eq!(c.confidence, Confidence::Unknown);
         assert!(c.evidence.is_empty());
-        assert_eq!(c.summary(), "Unknown");
     }
 
     #[test]
@@ -665,7 +712,10 @@ mod tests {
             .run();
         assert_eq!(c.device_type, DeviceType::Router);
         assert_eq!(c.confidence, Confidence::High);
-        assert!(c.evidence.iter().any(|e| e.contains("InternetGatewayDevice")));
+        assert!(c
+            .evidence
+            .iter()
+            .any(|e| e.contains("InternetGatewayDevice")));
         assert!(c.evidence.iter().any(|e| e.contains("default gateway")));
     }
 
@@ -695,7 +745,6 @@ mod tests {
         assert!(c.evidence.iter().any(|e| e.contains("_ipp._tcp")));
         assert!(c.evidence.iter().any(|e| e.contains("HP")));
         assert!(c.evidence.iter().any(|e| e.contains("631")));
-        assert_eq!(c.summary(), "Printer · high confidence");
     }
 
     #[test]
@@ -827,7 +876,10 @@ mod tests {
 
     #[test]
     fn a_hostname_containing_a_type_word_is_only_low_confidence() {
-        let c = Fixture::new().vendor("Brother").hostname("brother-printer").run();
+        let c = Fixture::new()
+            .vendor("Brother")
+            .hostname("brother-printer")
+            .run();
         assert_eq!(c.device_type, DeviceType::Printer);
         assert_eq!(c.confidence, Confidence::Low);
     }
@@ -836,20 +888,32 @@ mod tests {
     fn every_type_except_the_placeholders_is_reachable_from_real_evidence() {
         use DeviceType::*;
         let cases: Vec<(DeviceType, Classification)> = vec![
-            (Router, Fixture::new().upnp("InternetGatewayDevice").gateway().run()),
+            (
+                Router,
+                Fixture::new().upnp("InternetGatewayDevice").gateway().run(),
+            ),
             (
                 Printer,
-                Fixture::new().service("_ipp._tcp.local").ports(&[9100]).run(),
+                Fixture::new()
+                    .service("_ipp._tcp.local")
+                    .ports(&[9100])
+                    .run(),
             ),
             (
                 Computer,
-                Fixture::new().service("_workstation._tcp.local").ports(&[22]).run(),
+                Fixture::new()
+                    .service("_workstation._tcp.local")
+                    .ports(&[22])
+                    .run(),
             ),
             (Phone, Fixture::new().hostname("sams-iphone").run()),
             (Tablet, Fixture::new().hostname("studio-ipad").run()),
             (
                 Television,
-                Fixture::new().upnp("MediaRenderer").model("Acme Smart TV").run(),
+                Fixture::new()
+                    .upnp("MediaRenderer")
+                    .model("Acme Smart TV")
+                    .run(),
             ),
             (
                 MediaDevice,
@@ -858,7 +922,10 @@ mod tests {
             (Camera, Fixture::new().upnp("DigitalSecurityCamera").run()),
             (
                 Nas,
-                Fixture::new().service("_smb._tcp.local").vendor("QNAP").run(),
+                Fixture::new()
+                    .service("_smb._tcp.local")
+                    .vendor("QNAP")
+                    .run(),
             ),
             (GameConsole, Fixture::new().model("Xbox Series X").run()),
             (SmartHome, Fixture::new().service("_hap._tcp.local").run()),
@@ -877,7 +944,11 @@ mod tests {
     #[test]
     fn every_confidence_level_is_reachable() {
         let levels: Vec<Confidence> = vec![
-            Fixture::new().upnp("InternetGatewayDevice").gateway().run().confidence,
+            Fixture::new()
+                .upnp("InternetGatewayDevice")
+                .gateway()
+                .run()
+                .confidence,
             Fixture::new().upnp("MediaRenderer").run().confidence,
             Fixture::new().ports(&[9100]).run().confidence,
             classify(None, &ClassifyFacts::default()).confidence,

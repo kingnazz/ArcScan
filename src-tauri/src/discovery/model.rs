@@ -127,19 +127,18 @@ impl EvidenceKind {
 /// Deliberately four words rather than a number: a percentage invites a reader
 /// to believe the difference between 71% and 68% means something, and it does
 /// not. The ordering is strongest-first so `min`/`max` read naturally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Confidence {
     High,
     Medium,
     Low,
+    /// The default on purpose: nothing known is never quietly upgraded to
+    /// something known.
+    #[default]
     Unknown,
-}
-
-impl Default for Confidence {
-    fn default() -> Self {
-        Confidence::Unknown
-    }
 }
 
 impl Confidence {
@@ -172,7 +171,9 @@ impl Confidence {
 /// The list is short on purpose. Every entry has to be reachable from evidence a
 /// read-only local scan can actually collect; a category nothing can ever prove
 /// is worse than Unknown, because it looks like an answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceType {
     Router,
@@ -188,13 +189,9 @@ pub enum DeviceType {
     SmartHome,
     NetworkEquipment,
     Speaker,
+    /// The default, and the answer preferred over an unsupported guess.
+    #[default]
     Unknown,
-}
-
-impl Default for DeviceType {
-    fn default() -> Self {
-        DeviceType::Unknown
-    }
 }
 
 impl DeviceType {
@@ -516,6 +513,11 @@ pub struct DiscoveryReport {
     pub descriptions_fetched: usize,
     #[serde(default)]
     pub descriptions_rejected: usize,
+    /// Why description URLs were refused or failed, de-duplicated. Reasons
+    /// only — never the URL itself, which is a device-supplied string that has
+    /// no business being stored or shown back.
+    #[serde(default)]
+    pub description_notes: Vec<String>,
     #[serde(default)]
     pub devices_enriched: usize,
     #[serde(default)]

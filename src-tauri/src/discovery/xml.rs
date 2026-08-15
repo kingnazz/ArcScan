@@ -32,7 +32,7 @@
 //! Icons are counted and never fetched; presentation URLs are recorded and never
 //! opened.
 
-use super::model::{sanitize_field, MAX_FIELD_CHARS};
+use super::model::sanitize_field;
 
 /// Largest description document accepted, in bytes. Real ones are 1–4 KB.
 pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
@@ -128,7 +128,7 @@ pub fn parse(document: &str) -> Result<Description, XmlError> {
     let mut text = String::new();
     let mut out = Description::default();
     let mut elements = 0usize;
-    /// How many `<device>` elements are open. 1 is the root device.
+    // How many `<device>` elements are open. 1 is the root device.
     let mut device_depth = 0usize;
     let mut saw_root = false;
 
@@ -239,13 +239,7 @@ pub fn parse(document: &str) -> Result<Description, XmlError> {
 /// anything deeper belongs to an embedded device, whose fields must not
 /// overwrite the root's. Service types are collected from every depth, because
 /// a television's useful service list often hangs off an embedded device.
-fn assign(
-    out: &mut Description,
-    stack: &[String],
-    name: &str,
-    value: &str,
-    device_depth: usize,
-) {
+fn assign(out: &mut Description, stack: &[String], name: &str, value: &str, device_depth: usize) {
     let parent = stack.last().map(String::as_str).unwrap_or("");
     let clean = sanitize_field(value);
 
@@ -267,7 +261,8 @@ fn assign(
     if device_depth > 1 {
         if name == "devicetype" {
             if let Some(v) = clean {
-                if out.embedded_types.len() < MAX_EMBEDDED_DEVICES && !out.embedded_types.contains(&v)
+                if out.embedded_types.len() < MAX_EMBEDDED_DEVICES
+                    && !out.embedded_types.contains(&v)
                 {
                     out.embedded_types.push(v);
                 }
@@ -471,10 +466,7 @@ mod tests {
             parse("<!doctype root><root><device/></root>"),
             Err(XmlError::Doctype)
         );
-        assert_eq!(
-            parse("<root/><!DocType x>"),
-            Err(XmlError::Doctype)
-        );
+        assert_eq!(parse("<root/><!DocType x>"), Err(XmlError::Doctype));
     }
 
     #[test]
@@ -502,7 +494,10 @@ mod tests {
         let d = parse(doc).unwrap();
         // Decoded to characters, which the interface renders as text. It is a
         // string, not an element, and nothing downstream treats it as markup.
-        assert_eq!(d.friendly_name.as_deref(), Some("<script>alert(1)</script>"));
+        assert_eq!(
+            d.friendly_name.as_deref(),
+            Some("<script>alert(1)</script>")
+        );
     }
 
     #[test]
@@ -558,7 +553,7 @@ mod tests {
         let long = "N".repeat(MAX_TEXT_CHARS * 4);
         let doc = format!("<root><device><friendlyName>{long}</friendlyName></device></root>");
         let name = parse(&doc).unwrap().friendly_name.unwrap();
-        assert_eq!(name.chars().count(), MAX_FIELD_CHARS);
+        assert_eq!(name.chars().count(), super::super::model::MAX_FIELD_CHARS);
     }
 
     #[test]
@@ -605,7 +600,8 @@ mod tests {
 
     #[test]
     fn control_characters_are_stripped_from_every_value() {
-        let doc = "<root><device><friendlyName>Bad\u{0}\u{7}Name\u{1b}</friendlyName></device></root>";
+        let doc =
+            "<root><device><friendlyName>Bad\u{0}\u{7}Name\u{1b}</friendlyName></device></root>";
         let name = parse(doc).unwrap().friendly_name.unwrap();
         assert_eq!(name, "Bad Name");
         assert!(!name.chars().any(char::is_control));
@@ -656,8 +652,24 @@ mod tests {
     #[test]
     fn parsing_never_panics_on_hostile_or_random_input() {
         let fragments = [
-            "<", ">", "</", "<!", "<!-", "<![", "<?", "&#;", "&#x;", "&#xFFFFFFFF;", "]]>",
-            "<device>", "</device>", "<root", "\u{0}", "é", "<a b=\"", "&#55296;",
+            "<",
+            ">",
+            "</",
+            "<!",
+            "<!-",
+            "<![",
+            "<?",
+            "&#;",
+            "&#x;",
+            "&#xFFFFFFFF;",
+            "]]>",
+            "<device>",
+            "</device>",
+            "<root",
+            "\u{0}",
+            "é",
+            "<a b=\"",
+            "&#55296;",
         ];
         let mut seed = 0x1234_5678_9ABC_DEF0u64;
         let mut next = move || {

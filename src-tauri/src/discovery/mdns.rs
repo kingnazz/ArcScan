@@ -187,16 +187,23 @@ impl<'a> Reader<'a> {
                     if jumps > MAX_POINTER_JUMPS {
                         return None;
                     }
+                    // Where this pointer itself sits: `cursor` is already past
+                    // the length byte, and the low byte is read next.
+                    let pointer_at = cursor - 1;
                     let lo = *self.buf.get(cursor)? as usize;
                     cursor += 1;
                     if resume.is_none() {
                         resume = Some(cursor);
                     }
                     let target = ((len & 0x3F) << 8) | lo;
-                    // Strictly backwards: a pointer to itself, forwards, or to
-                    // anywhere at or after a pointer already followed would
-                    // allow a cycle.
-                    if target >= lowest_pointer || target >= self.buf.len() {
+                    // Strictly backwards, twice over: a pointer must target an
+                    // offset before its own position, *and* before every
+                    // pointer already followed. The first rule refuses a
+                    // forward pointer and a self-reference; the second refuses
+                    // a cycle between two pointers that are each backwards
+                    // relative to themselves.
+                    if target >= pointer_at || target >= lowest_pointer || target >= self.buf.len()
+                    {
                         return None;
                     }
                     lowest_pointer = target;
@@ -379,7 +386,11 @@ fn parse_txt(body: &[u8]) -> BTreeMap<String, String> {
             Some((k, v)) => (k, v),
             None => (text.as_ref(), ""),
         };
-        let key: String = key.chars().take(MAX_TXT_KEY).collect::<String>().to_lowercase();
+        let key: String = key
+            .chars()
+            .take(MAX_TXT_KEY)
+            .collect::<String>()
+            .to_lowercase();
         if key.is_empty() {
             continue;
         }
@@ -509,16 +520,11 @@ mod tests {
     #[test]
     fn parses_ptr_srv_txt_a_and_aaaa() {
         let packet = Builder::new()
-            .record(
-                "_ipp._tcp.local",
-                TYPE_PTR,
-                4500,
-                &{
-                    let mut b = Vec::new();
-                    encode_name("Office Printer._ipp._tcp.local", &mut b);
-                    b
-                },
-            )
+            .record("_ipp._tcp.local", TYPE_PTR, 4500, &{
+                let mut b = Vec::new();
+                encode_name("Office Printer._ipp._tcp.local", &mut b);
+                b
+            })
             .record("Office Printer._ipp._tcp.local", TYPE_SRV, 120, &{
                 let mut b = vec![0, 0, 0, 0, 0x02, 0x77]; // prio, weight, port 631
                 encode_name("printer.local", &mut b);
@@ -557,14 +563,23 @@ mod tests {
         }
         match &msg.answers[2].data {
             RecordData::Txt(map) => {
-                assert_eq!(map.get("ty").map(String::as_str), Some("Acme LaserFast 400"));
-                assert_eq!(map.get("usb_mdl").map(String::as_str), Some("LaserFast 400"));
+                assert_eq!(
+                    map.get("ty").map(String::as_str),
+                    Some("Acme LaserFast 400")
+                );
+                assert_eq!(
+                    map.get("usb_mdl").map(String::as_str),
+                    Some("LaserFast 400")
+                );
                 // A bare flag with no `=` is kept with an empty value.
                 assert_eq!(map.get("flag").map(String::as_str), Some(""));
             }
             other => panic!("expected TXT, got {other:?}"),
         }
-        assert_eq!(msg.answers[3].data, RecordData::A("192.0.2.40".parse().unwrap()));
+        assert_eq!(
+            msg.answers[3].data,
+            RecordData::A("192.0.2.40".parse().unwrap())
+        );
         assert_eq!(
             msg.answers[4].data,
             RecordData::Aaaa("2001:db8::28".parse().unwrap())
@@ -603,7 +618,10 @@ mod tests {
         buf.extend_from_slice(&[192, 0, 2, 1]);
 
         let msg = parse(&buf).unwrap();
-        assert!(msg.answers.is_empty(), "a self-referential name yields nothing");
+        assert!(
+            msg.answers.is_empty(),
+            "a self-referential name yields nothing"
+        );
     }
 
     #[test]
@@ -803,7 +821,10 @@ mod tests {
         let msg = parse(&packet).unwrap();
         assert_eq!(msg.answers.len(), 2);
         assert_eq!(msg.answers[0].data, RecordData::Other);
-        assert_eq!(msg.answers[1].data, RecordData::A("192.0.2.7".parse().unwrap()));
+        assert_eq!(
+            msg.answers[1].data,
+            RecordData::A("192.0.2.7".parse().unwrap())
+        );
     }
 
     #[test]
