@@ -78,6 +78,16 @@ fn cancelled(scan_id: u64) -> bool {
     scan_id != 0 && CANCEL_SCAN.load(Ordering::Relaxed) == scan_id
 }
 
+/// Whether this scan has been asked to stop.
+///
+/// Exposed to [`crate::discovery`], which checks it before opening a socket,
+/// before sending each query, and before every merge and fetch. Cancellation
+/// state lives here because there is one running scan and discovery is one of
+/// its phases, not a separate activity with its own lifecycle.
+pub(crate) fn is_cancelled(scan_id: u64) -> bool {
+    cancelled(scan_id)
+}
+
 /// Sleep that ends early when this scan is cancelled. Returns true if the scan
 /// is cancelled, whether that happened before, during or right after the wait.
 /// Waits on a notification rather than polling, so Stop lands immediately.
@@ -107,8 +117,9 @@ async fn cancellable_sleep(scan_id: u64, dur: Duration) -> bool {
 }
 
 /// Resolves once this scan is cancelled. Used to keep a blocked event send from
-/// pinning a cancelled scan forever.
-async fn cancel_requested(scan_id: u64) {
+/// pinning a cancelled scan forever, and by [`crate::discovery`] to abandon a
+/// socket wait the instant Stop is pressed rather than at the next deadline.
+pub(crate) async fn cancel_requested(scan_id: u64) {
     loop {
         let notified = cancel_notify().notified();
         tokio::pin!(notified);
@@ -129,7 +140,9 @@ pub enum Checkpoint {
     BeforeArpSettle,
     BeforeConfirm,
     BeforeSecondSettle,
+    BeforeDiscovery,
     BeforeDns,
+    BeforeClassify,
     BeforeFinish,
 }
 
@@ -227,8 +240,14 @@ pub enum ScanPhase {
     Probing,
     /// Re-triggering ARP for local addresses that did not answer.
     Confirming,
+    /// Asking the local link what services it advertises, over mDNS and SSDP.
+    Discovering,
+    /// Reading the description documents local devices offered.
+    Describing,
     /// Reading the ARP cache and resolving hostnames and vendors.
     Resolving,
+    /// Deciding what each device is from the evidence collected.
+    Classifying,
     Done,
     Cancelled,
 }
@@ -346,6 +365,10 @@ pub struct ScanOptions {
     /// automatically from the detected local subnets and the ARP cache.
     #[serde(default)]
     pub arp_assist: Option<bool>,
+    /// Which parts of local discovery to run. Absent means every part, which is
+    /// what a request from a build that predates discovery should mean.
+    #[serde(default)]
+    pub discovery: Option<crate::discovery::DiscoveryOptions>,
 }
 
 fn default_timeout() -> u64 {
@@ -390,6 +413,68 @@ pub struct HostResult {
     /// Coarse OS guess derived from the TTL.
     pub os_guess: Option<String>,
     pub last_seen: String,
+    /// What local discovery learned about this address, when it ran. Absent for
+    /// remote scans, for scans with discovery switched off, and for every scan
+    /// recorded before v1.8.2.
+    #[serde(default)]
+    pub discovery: Option<HostDiscovery>,
+}
+
+/// The discovery facts carried alongside one observation.
+///
+/// Flattened into strings and lists rather than the richer types in
+/// [`crate::discovery::model`] because this crosses the IPC boundary, goes into
+/// the database and ends up in an export. The structured evidence stays in the
+/// discovery module; this is the part the rest of the app reads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostDiscovery {
+    /// The name discovery settled on. Never overrides an operator's name — that
+    /// substitution happens at display time, where the operator's name wins.
+    #[serde(default)]
+    pub detected_name: Option<String>,
+    /// Which protocol the chosen name came from.
+    #[serde(default)]
+    pub name_source: Option<String>,
+    #[serde(default)]
+    pub device_type: Option<String>,
+    #[serde(default)]
+    pub type_confidence: Option<String>,
+    /// Plain-language facts behind the type, for the drawer.
+    #[serde(default)]
+    pub type_evidence: Vec<String>,
+    /// Other types the evidence also supported, as `type · confidence`.
+    #[serde(default)]
+    pub type_conflicts: Vec<String>,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub model_number: Option<String>,
+    #[serde(default)]
+    pub serial_number: Option<String>,
+    #[serde(default)]
+    pub mdns_hostname: Option<String>,
+    #[serde(default)]
+    pub ssdp_friendly_name: Option<String>,
+    /// Advertised service types, normalized and sorted.
+    #[serde(default)]
+    pub services: Vec<String>,
+    /// Which protocols contributed anything, sorted.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Names the device advertised that were not chosen.
+    #[serde(default)]
+    pub alternate_names: Vec<String>,
+    /// Addresses learned from mDNS. Supplemental display only: ArcScan scans
+    /// IPv4, and showing a v6 address is not a claim that it scanned one.
+    #[serde(default)]
+    pub ipv6_addresses: Vec<String>,
+    /// The device's own web page, when it advertised one. Recorded, never opened.
+    #[serde(default)]
+    pub presentation_url: Option<String>,
+    #[serde(default)]
+    pub last_discovered_at: Option<String>,
 }
 
 impl HostResult {
@@ -406,6 +491,7 @@ impl HostResult {
             ttl: probe.ttl,
             os_guess: probe.ttl.and_then(os_from_ttl),
             last_seen: seen_at.to_string(),
+            discovery: None,
         };
         host.response_ms = host.fastest_ms();
         host
@@ -453,6 +539,11 @@ pub struct ScanResult {
     /// scan's network scope when it is saved.
     #[serde(default)]
     pub scope_hint: Option<ScopeHint>,
+    /// What the discovery pass did, or why it did not run. Part of the scan's
+    /// coverage: two scans are only compared on discovery-derived facts when
+    /// both had the same discovery capability.
+    #[serde(default)]
+    pub discovery: Option<crate::discovery::DiscoveryReport>,
 }
 
 /// What the scanner learned about the network a scan ran against, for scope
@@ -820,6 +911,44 @@ pub async fn run(
 
     probe_results.sort_by_key(|(ip, _)| u32::from(*ip));
 
+    // Ask the local link what it advertises. This runs after the host set is
+    // final — there is no point enriching an address that turned out not to be
+    // a device — and before reverse DNS, so the phases read in the order the
+    // progress strip shows them.
+    //
+    // `containing_local` is the whole locality argument: it is `Some` only when
+    // the target overlaps a subnet this machine is attached to, which is
+    // exactly the condition under which a multicast query can reach anything.
+    checkpoint(Checkpoint::BeforeDiscovery);
+    let discovery_ctx = crate::discovery::DiscoveryContext {
+        scan_id,
+        local_network: containing_local.as_ref().and_then(|(net, _)| {
+            let ip: Ipv4Addr = net.ip.parse().ok()?;
+            let mask = if net.prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - net.prefix)
+            };
+            Some((Ipv4Addr::from(u32::from(ip) & mask), net.prefix))
+        }),
+        interface_ip: containing_local
+            .as_ref()
+            .and_then(|(net, _)| net.ip.parse().ok()),
+        arp_assist: opts.arp_assist,
+        options: opts.discovery.unwrap_or_default(),
+    };
+    let will_discover = matches!(
+        crate::discovery::eligibility(&discovery_ctx),
+        crate::discovery::Eligibility::Run { .. }
+    );
+    if will_discover {
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Discovering)));
+    }
+    let discovery = crate::discovery::run(&discovery_ctx).await;
+    if will_discover && discovery.report.descriptions_fetched > 0 {
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Describing)));
+    }
+
     // Resolve hostnames for the live hosts concurrently (bounded, with a short
     // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
     // A cancelled scan launches no lookups at all: each queued lookup re-checks
@@ -849,9 +978,24 @@ pub async fn run(
             .collect()
             .await;
 
-    // Final enrichment works from data already in memory (the ARP cache read and
-    // the resolved hostnames), so it runs even for a cancelled scan: partial
-    // results keep every MAC, vendor and hostname that had already resolved.
+    // The default gateway, needed twice: to tell this network apart from
+    // another that reuses the same private range, and as the one fact that
+    // turns an SSDP `InternetGatewayDevice` claim into a confident Router.
+    let gateway_ip = match &containing_local {
+        Some((_, range)) => netinfo::default_gateway_ip()
+            .await
+            .filter(|gw| ip_in_ranges(*gw, &[*range])),
+        None => None,
+    };
+
+    // Final enrichment works from data already in memory (the ARP cache read,
+    // the resolved hostnames and the discovery evidence), so it runs even for a
+    // cancelled scan: partial results keep every MAC, vendor, hostname and
+    // advertisement that had already resolved.
+    checkpoint(Checkpoint::BeforeClassify);
+    if will_discover && !discovery.devices.is_empty() {
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Classifying)));
+    }
     let now = chrono::Local::now().to_rfc3339();
     let mut hosts_out: Vec<HostResult> = Vec::with_capacity(probe_results.len());
     for (ip, probe) in probe_results {
@@ -861,6 +1005,12 @@ pub async fn run(
         host.mac = arp.get(&ip).filter(|_| has_real_mac(&ip)).cloned();
         host.vendor = host.mac.as_deref().and_then(oui::lookup);
         host.hostname = hostnames.get(&ip).cloned();
+        host.discovery = HostDiscovery::build(
+            discovery.devices.get(&ip),
+            &host,
+            gateway_ip == Some(ip),
+            &now,
+        );
         sink.critical(ScanEvent::HostUpdated {
             scan_id,
             host: Box::new(host.clone()),
@@ -872,21 +1022,12 @@ pub async fn run(
     // Evidence about which physical network this scan ran against. The gateway
     // MAC comes from the ARP cache already read above; only a gateway inside
     // the scanned local subnet identifies that subnet's network.
-    let scope_hint = match &containing_local {
-        Some((net, range)) => {
-            let gateway_ip = netinfo::default_gateway_ip()
-                .await
-                .filter(|gw| ip_in_ranges(*gw, &[*range]));
-            let gateway_mac = gateway_ip.and_then(|gw| arp.get(&gw).cloned());
-            Some(ScopeHint {
-                local_network: Some(net.cidr.clone()),
-                gateway_ip: gateway_ip.map(|ip| ip.to_string()),
-                gateway_mac,
-                interface: Some(net.interface.clone()),
-            })
-        }
-        None => None,
-    };
+    let scope_hint = containing_local.as_ref().map(|(net, _)| ScopeHint {
+        local_network: Some(net.cidr.clone()),
+        gateway_ip: gateway_ip.map(|ip| ip.to_string()),
+        gateway_mac: gateway_ip.and_then(|gw| arp.get(&gw).cloned()),
+        interface: Some(net.interface.clone()),
+    });
 
     // The final cancellation state is decided here, at the very end, so a Stop
     // pressed during any later phase is honoured rather than a stale value
@@ -920,7 +1061,117 @@ pub async fn run(
             ping_concurrency: limits.ping_concurrency,
         }),
         scope_hint,
+        discovery: Some(discovery.report),
     })
+}
+
+impl HostDiscovery {
+    /// Flatten one address's discovery evidence into the form the rest of the
+    /// app reads, classifying and naming it on the way.
+    ///
+    /// Returns `None` when discovery contributed nothing for this address, so a
+    /// host with no advertisements carries no empty discovery block — the
+    /// absence is the honest record, and it keeps the database and every export
+    /// free of rows that say nothing.
+    fn build(
+        device: Option<&crate::discovery::DiscoveredDevice>,
+        host: &HostResult,
+        is_gateway: bool,
+        now: &str,
+    ) -> Option<HostDiscovery> {
+        use crate::discovery::model::EvidenceKind;
+        use crate::discovery::{classify, names, ClassifyFacts, DeviceType};
+
+        let classification = classify(
+            device,
+            &ClassifyFacts {
+                open_ports: &host.open_ports,
+                vendor: host.vendor.as_deref(),
+                hostname: host.hostname.as_deref(),
+                is_gateway,
+                os_guess: host.os_guess.as_deref(),
+            },
+        );
+        // A type derived purely from ports and vendor is a scan observation, not
+        // a discovery result. Without any advertisement there is nothing for a
+        // Discovery section to show, and inventing one would imply the device
+        // answered a query it never did.
+        let device = device?;
+
+        let type_label = (classification.device_type != DeviceType::Unknown)
+            .then(|| classification.device_type.label());
+        let resolved = names::resolve(
+            &names::NameInputs {
+                custom_name: None,
+                hostname: host.hostname.as_deref(),
+                vendor: host.vendor.as_deref(),
+                ip: Some(&host.ip),
+                mac: host.mac.as_deref(),
+                type_label,
+            },
+            Some(device),
+        );
+        // Only a name the device actually advertised counts as *detected*. When
+        // the resolver fell back to the hostname, the vendor or the address, the
+        // honest answer is that discovery found no name.
+        let detected_name = matches!(
+            resolved.source,
+            crate::discovery::DiscoverySource::Mdns | crate::discovery::DiscoverySource::Ssdp
+        )
+        .then(|| resolved.name.clone());
+
+        let value = |kind: EvidenceKind| device.best(kind).map(|e| e.value.clone());
+        let ssdp_value = |kind: EvidenceKind| {
+            device
+                .of_kind(kind)
+                .find(|e| e.source == crate::discovery::DiscoverySource::Ssdp)
+                .map(|e| e.value.clone())
+        };
+
+        Some(HostDiscovery {
+            detected_name,
+            name_source: Some(resolved.source.as_str().to_string()),
+            device_type: Some(classification.device_type.as_str().to_string()),
+            type_confidence: Some(classification.confidence.as_str().to_string()),
+            type_evidence: classification.evidence,
+            type_conflicts: classification
+                .conflicts
+                .iter()
+                .map(|claim| {
+                    format!(
+                        "{} · {}",
+                        claim.device_type.label(),
+                        claim.confidence.as_str()
+                    )
+                })
+                .collect(),
+            // The SSDP `SERVER` banner is recorded as a low-confidence
+            // manufacturer; `best` returns the strongest, so a real
+            // `<manufacturer>` from a description always wins over it.
+            manufacturer: value(EvidenceKind::Manufacturer),
+            model_name: value(EvidenceKind::Model),
+            model_number: value(EvidenceKind::ModelNumber),
+            serial_number: value(EvidenceKind::SerialNumber),
+            mdns_hostname: device
+                .of_kind(EvidenceKind::Hostname)
+                .find(|e| e.source == crate::discovery::DiscoverySource::Mdns)
+                .map(|e| e.value.clone()),
+            ssdp_friendly_name: device
+                .of_kind(EvidenceKind::DisplayName)
+                .find(|e| e.source == crate::discovery::DiscoverySource::Ssdp)
+                .map(|e| e.value.clone()),
+            services: device.services(),
+            sources: device
+                .sources
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect(),
+            alternate_names: resolved.alternates,
+            ipv6_addresses: device.ipv6.iter().map(|ip| ip.to_string()).collect(),
+            presentation_url: ssdp_value(EvidenceKind::Url),
+            last_discovered_at: Some(now.to_string()),
+        })
+    }
 }
 
 /// Progress bookkeeping shared by the probe tasks.
@@ -1344,6 +1595,7 @@ mod tests {
             ping_concurrency: None,
             profile: None,
             arp_assist: None,
+            discovery: None,
         }
     }
 

@@ -96,7 +96,7 @@ impl Rejection {
             Rejection::TooLong => "the address is longer than ArcScan will follow".into(),
             Rejection::ControlCharacter => "the address contains control characters".into(),
             Rejection::Unparsable => "the address is not a valid URL".into(),
-            Rejection::Scheme(s) => format!("ArcScan only reads plain http descriptions, not {s}"),
+            Rejection::Scheme(s) => format!("only plain http descriptions are read, not {s}"),
             Rejection::Credentials => "the address carries embedded credentials".into(),
             Rejection::Fragment => "the address carries a fragment".into(),
             Rejection::NoHost => "the address names no host".into(),
@@ -169,10 +169,6 @@ impl LocalPolicy {
             })
             .collect();
         LocalPolicy { ranges }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
     }
 
     /// True when `ip` is inside one of the scanned local networks *and* is an
@@ -469,11 +465,17 @@ mod tests {
         // The classic rebinding answer. Refusing the whole name is the only
         // safe reading: ArcScan does not get to pick which record wins later.
         assert!(matches!(
-            check_with("http://rebind.example/d.xml", &["192.0.2.44", "93.184.216.34"]),
+            check_with(
+                "http://rebind.example/d.xml",
+                &["192.0.2.44", "93.184.216.34"]
+            ),
             Err(Rejection::NotLocal(_))
         ));
         assert!(matches!(
-            check_with("http://rebind.example/d.xml", &["93.184.216.34", "192.0.2.44"]),
+            check_with(
+                "http://rebind.example/d.xml",
+                &["93.184.216.34", "192.0.2.44"]
+            ),
             Err(Rejection::NotLocal(_))
         ));
     }
@@ -528,7 +530,10 @@ mod tests {
             "javascript:alert(1)",
         ] {
             assert!(
-                matches!(check(raw), Err(Rejection::Scheme(_)) | Err(Rejection::Unparsable)),
+                matches!(
+                    check(raw),
+                    Err(Rejection::Scheme(_)) | Err(Rejection::Unparsable)
+                ),
                 "{raw} was not refused"
             );
         }
@@ -637,9 +642,17 @@ mod tests {
             Rejection::Unresolvable,
             Rejection::NotLocal("10.0.0.1".parse().unwrap()),
         ] {
+            // Each reason is embedded mid-sentence by the caller ("A
+            // description address was refused: ..."), so it has to read as a
+            // clause: no leading capital that is not a value, and no full stop.
             let reason = rejection.reason();
-            assert!(!reason.is_empty());
-            assert!(reason.chars().next().unwrap().is_lowercase());
+            assert!(!reason.is_empty(), "{rejection:?}");
+            assert!(!reason.ends_with('.'), "{reason}");
+            let first = reason.chars().next().unwrap();
+            assert!(
+                first.is_lowercase() || first.is_ascii_digit(),
+                "{reason} should not start with a capital"
+            );
         }
     }
 }

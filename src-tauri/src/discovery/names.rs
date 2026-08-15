@@ -32,9 +32,7 @@
 //! same thing. Those names are demoted below the hostname and the
 //! manufacturer-and-type form, so they are used only when nothing else exists.
 
-use super::model::{
-    Confidence, DiscoveredDevice, DiscoverySource, EvidenceKind, MAX_FIELD_CHARS,
-};
+use super::model::{Confidence, DiscoveredDevice, DiscoverySource, EvidenceKind, MAX_FIELD_CHARS};
 
 /// Names that describe a category rather than a device.
 ///
@@ -214,13 +212,20 @@ pub fn resolve(inputs: &NameInputs<'_>, discovery: Option<&DiscoveredDevice>) ->
             let Some(name) = tidy_name(&evidence.value) else {
                 continue;
             };
-            let bucket = if evidence.confidence.at_least(Confidence::High) && !is_generic_name(&name)
-            {
-                &mut strong
-            } else {
-                &mut weak
-            };
-            if !bucket.iter().any(|(_, existing)| existing.eq_ignore_ascii_case(&name)) {
+            let bucket =
+                if evidence.confidence.at_least(Confidence::High) && !is_generic_name(&name) {
+                    &mut strong
+                } else {
+                    &mut weak
+                };
+            // De-duplicated *per source*, not across them. Two protocols
+            // advertising the same name in different casing is the common case,
+            // and collapsing them would let whichever sorted first decide the
+            // spelling — which is exactly the response-order dependence the
+            // fixed priority below exists to avoid.
+            if !bucket.iter().any(|(source, existing)| {
+                *source == evidence.source && existing.eq_ignore_ascii_case(&name)
+            }) {
                 bucket.push((evidence.source, name));
             }
         }
@@ -328,7 +333,10 @@ fn collect_alternates(device: &DiscoveredDevice) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for evidence in device.of_kind(EvidenceKind::DisplayName) {
         if let Some(name) = tidy_name(&evidence.value) {
-            if !out.iter().any(|existing| existing.eq_ignore_ascii_case(&name)) {
+            if !out
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&name))
+            {
                 out.push(name);
             }
         }
@@ -375,7 +383,11 @@ mod tests {
     #[test]
     fn a_user_name_beats_every_discovered_name() {
         let d = device(&[
-            (DiscoverySource::Mdns, "Acme LaserFast 400", Confidence::High),
+            (
+                DiscoverySource::Mdns,
+                "Acme LaserFast 400",
+                Confidence::High,
+            ),
             (DiscoverySource::Ssdp, "Acme Printer", Confidence::High),
         ]);
         let resolved = resolve(
@@ -540,7 +552,10 @@ mod tests {
             (DiscoverySource::Mdns, "Hall Hub", Confidence::High),
             (DiscoverySource::Ssdp, "Acme Hub 6", Confidence::High),
         ]);
-        assert_eq!(resolve(&inputs(), Some(&forward)), resolve(&inputs(), Some(&backward)));
+        assert_eq!(
+            resolve(&inputs(), Some(&forward)),
+            resolve(&inputs(), Some(&backward))
+        );
     }
 
     #[test]
@@ -555,7 +570,10 @@ mod tests {
 
     #[test]
     fn names_are_tidied_of_whitespace_control_characters_and_local_suffixes() {
-        assert_eq!(tidy_name("  Living\tRoom  ").as_deref(), Some("Living Room"));
+        assert_eq!(
+            tidy_name("  Living\tRoom  ").as_deref(),
+            Some("Living Room")
+        );
         assert_eq!(tidy_name("printer.local").as_deref(), Some("printer"));
         assert_eq!(tidy_name("printer.local.").as_deref(), Some("printer"));
         assert_eq!(tidy_name("Bad\u{0}Name").as_deref(), Some("Bad Name"));
@@ -574,7 +592,10 @@ mod tests {
     fn adjacent_repeats_collapse_and_distant_ones_do_not() {
         assert_eq!(tidy_name("HP HP LaserJet").as_deref(), Some("HP LaserJet"));
         assert_eq!(tidy_name("Hub 6 Hub 6").as_deref(), Some("Hub 6"));
-        assert_eq!(tidy_name("Acme acme Camera").as_deref(), Some("Acme Camera"));
+        assert_eq!(
+            tidy_name("Acme acme Camera").as_deref(),
+            Some("Acme Camera")
+        );
         // A genuine repeat that is not adjacent stays, because it is probably
         // what the owner meant.
         assert_eq!(
@@ -593,14 +614,26 @@ mod tests {
             manufacturer_and_model(Some("Acme"), Some("LaserFast 400")).as_deref(),
             Some("Acme LaserFast 400")
         );
-        assert_eq!(manufacturer_and_model(Some("Acme"), None).as_deref(), Some("Acme"));
-        assert_eq!(manufacturer_and_model(None, Some("LF400")).as_deref(), Some("LF400"));
+        assert_eq!(
+            manufacturer_and_model(Some("Acme"), None).as_deref(),
+            Some("Acme")
+        );
+        assert_eq!(
+            manufacturer_and_model(None, Some("LF400")).as_deref(),
+            Some("LF400")
+        );
         assert_eq!(manufacturer_and_model(None, None), None);
     }
 
     #[test]
     fn generic_names_are_recognised_whole_never_as_substrings() {
-        for generic in ["printer", "PRINTER", "  router  ", "android", "printer.local"] {
+        for generic in [
+            "printer",
+            "PRINTER",
+            "  router  ",
+            "android",
+            "printer.local",
+        ] {
             assert!(is_generic_name(generic), "{generic} should be generic");
         }
         for specific in [

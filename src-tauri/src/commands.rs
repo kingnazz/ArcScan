@@ -64,6 +64,29 @@ pub struct ServiceInfo {
     pub sensitive: bool,
 }
 
+/// One device type ArcScan is prepared to name, with the word it shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceTypeInfo {
+    /// The stored value, e.g. `media_device`.
+    pub id: String,
+    /// The word a person reads, e.g. `Media device`.
+    pub label: String,
+}
+
+/// The device-type vocabulary, fetched once at startup for the Inventory's type
+/// filter. Same reasoning as [`service_catalog`]: the backend decides what types
+/// exist, so the interface asks rather than keeping a list that can drift.
+#[tauri::command]
+pub fn device_type_catalog() -> Vec<DeviceTypeInfo> {
+    crate::discovery::DeviceType::ALL
+        .iter()
+        .map(|kind| DeviceTypeInfo {
+            id: kind.as_str().to_string(),
+            label: kind.label().to_string(),
+        })
+        .collect()
+}
+
 /// The service-name table, fetched once at startup so the UI does not keep a
 /// second copy of it that can drift out of sync with the scanner.
 #[tauri::command]

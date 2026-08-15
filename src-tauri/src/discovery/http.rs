@@ -132,12 +132,12 @@ async fn fetch_inner(url: &ValidatedUrl) -> Result<String, FetchError> {
 /// Split a raw HTTP response into its status, headers and body, applying the
 /// status and content-type rules. Separated from the socket so it is testable.
 pub fn parse_response(raw: &[u8]) -> Result<String, FetchError> {
-    let split = find_header_end(raw).ok_or(FetchError::NotHttp)?;
-    if split > MAX_HEADER_BYTES {
+    let (head_end, body_start) = find_header_end(raw).ok_or(FetchError::NotHttp)?;
+    if head_end > MAX_HEADER_BYTES {
         return Err(FetchError::TooLarge);
     }
-    let head = String::from_utf8_lossy(&raw[..split.0]);
-    let body_bytes = &raw[split.1..];
+    let head = String::from_utf8_lossy(&raw[..head_end]);
+    let body_bytes = &raw[body_start..];
 
     let mut lines = head.split('\n');
     let status_line = lines.next().ok_or(FetchError::NotHttp)?.trim();
@@ -170,7 +170,8 @@ pub fn parse_response(raw: &[u8]) -> Result<String, FetchError> {
         if mime.is_empty() {
             break;
         }
-        let acceptable = mime.contains("xml") || mime == "text/plain" || mime == "application/octet-stream";
+        let acceptable =
+            mime.contains("xml") || mime == "text/plain" || mime == "application/octet-stream";
         if !acceptable {
             return Err(FetchError::ContentType(mime));
         }
@@ -197,7 +198,9 @@ fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
         }
     }
     // A response with headers and no body still parses; the body is empty.
-    raw.is_empty().then_some((0, 0)).or(Some((raw.len(), raw.len())))
+    raw.is_empty()
+        .then_some((0, 0))
+        .or(Some((raw.len(), raw.len())))
 }
 
 #[cfg(test)]
@@ -264,14 +267,20 @@ mod tests {
             "application/octet-stream",
             "text/plain",
         ] {
-            let raw = response(&format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}"), "<root/>");
+            let raw = response(
+                &format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}"),
+                "<root/>",
+            );
             assert!(parse_response(&raw).is_ok(), "{mime} was refused");
         }
     }
 
     #[test]
     fn a_non_http_reply_is_refused() {
-        assert_eq!(parse_response(b"hello there\r\n\r\n"), Err(FetchError::NotHttp));
+        assert_eq!(
+            parse_response(b"hello there\r\n\r\n"),
+            Err(FetchError::NotHttp)
+        );
         assert_eq!(parse_response(b""), Err(FetchError::NotHttp));
         assert_eq!(
             parse_response(b"HTTP/1.1\r\n\r\n"),

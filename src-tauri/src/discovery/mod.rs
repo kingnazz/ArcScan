@@ -60,10 +60,10 @@ use tokio::net::UdpSocket;
 
 use crate::scanner;
 
-pub use classify::{classify, ClassifyFacts, Classification, TypeClaim};
+pub use classify::{classify, Classification, ClassifyFacts};
 pub use model::{
-    Confidence, DeviceType, DiscoveredDevice, DiscoveryMode, DiscoveryReport, DiscoverySource,
-    Evidence, EvidenceKind,
+    Confidence, DeviceType, DiscoveredDevice, DiscoveryReport, DiscoverySource, Evidence,
+    EvidenceKind,
 };
 
 // --- Hard limits ----------------------------------------------------------
@@ -177,7 +177,8 @@ pub fn eligibility(ctx: &DiscoveryContext) -> Eligibility {
     }
     if ctx.arp_assist == Some(false) {
         return Eligibility::Skip(
-            "Remote subnet scans skip local discovery, because multicast does not reach them".into(),
+            "Remote subnet scans skip local discovery, because multicast does not reach them"
+                .into(),
         );
     }
     let Some(network) = ctx.local_network else {
@@ -267,10 +268,12 @@ pub async fn run(ctx: &DiscoveryContext) -> DiscoveryOutcome {
 
     // Descriptions come last: they are the only part that opens a connection,
     // and the SSDP headers alone already carry a manufacturer and a type.
-    if ctx.options.descriptions && !fetch_targets.is_empty() && !scanner::is_cancelled(ctx.scan_id) {
-        let fetched = fetch_descriptions(ctx.scan_id, &policy, fetch_targets, &mut devices).await;
-        report.descriptions_fetched = fetched.0;
-        report.descriptions_rejected = fetched.1;
+    if ctx.options.descriptions && !fetch_targets.is_empty() && !scanner::is_cancelled(ctx.scan_id)
+    {
+        let outcome = fetch_descriptions(ctx.scan_id, &policy, fetch_targets, &mut devices).await;
+        report.descriptions_fetched = outcome.fetched;
+        report.descriptions_rejected = outcome.rejected;
+        report.description_notes = outcome.notes;
     }
 
     // Trim and sort so the record is deterministic and bounded regardless of
@@ -347,7 +350,10 @@ async fn run_mdns(scan_id: u64, interface: Ipv4Addr) -> MdnsHarvest {
 
     let fallback: Vec<String>;
     let query_names: Vec<&str> = if types.is_empty() {
-        fallback = mdns::FALLBACK_SERVICES.iter().map(|s| s.to_string()).collect();
+        fallback = mdns::FALLBACK_SERVICES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         fallback.iter().map(String::as_str).collect()
     } else {
         types.iter().map(String::as_str).collect()
@@ -590,7 +596,10 @@ pub fn merge_mdns(
 /// full of protocol plumbing (`rp`, `pdl`, `txtvers`, printer feature flags)
 /// that means nothing to a person and would bloat the database. The keys below
 /// are the ones vendors actually use to name the hardware.
-fn apply_txt(entry: &mut DiscoveredDevice, properties: &std::collections::BTreeMap<String, String>) {
+fn apply_txt(
+    entry: &mut DiscoveredDevice,
+    properties: &std::collections::BTreeMap<String, String>,
+) {
     let take = |keys: &[&str]| -> Option<String> {
         keys.iter()
             .find_map(|k| properties.get(*k))
@@ -667,10 +676,7 @@ async fn run_ssdp(scan_id: u64, interface: Ipv4Addr) -> SsdpHarvest {
         // One device answers `ssdp:all` once per service, which is dozens of
         // near-identical datagrams. Keyed on the USN so each distinct thing is
         // counted once and a chatty device cannot fill the budget.
-        let key = (
-            source,
-            response.usn().unwrap_or_default().to_string(),
-        );
+        let key = (source, response.usn().unwrap_or_default().to_string());
         if !seen.insert(key) {
             continue;
         }
@@ -696,7 +702,10 @@ pub fn merge_ssdp(
 
         // The device type declared in ST or USN. This is a device describing
         // itself in a protocol built for the purpose, so it carries real weight.
-        for value in [response.search_target(), response.usn()].into_iter().flatten() {
+        for value in [response.search_target(), response.usn()]
+            .into_iter()
+            .flatten()
+        {
             if let Some(kind) = ssdp::urn_device_type(value) {
                 entry.add(Evidence::new(
                     DiscoverySource::Ssdp,
@@ -741,25 +750,49 @@ pub fn merge_ssdp(
     fetches
 }
 
+/// What the description pass managed to do.
+#[derive(Debug, Default)]
+struct DescriptionOutcome {
+    fetched: usize,
+    rejected: usize,
+    notes: Vec<String>,
+}
+
+impl DescriptionOutcome {
+    /// Record a reason, de-duplicated and capped. History shows these, and a
+    /// network with fifty devices all refusing the same way should read as one
+    /// line, not fifty.
+    fn note(&mut self, reason: String) {
+        if self.notes.len() < 8 && !self.notes.contains(&reason) {
+            self.notes.push(reason);
+        }
+    }
+}
+
 /// Validate and read the queued description documents.
 ///
-/// Returns (fetched, rejected). Every URL goes through [`urlguard`] first;
-/// anything it refuses is counted and dropped without a connection being made.
+/// Every URL goes through [`urlguard`] first; anything it refuses is counted
+/// and dropped *without a connection being made*, which is the whole point —
+/// the refusal has to happen before a socket exists, not after.
 async fn fetch_descriptions(
     scan_id: u64,
     policy: &urlguard::LocalPolicy,
     targets: Vec<(Ipv4Addr, String)>,
     devices: &mut HashMap<Ipv4Addr, DiscoveredDevice>,
-) -> (usize, usize) {
+) -> DescriptionOutcome {
     let deadline = Instant::now() + DESCRIPTION_BUDGET;
-    let mut rejected = 0usize;
+    let mut outcome = DescriptionOutcome::default();
     let mut approved: Vec<(Ipv4Addr, urlguard::ValidatedUrl)> = Vec::new();
 
     for (source, raw) in targets {
         let parsed = match urlguard::parse_location(&raw) {
             Ok(parsed) => parsed,
-            Err(_) => {
-                rejected += 1;
+            Err(rejection) => {
+                outcome.rejected += 1;
+                outcome.note(format!(
+                    "A description address was refused: {}",
+                    rejection.reason()
+                ));
                 continue;
             }
         };
@@ -772,49 +805,74 @@ async fn fetch_descriptions(
         };
         match urlguard::authorize(&parsed, &resolved, policy) {
             Ok(url) => approved.push((source, url)),
-            Err(_) => rejected += 1,
+            Err(rejection) => {
+                outcome.rejected += 1;
+                outcome.note(format!(
+                    "A description address was refused: {}",
+                    rejection.reason()
+                ));
+            }
         }
     }
 
     if approved.is_empty() || scanner::is_cancelled(scan_id) {
-        return (0, rejected);
+        return outcome;
     }
 
-    let results: Vec<(Ipv4Addr, Option<xml::Description>)> = stream::iter(approved)
+    type FetchResult = (Ipv4Addr, Result<xml::Description, String>);
+    let results: Vec<FetchResult> = stream::iter(approved)
         .map(|(source, url)| async move {
             if scanner::is_cancelled(scan_id) || Instant::now() >= deadline {
-                return (source, None);
+                return (source, Err(String::new()));
             }
             let document = match http::fetch_description(&url).await {
                 Ok(body) => body,
-                Err(_) => return (source, None),
+                Err(error) => {
+                    return (
+                        source,
+                        Err(format!(
+                            "A description could not be read: {}",
+                            error.reason()
+                        )),
+                    )
+                }
             };
-            (source, xml::parse(&document).ok())
+            match xml::parse(&document) {
+                Ok(description) => (source, Ok(description)),
+                Err(error) => (
+                    source,
+                    Err(format!("A description was not usable: {}", error.reason())),
+                ),
+            }
         })
         .buffer_unordered(DESCRIPTION_CONCURRENCY)
         .collect()
         .await;
 
-    let mut fetched = 0usize;
-    for (source, description) in results {
-        let Some(description) = description else {
-            continue;
-        };
-        if description.is_empty() {
-            continue;
+    for (source, result) in results {
+        match result {
+            Ok(description) if !description.is_empty() => {
+                outcome.fetched += 1;
+                let entry = devices
+                    .entry(source)
+                    .or_insert_with(|| DiscoveredDevice::new(source));
+                apply_description(entry, &description);
+            }
+            Ok(_) => {}
+            Err(note) if note.is_empty() => {}
+            Err(note) => outcome.note(note),
         }
-        fetched += 1;
-        let entry = devices
-            .entry(source)
-            .or_insert_with(|| DiscoveredDevice::new(source));
-        apply_description(entry, &description);
     }
-    (fetched, rejected)
+    outcome
 }
 
 /// Attach a parsed description to a device.
 pub fn apply_description(entry: &mut DiscoveredDevice, description: &xml::Description) {
-    if let Some(name) = description.friendly_name.as_deref().and_then(names::tidy_name) {
+    if let Some(name) = description
+        .friendly_name
+        .as_deref()
+        .and_then(names::tidy_name)
+    {
         let confidence = if names::is_generic_name(&name) {
             Confidence::Low
         } else {
@@ -834,7 +892,11 @@ pub fn apply_description(entry: &mut DiscoveredDevice, description: &xml::Descri
             description.manufacturer.clone(),
             Confidence::High,
         ),
-        (EvidenceKind::Model, description.model_name.clone(), Confidence::High),
+        (
+            EvidenceKind::Model,
+            description.model_name.clone(),
+            Confidence::High,
+        ),
         (
             EvidenceKind::ModelNumber,
             description.model_number.clone(),
@@ -1357,8 +1419,9 @@ mod tests {
     #[test]
     fn a_generic_friendly_name_is_recorded_at_low_confidence() {
         let mut device = DiscoveredDevice::new("192.0.2.1".parse().unwrap());
-        let description = xml::parse("<root><device><friendlyName>UPnP Device</friendlyName></device></root>")
-            .unwrap();
+        let description =
+            xml::parse("<root><device><friendlyName>UPnP Device</friendlyName></device></root>")
+                .unwrap();
         apply_description(&mut device, &description);
         assert_eq!(
             device.best(EvidenceKind::DisplayName).unwrap().confidence,
