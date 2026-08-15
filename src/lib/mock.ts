@@ -12,6 +12,9 @@
 // native app never uses it.
 
 import type {
+  HostDiscovery,
+  InventoryDiscovery,
+  DeviceDiscovery,
   BulkOutcome,
   ChangeEvent,
   ChangeFeed,
@@ -102,6 +105,132 @@ interface DemoDevice {
   name?: string;
   status?: DeviceStatus;
   notes?: string;
+  /**
+   * What local discovery would have heard from this device.
+   *
+   * Absent means the device advertises nothing — which is the honest case for
+   * a Windows desktop and for anything the demo wants to leave unidentified.
+   * Every value here is fictional and every address is from a documentation
+   * range; none of it came from a real network.
+   */
+  discovery?: DemoDiscovery;
+}
+
+interface DemoDiscovery {
+  detected_name?: string;
+  name_source?: "mdns" | "ssdp";
+  device_type: string;
+  type_confidence: string;
+  type_evidence: string[];
+  type_conflicts?: string[];
+  manufacturer?: string;
+  model_name?: string;
+  model_number?: string;
+  mdns_hostname?: string;
+  ssdp_friendly_name?: string;
+  services: string[];
+  sources: string[];
+  alternate_names?: string[];
+  ipv6_addresses?: string[];
+  presentation_url?: string;
+}
+
+/**
+ * Demo discovery scenarios, chosen with `?discovery=`.
+ *
+ * `normal`    every device advertises what it plausibly would
+ * `none`      nothing answers, so every device falls back to its scan facts
+ * `conflict`  devices advertise contradictory names and types
+ * `malformed` advertisements are hostile-looking: markup, control characters,
+ *             enormous strings — proving the interface renders them as text
+ * `slow`      discovery takes long enough to see the phase on screen
+ */
+export type DiscoveryScenario = "normal" | "none" | "conflict" | "malformed" | "slow";
+
+const DISCOVERY_SCENARIOS: DiscoveryScenario[] = [
+  "normal",
+  "none",
+  "conflict",
+  "malformed",
+  "slow",
+];
+
+function discoveryScenario(): DiscoveryScenario {
+  try {
+    const value = new URLSearchParams(window.location.search).get("discovery");
+    return DISCOVERY_SCENARIOS.includes(value as DiscoveryScenario)
+      ? (value as DiscoveryScenario)
+      : "normal";
+  } catch {
+    return "normal";
+  }
+}
+
+/** A name no interface should be able to be broken by. */
+const HOSTILE_NAME =
+  '<script>alert("xss")</script> ' + "Very".repeat(30) + " Long Advertised Name";
+
+/**
+ * Apply the chosen scenario to one device's advertisements.
+ *
+ * The malformed and conflict cases run through exactly the same rendering path
+ * as the normal one — no separate code — which is the point: if the drawer can
+ * show these safely it can show anything a device sends.
+ */
+function scenarioDiscovery(seed: DemoDevice): DemoDiscovery | undefined {
+  const base = seed.discovery;
+  if (!base) return undefined;
+  switch (discoveryScenario()) {
+    case "none":
+      return undefined;
+    case "conflict":
+      return {
+        ...base,
+        type_conflicts: [...(base.type_conflicts ?? []), "Computer · medium", "Printer · low"],
+        alternate_names: [
+          ...(base.alternate_names ?? []),
+          `${base.detected_name ?? "Device"} (2)`,
+          "device",
+        ],
+      };
+    case "malformed":
+      return {
+        ...base,
+        detected_name: HOSTILE_NAME,
+        model_name: "\u0000\u0007Model\u001b[31m",
+        ssdp_friendly_name: "</td></tr><b>injected</b>",
+        alternate_names: [HOSTILE_NAME, "&lt;img src=x onerror=alert(1)&gt;"],
+        services: [...base.services, "_" + "x".repeat(80) + "._tcp"],
+      };
+    default:
+      return base;
+  }
+}
+
+/** Build the discovery payload a scan would attach to one host. */
+function discoveryFor(seed: DemoDevice, isoTime: string): HostDiscovery | null {
+  const d = scenarioDiscovery(seed);
+  if (!d) return null;
+  return {
+    detected_name: d.detected_name ?? null,
+    name_source: d.name_source ?? "mdns",
+    device_type: d.device_type,
+    type_confidence: d.type_confidence,
+    type_evidence: d.type_evidence,
+    type_conflicts: d.type_conflicts ?? [],
+    manufacturer: d.manufacturer ?? null,
+    model_name: d.model_name ?? null,
+    model_number: d.model_number ?? null,
+    serial_number: null,
+    mdns_hostname: d.mdns_hostname ?? null,
+    ssdp_friendly_name: d.ssdp_friendly_name ?? null,
+    services: d.services,
+    sources: d.sources,
+    alternate_names: d.alternate_names ?? [],
+    ipv6_addresses: d.ipv6_addresses ?? [],
+    presentation_url: d.presentation_url ?? null,
+    last_discovered_at: isoTime,
+  };
 }
 
 /**
@@ -123,6 +252,20 @@ const HOME_DEVICES: DemoDevice[] = [
     name: "Home Router",
     status: "trusted",
     notes: "Fibre router. Firmware checked when the ISP prompts.",
+    discovery: {
+      detected_name: "Acme Hub 6",
+      name_source: "ssdp",
+      device_type: "router",
+      type_confidence: "high",
+      type_evidence: ["SSDP InternetGatewayDevice", "This network's default gateway"],
+      manufacturer: "Ubiquiti Inc.",
+      model_name: "Hub 6",
+      model_number: "AH6-2000",
+      ssdp_friendly_name: "Acme Hub 6",
+      services: ["WANIPConnection", "Layer3Forwarding"],
+      sources: ["ssdp"],
+      presentation_url: "http://192.168.1.1/",
+    },
   },
   {
     ip: "192.168.1.12",
@@ -133,6 +276,18 @@ const HOME_DEVICES: DemoDevice[] = [
     ttl: 64,
     icmp: 2.4,
     status: "trusted",
+    discovery: {
+      detected_name: "Sam's MacBook Air",
+      name_source: "mdns",
+      device_type: "computer",
+      type_confidence: "high",
+      type_evidence: ["mDNS _workstation._tcp", "An interactive service (SSH, SMB or RDP)"],
+      model_number: "MacBookAir10,1",
+      mdns_hostname: "macbook-air",
+      services: ["_workstation._tcp", "_ssh._tcp", "_airplay._tcp", "_device-info._tcp"],
+      sources: ["mdns"],
+      ipv6_addresses: ["2001:db8::3c22:fbff:fe88:41d0"],
+    },
   },
   {
     ip: "192.168.1.15",
@@ -153,6 +308,17 @@ const HOME_DEVICES: DemoDevice[] = [
     ports: [],
     ttl: 64,
     icmp: 12.4,
+    // Advertises a bare category name, so it stays at low confidence and the
+    // generic-name rule keeps it from being called "Speaker".
+    discovery: {
+      detected_name: "speaker",
+      name_source: "mdns",
+      device_type: "speaker",
+      type_confidence: "low",
+      type_evidence: ["An audio-streaming service (AirPlay or Spotify Connect)"],
+      services: ["_raop._tcp"],
+      sources: ["mdns"],
+    },
   },
   {
     ip: "192.168.1.31",
@@ -165,6 +331,24 @@ const HOME_DEVICES: DemoDevice[] = [
     name: "Office Printer",
     status: "known",
     notes: "Toner reordered automatically. Web interface on HTTPS since the firmware update.",
+    // The operator named this one, so "Office Printer" is what shows
+    // everywhere and the detected name is offered alongside it.
+    discovery: {
+      detected_name: "Acme LaserFast 400",
+      name_source: "mdns",
+      device_type: "printer",
+      type_confidence: "high",
+      type_evidence: ["mDNS _ipp._tcp", "Hewlett Packard manufacturer", "TCP 631 and 9100"],
+      manufacturer: "Hewlett Packard",
+      model_name: "LaserFast 400",
+      model_number: "LF400-N",
+      mdns_hostname: "office-printer",
+      ssdp_friendly_name: "Acme LaserFast 400 (Office)",
+      services: ["_ipp._tcp", "_printer._tcp", "_pdl-datastream._tcp", "_http._tcp"],
+      sources: ["mdns", "ssdp"],
+      alternate_names: ["Acme LaserFast 400 (Office)"],
+      presentation_url: "http://192.168.1.31/",
+    },
   },
   {
     ip: "192.168.1.44",
@@ -175,6 +359,25 @@ const HOME_DEVICES: DemoDevice[] = [
     ttl: 64,
     icmp: 9.8,
     name: "Living Room TV",
+    discovery: {
+      detected_name: "Living Room",
+      name_source: "mdns",
+      device_type: "television",
+      type_confidence: "high",
+      type_evidence: [
+        "SSDP MediaRenderer",
+        "Samsung Electronics manufacturer",
+        "The model describes a television",
+      ],
+      type_conflicts: ["Media device · medium"],
+      manufacturer: "Samsung Electronics",
+      model_name: "QE55 Smart TV",
+      mdns_hostname: "livingroom-tv",
+      ssdp_friendly_name: "[TV] Living Room",
+      services: ["_googlecast._tcp", "MediaRenderer", "AVTransport", "RenderingControl"],
+      sources: ["mdns", "ssdp"],
+      alternate_names: ["[TV] Living Room"],
+    },
   },
   {
     ip: "192.168.1.50",
@@ -187,6 +390,19 @@ const HOME_DEVICES: DemoDevice[] = [
     name: "Home NAS",
     status: "trusted",
     notes: "Nightly backup target. Only SMB and the web console should be open.",
+    discovery: {
+      detected_name: "nas-home",
+      name_source: "mdns",
+      device_type: "nas",
+      type_confidence: "medium",
+      type_evidence: ["File sharing over SMB", "Synology Incorporated manufacturer"],
+      type_conflicts: ["Media device · medium", "Computer · low"],
+      manufacturer: "Synology Incorporated",
+      model_name: "DiskStation DS220+",
+      mdns_hostname: "nas-home",
+      services: ["_smb._tcp", "_ssh._tcp", "MediaServer", "ContentDirectory"],
+      sources: ["mdns", "ssdp"],
+    },
   },
   {
     ip: "192.168.1.60",
@@ -199,6 +415,18 @@ const HOME_DEVICES: DemoDevice[] = [
     name: "Driveway Camera",
     status: "ignored",
     notes: "Firmware reshuffles its ports on every reboot, so its changes are not worth reviewing.",
+    discovery: {
+      detected_name: "Driveway",
+      name_source: "ssdp",
+      device_type: "camera",
+      type_confidence: "medium",
+      type_evidence: ["SSDP camera device"],
+      manufacturer: "TP-LINK TECHNOLOGIES CO.,LTD.",
+      model_name: "NC450",
+      ssdp_friendly_name: "Driveway",
+      services: ["MediaRenderer"],
+      sources: ["ssdp"],
+    },
   },
   {
     ip: "192.168.1.72",
@@ -209,6 +437,20 @@ const HOME_DEVICES: DemoDevice[] = [
     ttl: 64,
     icmp: 15.2,
     name: "Games Console",
+    // Partial evidence: it names itself but declares no device type, so the
+    // classifier will not call it a console on the model string alone.
+    discovery: {
+      detected_name: "PlayStation 5",
+      name_source: "ssdp",
+      device_type: "game_console",
+      type_confidence: "medium",
+      type_evidence: ["The advertised model names a console"],
+      manufacturer: "Sony Interactive Entertainment",
+      model_name: "PlayStation 5",
+      ssdp_friendly_name: "PlayStation 5",
+      services: ["MediaRenderer"],
+      sources: ["ssdp"],
+    },
   },
   {
     // Nothing resolved: no hostname, and the OUI prefix is not in the table.
@@ -349,6 +591,28 @@ const observations = new Map<number, Array<{ deviceId: number; host: HostResult 
 /** Persisted change events, oldest first. */
 const changeEvents: ChangeEvent[] = [];
 
+/** Mirrors `discovery::names::is_generic_name` for the demo backend. */
+function isGenericName(name: string): boolean {
+  const normal = name.trim().toLowerCase().replace(/\.local$/, "").trim();
+  return [
+    "device",
+    "unknown",
+    "localhost",
+    "router",
+    "gateway",
+    "printer",
+    "camera",
+    "computer",
+    "speaker",
+    "tv",
+    "smart tv",
+    "nas",
+    "server",
+    "upnp",
+    "upnp device",
+  ].includes(normal);
+}
+
 function normalizeMac(mac: string): string | null {
   const hex = mac.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
   if (hex.length !== 12) return null;
@@ -377,6 +641,7 @@ function hostFrom(device: DemoDevice, isoTime: string): HostResult {
     ttl: device.ttl,
     os_guess: osFromTtl(device.ttl),
     last_seen: isoTime,
+    discovery: discoveryFor(device, isoTime),
   };
 }
 
@@ -475,11 +740,22 @@ function diffFields(before: HostResult, after: HostResult): FieldChange[] {
   return out;
 }
 
+/**
+ * The same order the backend applies: the operator's name, then a name the
+ * device advertised, then reverse DNS, then the manufacturer, then the address.
+ *
+ * A generic advertisement ("speaker", "printer") is skipped here exactly as
+ * `discovery::names` skips it, so the demo shows the down-ranking rule rather
+ * than describing it.
+ */
 function nameFor(host: HostResult, deviceId: number | null): string {
   const custom = deviceId != null ? devices.get(deviceId)?.custom_name : null;
   if (custom?.trim()) return custom.trim();
+  const detected = host.discovery?.detected_name?.trim();
+  if (detected && !isGenericName(detected)) return detected;
   if (host.hostname?.trim()) return host.hostname.trim();
   if (host.vendor?.trim()) return `${host.vendor.trim()} (${host.ip})`;
+  if (detected) return detected;
   return host.ip;
 }
 
@@ -706,7 +982,8 @@ function recordScan(options: {
     coverage_key: coverageKey,
     // The demo runs discovery for every completed local scan and none for a
     // cancelled one, exactly as the backend's rule would.
-    discovery_mode: cancelled ? "none" : "full",
+    discovery_mode:
+      cancelled || discoveryScenario() === "none" ? "none" : "full",
     discovery_summary: null,
     hosts,
   };
@@ -910,6 +1187,79 @@ function observationsFor(deviceId: number): Array<{ scan: MockScanRow; host: Hos
   return out;
 }
 
+/** The discovery record a device's latest observation carried, if any. */
+function discoveryOf(deviceId: number): HostDiscovery | null {
+  return observationsFor(deviceId)[0]?.host.discovery ?? null;
+}
+
+/** The narrower shape the Inventory table and its search use. */
+function inventoryDiscoveryOf(deviceId: number): InventoryDiscovery | null {
+  const d = discoveryOf(deviceId);
+  if (!d) return null;
+  return {
+    detected_name: d.detected_name,
+    device_type: d.device_type ?? "unknown",
+    type_confidence: d.type_confidence ?? "unknown",
+    manufacturer: d.manufacturer,
+    model_name: d.model_name,
+    services: d.services,
+    sources: d.sources,
+    last_discovered_at: d.last_discovered_at,
+  };
+}
+
+/**
+ * The full record the drawer shows, with the evidence rows derived from the
+ * same advertisements the table summarises — so the demo cannot show a drawer
+ * that disagrees with its own table.
+ */
+function deviceDiscoveryOf(deviceId: number): DeviceDiscovery | null {
+  const d = discoveryOf(deviceId);
+  if (!d) return null;
+  const seen = observationsFor(deviceId);
+  const firstSeen = seen[seen.length - 1]?.host.last_seen ?? d.last_discovered_at;
+  const evidence = [
+    ...(d.detected_name
+      ? [{ kind: "display_name", value: d.detected_name, confidence: "high" }]
+      : []),
+    ...(d.manufacturer
+      ? [{ kind: "manufacturer", value: d.manufacturer, confidence: "high" }]
+      : []),
+    ...(d.model_name ? [{ kind: "model", value: d.model_name, confidence: "high" }] : []),
+    ...d.services.map((service) => ({ kind: "service", value: service, confidence: "high" })),
+  ].map((row) => ({
+    source: d.sources[0] ?? "mdns",
+    kind: row.kind,
+    key: row.kind === "service" ? row.value : "",
+    value: row.value,
+    confidence: row.confidence,
+    first_seen: firstSeen ?? "",
+    last_seen: d.last_discovered_at ?? "",
+  }));
+  return {
+    detected_name: d.detected_name,
+    name_source: d.name_source,
+    device_type: d.device_type ?? "unknown",
+    type_confidence: d.type_confidence ?? "unknown",
+    type_evidence: d.type_evidence,
+    type_conflicts: d.type_conflicts,
+    manufacturer: d.manufacturer,
+    model_name: d.model_name,
+    model_number: d.model_number,
+    serial_number: d.serial_number,
+    mdns_hostname: d.mdns_hostname,
+    ssdp_friendly_name: d.ssdp_friendly_name,
+    services: d.services,
+    sources: d.sources,
+    alternate_names: d.alternate_names,
+    ipv6_addresses: d.ipv6_addresses,
+    presentation_url: d.presentation_url,
+    first_discovered_at: firstSeen,
+    last_discovered_at: d.last_discovered_at,
+    evidence,
+  };
+}
+
 function inventoryRowFor(device: Device): InventoryRow {
   const sightings = observationsFor(device.id);
   const latest = sightings[0]?.host;
@@ -961,6 +1311,7 @@ function inventoryRowFor(device: Device): InventoryRow {
     latest_response_ms: latest?.response_ms ?? null,
     latest_icmp_ms: latest?.icmp_ms ?? null,
     latest_tcp_ms: latest?.tcp_ms ?? null,
+    discovery: inventoryDiscoveryOf(device.id),
   };
 }
 
@@ -1155,6 +1506,33 @@ export const mock = {
 
     const cancelled = cancelRequested;
     const done = cancelled ? Math.round(total * 0.4) : total;
+
+    // Local discovery, in the order and with the phases the real scanner
+    // reports. Skipped entirely when the target is remote or the operator
+    // switched it off, which is the same rule the backend applies.
+    const scenario = discoveryScenario();
+    const discoveryRan =
+      !cancelled &&
+      scenario !== "none" &&
+      opts.discovery?.enabled !== false &&
+      opts.arp_assist !== false;
+    if (discoveryRan) {
+      for (const phase of ["discovering", "describing", "classifying"] as const) {
+        if (cancelRequested) break;
+        listeners.onProgress?.({
+          scan_id: scanId,
+          done,
+          total,
+          found: found.length,
+          phase,
+          elapsed_ms: Date.now() - started,
+        });
+        // `?discovery=slow` stretches each phase enough to read it on screen
+        // and to press Stop during one.
+        await sleep(scenario === "slow" ? 1_200 : 140);
+      }
+    }
+
     listeners.onProgress?.({
       scan_id: scanId,
       done,
@@ -1188,6 +1566,25 @@ export const mock = {
       cancelled,
       ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
       arp_assist: opts.arp_assist,
+      discovery: {
+        mdns_attempted: discoveryRan,
+        ssdp_attempted: discoveryRan,
+        mdns_responses: discoveryRan ? found.filter((h) => h.discovery).length * 3 : 0,
+        ssdp_responses: discoveryRan ? found.filter((h) => h.discovery).length * 2 : 0,
+        descriptions_fetched: discoveryRan
+          ? found.filter((h) => h.discovery?.sources.includes("ssdp")).length
+          : 0,
+        descriptions_rejected: 0,
+        description_notes: [],
+        devices_enriched: discoveryRan ? found.filter((h) => h.discovery).length : 0,
+        duration_ms: discoveryRan ? 2_400 : 0,
+        skip_reason: discoveryRan
+          ? null
+          : cancelled
+            ? "The scan was stopped before discovery began"
+            : "Local discovery is switched off in Settings",
+        interrupted: cancelRequested,
+      },
     };
   },
 
@@ -1440,6 +1837,7 @@ export const mock = {
         .map(refreshedEvent),
       network_name: scope?.display_name ?? null,
       presence: presenceOf(id, device.network_scope_id),
+      discovery: deviceDiscoveryOf(id),
     };
   },
 
