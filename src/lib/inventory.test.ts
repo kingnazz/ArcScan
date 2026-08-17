@@ -4,13 +4,30 @@ import {
   filterInventory,
   inventoryHaystack,
   inventoryHeadline,
+  matchesDeviceType,
   matchesView,
   prepareInventory,
+  presentDeviceTypes,
   sortInventory,
   visibleInventoryColumns,
   type InventoryFilter,
 } from "./inventory";
-import type { InventoryRow } from "../types";
+import type { InventoryDiscovery, InventoryRow } from "../types";
+
+/** Discovery facts for a row, defaulting to a confidently-typed printer. */
+function discovery(patch: Partial<InventoryDiscovery> = {}): InventoryDiscovery {
+  return {
+    detected_name: "Acme LaserFast 400",
+    device_type: "printer",
+    type_confidence: "high",
+    manufacturer: "Hewlett Packard",
+    model_name: "LaserFast 400",
+    services: ["_ipp._tcp"],
+    sources: ["mdns", "ssdp"],
+    last_discovered_at: "2026-08-05T09:00:00Z",
+    ...patch,
+  };
+}
 
 function row(patch: Partial<InventoryRow> = {}): InventoryRow {
   return {
@@ -233,5 +250,135 @@ describe("inventory headline", () => {
     expect(inventoryHeadline({ total: 1, present: 1, missing: 0, unknown: 0 })).toBe(
       "1 device · 1 present",
     );
+  });
+});
+
+
+describe("discovery in the inventory", () => {
+  it("finds a device by its detected name, model or type", () => {
+    const rows = [
+      row({ device_id: 1, discovery: discovery() }),
+      row({
+        device_id: 2,
+        display_name: "Study Desktop",
+        custom_name: "Study Desktop",
+        hostname: "desktop-study",
+        vendor: "Dell Inc.",
+        discovery: null,
+      }),
+    ];
+    const find = (query: string) =>
+      filterInventory(rows, { ...EMPTY_INVENTORY_FILTER, query }).map((r) => r.device_id);
+
+    // Each of these appears only in the printer's discovery record.
+    expect(find("laserfast")).toEqual([1]);
+    expect(find("printer")).toEqual([1]);
+    expect(find("hewlett")).toEqual([1]);
+  });
+
+  it("finds a device by a service, however the searcher spells it", () => {
+    const rows = [
+      row({ device_id: 1, discovery: discovery({ services: ["_ipp._tcp"] }) }),
+      row({
+        device_id: 2,
+        display_name: "Study Desktop",
+        custom_name: "Study Desktop",
+        hostname: "desktop-study",
+        vendor: "Dell Inc.",
+        open_ports: [22],
+        discovery: discovery({
+          services: ["_ssh._tcp"],
+          detected_name: null,
+          device_type: "computer",
+          manufacturer: "Dell Inc.",
+          model_name: null,
+        }),
+      }),
+    ];
+    const find = (query: string) =>
+      filterInventory(rows, { ...EMPTY_INVENTORY_FILTER, query }).map((r) => r.device_id);
+
+    expect(find("_ipp")).toEqual([1]);
+    expect(find("ipp printing")).toEqual([1]);
+    expect(find("ssh")).toEqual([2]);
+  });
+
+  it("narrows to one device type, and treats undiscovered devices as unknown", () => {
+    const rows = [
+      row({ device_id: 1, discovery: discovery() }),
+      row({ device_id: 2, discovery: discovery({ device_type: "camera" }) }),
+      row({ device_id: 3, discovery: null }),
+    ];
+    const ofType = (deviceType: string | null) =>
+      filterInventory(rows, { ...EMPTY_INVENTORY_FILTER, deviceType }).map((r) => r.device_id);
+
+    expect(ofType("printer")).toEqual([1]);
+    expect(ofType("camera")).toEqual([2]);
+    // A device no discovery-capable scan reached answers the same question as
+    // one discovery could not type: "what does ArcScan not recognise?"
+    expect(ofType("unknown")).toEqual([3]);
+    expect(ofType(null)).toEqual([1, 2, 3]);
+  });
+
+  it("combines the type filter with the search and the presence view", () => {
+    const rows = [
+      row({ device_id: 1, presence: "present", discovery: discovery() }),
+      row({ device_id: 2, presence: "missing", discovery: discovery() }),
+    ];
+    const filter: InventoryFilter = {
+      query: "laserfast",
+      view: "missing",
+      networkId: null,
+      deviceType: "printer",
+    };
+    expect(filterInventory(rows, filter).map((r) => r.device_id)).toEqual([2]);
+  });
+
+  it("offers only the types actually present, with Unknown last", () => {
+    const rows = [
+      row({ device_id: 1, discovery: discovery({ device_type: "television" }) }),
+      row({ device_id: 2, discovery: null }),
+      row({ device_id: 3, discovery: discovery({ device_type: "camera" }) }),
+      row({ device_id: 4, discovery: discovery({ device_type: "camera" }) }),
+    ];
+    expect(presentDeviceTypes(rows)).toEqual(["camera", "television", "unknown"]);
+  });
+
+  it("matches a device against a type directly", () => {
+    expect(matchesDeviceType(row({ discovery: discovery() }), "printer")).toBe(true);
+    expect(matchesDeviceType(row({ discovery: discovery() }), "camera")).toBe(false);
+    expect(matchesDeviceType(row({ discovery: null }), "unknown")).toBe(true);
+  });
+
+  it("sorts by type, detected name and model without crashing on missing data", () => {
+    const rows = [
+      row({ device_id: 1, discovery: discovery({ device_type: "television" }) }),
+      row({ device_id: 2, discovery: null }),
+      row({ device_id: 3, discovery: discovery({ device_type: "camera" }) }),
+    ];
+    for (const key of ["type", "detected_name", "model", "last_discovered"] as const) {
+      const sorted = sortInventory(rows, key, "asc");
+      expect(sorted).toHaveLength(3);
+      // Rows with nothing to sort on go last rather than first in both
+      // directions, so an empty column never leads the table.
+      expect(sortInventory(rows, key, "desc")).toHaveLength(3);
+    }
+  });
+
+  it("leaves the haystack unchanged for a device discovery never reached", () => {
+    const plain = inventoryHaystack(row({ discovery: null }));
+    expect(plain).toContain("office printer");
+    expect(plain).not.toContain("laserfast");
+  });
+
+  it("keeps the discovery columns off unless they are turned on", () => {
+    const wide = visibleInventoryColumns(1600, [], false);
+    expect(wide).not.toContain("type");
+    expect(wide).not.toContain("detected_name");
+
+    const chosen = visibleInventoryColumns(1600, ["type", "model"], false);
+    expect(chosen).toContain("type");
+    expect(chosen).toContain("model");
+    expect(chosen).not.toContain("detected_name");
   });
 });

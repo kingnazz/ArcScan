@@ -43,6 +43,7 @@ import { EMPTY_FILTER, prepareRows, visibleColumns, type SortKey, type TableFilt
 import {
   EMPTY_INVENTORY_FILTER,
   prepareInventory,
+  presentDeviceTypes,
   visibleInventoryColumns,
   type InventoryFilter,
   type InventorySortKey,
@@ -313,6 +314,12 @@ export default function App() {
     [inventory, invFilter, invSortKey, invSortDir],
   );
   const inventoryNetworks = inventory?.networks ?? [];
+  // Computed from the unfiltered set, so choosing a type never removes the
+  // other options from the menu that got you there.
+  const inventoryDeviceTypes = useMemo(
+    () => presentDeviceTypes(inventory?.rows ?? []),
+    [inventory],
+  );
   const inventoryColumns = useMemo(
     () =>
       visibleInventoryColumns(
@@ -1024,6 +1031,7 @@ export default function App() {
               onCloseExport={() => setInvExportOpen(false)}
               exportScopeLabel={inventoryExportScope}
               onStartScan={() => setView("results")}
+              deviceTypes={inventoryDeviceTypes}
             />
           ) : view === "changes" ? (
             <ChangesPanel

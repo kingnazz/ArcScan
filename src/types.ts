@@ -19,6 +19,146 @@ export interface HostResult {
   ttl: number | null;
   os_guess: string | null;
   last_seen: string;
+  /** What local discovery learned, when it ran. Absent for remote scans. */
+  discovery?: HostDiscovery | null;
+}
+
+/** The fourteen types ArcScan is prepared to name. */
+export type DeviceType =
+  | "router"
+  | "printer"
+  | "computer"
+  | "phone"
+  | "tablet"
+  | "television"
+  | "media_device"
+  | "camera"
+  | "nas"
+  | "game_console"
+  | "smart_home"
+  | "network_equipment"
+  | "speaker"
+  | "unknown";
+
+/**
+ * How sure ArcScan is, as a word.
+ *
+ * Never a number: there is no sense in which a printer service is 0.7 of a
+ * printer, and a score invites arithmetic that is not justified.
+ */
+export type Confidence = "high" | "medium" | "low" | "unknown";
+
+/** Where a detected fact came from. */
+export type DiscoverySource =
+  | "user"
+  | "ssdp"
+  | "mdns"
+  | "reverse_dns"
+  | "arp_vendor"
+  | "tcp_service"
+  | "scan_observation";
+
+/** What one scan's discovery pass managed. */
+export type DiscoveryMode = "full" | "partial" | "none";
+
+/** Discovery facts attached to one observation. */
+export interface HostDiscovery {
+  detected_name: string | null;
+  name_source: string | null;
+  device_type: string | null;
+  type_confidence: string | null;
+  type_evidence: string[];
+  type_conflicts: string[];
+  manufacturer: string | null;
+  model_name: string | null;
+  model_number: string | null;
+  serial_number: string | null;
+  mdns_hostname: string | null;
+  ssdp_friendly_name: string | null;
+  services: string[];
+  sources: string[];
+  alternate_names: string[];
+  /** Learned from mDNS. Supplemental display only — ArcScan scans IPv4. */
+  ipv6_addresses: string[];
+  presentation_url: string | null;
+  last_discovered_at: string | null;
+}
+
+/** The discovery fields the Inventory table, search and export use. */
+export interface InventoryDiscovery {
+  detected_name: string | null;
+  device_type: string;
+  type_confidence: string;
+  manufacturer: string | null;
+  model_name: string | null;
+  services: string[];
+  sources: string[];
+  last_discovered_at: string | null;
+}
+
+/** One stored claim about a device. */
+export interface DiscoveryEvidenceRow {
+  source: string;
+  kind: string;
+  key: string;
+  value: string;
+  confidence: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+/** The full discovery record for one device, as the drawer shows it. */
+export interface DeviceDiscovery {
+  detected_name: string | null;
+  name_source: string | null;
+  device_type: string;
+  type_confidence: string;
+  type_evidence: string[];
+  type_conflicts: string[];
+  manufacturer: string | null;
+  model_name: string | null;
+  model_number: string | null;
+  serial_number: string | null;
+  mdns_hostname: string | null;
+  ssdp_friendly_name: string | null;
+  services: string[];
+  sources: string[];
+  alternate_names: string[];
+  ipv6_addresses: string[];
+  presentation_url: string | null;
+  first_discovered_at: string | null;
+  last_discovered_at: string | null;
+  /** The durable record, distinct from the per-scan observation history. */
+  evidence: DiscoveryEvidenceRow[];
+}
+
+/** What a scan's discovery pass did, as recorded with the scan. */
+export interface DiscoveryReport {
+  mdns_attempted: boolean;
+  ssdp_attempted: boolean;
+  mdns_responses: number;
+  ssdp_responses: number;
+  descriptions_fetched: number;
+  descriptions_rejected: number;
+  description_notes: string[];
+  devices_enriched: number;
+  duration_ms: number;
+  skip_reason: string | null;
+  interrupted: boolean;
+}
+
+/** One device type, as the backend defines it. */
+export interface DeviceTypeInfo {
+  id: string;
+  label: string;
+}
+
+/** Which parts of local discovery a scan should run. */
+export interface DiscoveryOptions {
+  enabled: boolean;
+  mdns: boolean;
+  ssdp: boolean;
+  descriptions: boolean;
 }
 
 export interface LocalNetwork {
@@ -31,7 +171,15 @@ export interface LocalNetwork {
 
 export type ExportFormat = "csv" | "json" | "xml";
 
-export type ScanPhase = "probing" | "confirming" | "resolving" | "done" | "cancelled";
+export type ScanPhase =
+  | "probing"
+  | "confirming"
+  | "discovering"
+  | "describing"
+  | "resolving"
+  | "classifying"
+  | "done"
+  | "cancelled";
 
 export interface ScanStarted {
   scan_id: number;
@@ -80,6 +228,8 @@ export interface ScanResult {
   execution?: ExecutionSettings | null;
   /** Evidence about which physical network was scanned. */
   scope_hint?: ScopeHint | null;
+  /** What the discovery pass did, or why it did not run. */
+  discovery?: DiscoveryReport | null;
 }
 
 export interface ExecutionSettings {
@@ -121,6 +271,8 @@ export interface ScanOptions {
   profile: string | null;
   /** false forces routed behaviour with no local ARP assumptions. */
   arp_assist: boolean | null;
+  /** Which parts of local discovery to run. Absent means all of them. */
+  discovery?: DiscoveryOptions | null;
 }
 
 export interface ScanPreview {
@@ -151,6 +303,10 @@ export interface ScanSummary {
   scope_name: string | null;
   /** Ports-and-discovery-mode signature; scans compare only when it matches. */
   coverage_key: string;
+  /** What the scan's local-discovery pass managed. Not part of coverage. */
+  discovery_mode: DiscoveryMode | string;
+  /** The scan's DiscoveryReport as stored JSON, or null. */
+  discovery_summary: string | null;
 }
 
 export type DeviceStatus = "unclassified" | "known" | "trusted" | "watched" | "ignored";
@@ -176,7 +332,12 @@ export type ChangeType =
   | "vendor_changed"
   | "os_changed"
   | "mac_changed"
-  | "ports_changed";
+  | "ports_changed"
+  | "detected_name_changed"
+  | "device_type_changed"
+  | "service_appeared"
+  | "service_disappeared"
+  | "model_changed";
 
 export type ChangeState = "unreviewed" | "acknowledged" | "ignored";
 
@@ -209,6 +370,8 @@ export interface InventoryRow {
   latest_response_ms: number | null;
   latest_icmp_ms: number | null;
   latest_tcp_ms: number | null;
+  /** What local discovery established, if a discovery-capable scan reached it. */
+  discovery?: InventoryDiscovery | null;
 }
 
 /** A network as the Inventory and Changes filters offer it. */
@@ -367,6 +530,8 @@ export interface DeviceDetail {
   events: ChangeEvent[];
   network_name: string | null;
   presence: PresenceState;
+  /** The full discovery record, with the evidence behind it. */
+  discovery?: DeviceDiscovery | null;
 }
 
 export interface ServiceInfo {

@@ -53,6 +53,17 @@ export interface Settings {
   publicIpLookup: boolean;
   checkForUpdates: boolean;
   notifyOnChanges: boolean;
+  /**
+   * The local-discovery master switch.
+   *
+   * Off means no multicast query is ever sent, and the scan behaves exactly as
+   * v1.8.1 did. On is the default: discovery is local, read-only, bounded and
+   * uses no credentials, so it is the behaviour most people want without
+   * having to find a setting first.
+   */
+  localDiscovery: boolean;
+  /** Whether a device's advertised description URL may be read. */
+  readDeviceDescriptions: boolean;
   reducedMotion: boolean;
   /** Cleared once the operator has seen the first-run guidance. */
   showFirstRunGuidance: boolean;
@@ -75,6 +86,8 @@ export const DEFAULT_SETTINGS: Settings = {
   publicIpLookup: true,
   checkForUpdates: true,
   notifyOnChanges: true,
+  localDiscovery: true,
+  readDeviceDescriptions: true,
   reducedMotion: false,
   showFirstRunGuidance: true,
 };
@@ -87,6 +100,11 @@ const INVENTORY_COLUMN_KEYS: InventoryColumn[] = [
   "observations",
   "response",
   "previous",
+  "type",
+  "detected_name",
+  "model",
+  "discovery_sources",
+  "last_discovered",
 ];
 
 const SORT_KEYS: SortKey[] = [
@@ -169,6 +187,11 @@ export function loadSettings(): Settings {
     publicIpLookup: stored.publicIpLookup !== false,
     checkForUpdates: stored.checkForUpdates !== false,
     notifyOnChanges: stored.notifyOnChanges !== false,
+    // `!== false` rather than `=== true`, so a preferences blob written by
+    // v1.8.1 — which has neither key — picks up the new default instead of
+    // silently starting with discovery switched off.
+    localDiscovery: stored.localDiscovery !== false,
+    readDeviceDescriptions: stored.readDeviceDescriptions !== false,
     reducedMotion: stored.reducedMotion === true,
     showFirstRunGuidance: stored.showFirstRunGuidance !== false,
   };

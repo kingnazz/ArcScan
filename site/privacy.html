@@ -59,7 +59,7 @@
         <h1 class="page-title">What ArcScan sends, and what it keeps.</h1>
         <p class="lede">
           ArcScan is a local-first tool, and this page states precisely what that means rather than
-          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.1</span>
+          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.2</span>
           and this website.
         </p>
 
@@ -149,6 +149,39 @@
         <p>
           Devices on the network you scan will see those probes, as they would from any network
           scanner. Nothing about the scan is reported to the ArcScan project or to anyone else.
+        </p>
+
+        <h3>Local device discovery</h3>
+        <p>
+          From version 1.8.2, a scan of a network this computer is attached to also asks that
+          network what its devices are, using the two protocols devices already use to announce
+          themselves:
+        </p>
+        <ul>
+          <li>
+            <strong>mDNS.</strong> A multicast DNS query sent to
+            <span class="mono">224.0.0.251</span> on the local link, asking which services exist and
+            then asking about the ones it names.
+          </li>
+          <li>
+            <strong>SSDP.</strong> A multicast discovery query sent to
+            <span class="mono">239.255.255.250</span> on the local link.
+          </li>
+          <li>
+            <strong>Device description pages.</strong> Where a device advertises a description
+            address over SSDP, ArcScan reads it for the manufacturer and model. It connects only to
+            an address on the network being scanned; public addresses, loopback, other private
+            subnets, redirects and addresses carrying credentials are all refused, and the address
+            that was checked is the one used.
+          </li>
+        </ul>
+        <p>
+          Both queries carry a time-to-live of one, so they cannot leave the local link. A scan of a
+          remote or routed target sends neither, and neither does a scan with discovery switched off
+          in Settings. <strong>No credentials of any kind are sent</strong>, and no cloud service,
+          lookup service or fingerprint database is contacted, there is none to contact.
+          What ArcScan learns is what your devices announce to anyone on the network who listens,
+          and it stays on your computer with the rest of your inventory.
         </p>
 
         <h2>What ArcScan never collects</h2>

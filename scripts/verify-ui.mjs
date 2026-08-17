@@ -1140,6 +1140,214 @@ await step("axe-core finds no violations across every view, in both themes", asy
   return summary.join(", ");
 });
 
+// ---------------------------------------------------------------------------
+// Local discovery (v1.8.2)
+//
+// Driven through the demo's `?discovery=` scenarios, which run the real merge,
+// naming and rendering code rather than a parallel path.
+// ---------------------------------------------------------------------------
+
+/** Open the Inventory drawer for the device whose address is `ip`. */
+const openDeviceByIp = async (ip) => {
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const row = page.locator(`tbody tr:has-text("${ip}")`).first();
+  await row.dblclick();
+  await page.waitForTimeout(400);
+  return page.locator("aside, [role='dialog']").last();
+};
+
+/** Turn optional Inventory columns on through the Settings panel. */
+const enableColumns = async (keys) => {
+  await page.getByRole("button", { name: "Settings" }).click();
+  const panel = page.getByRole("complementary", { name: "Settings" });
+  try {
+    for (const key of keys) {
+      await panel.locator(`#settings-inventory-column-${key}`).click();
+      await page.waitForTimeout(120);
+    }
+  } finally {
+    // Always close it: an open drawer's scrim swallows every later click.
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
+  }
+};
+
+await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+
+await step("a device's detected name and type reach the drawer", async () => {
+  const drawer = await openDeviceByIp("192.168.1.44");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("discovery")) throw new Error("no Discovery section");
+  if (!text.includes("television")) throw new Error(`no device type: ${text.slice(0, 200)}`);
+  if (!text.includes("high confidence")) throw new Error("confidence not shown");
+  return "Television, high confidence, with its evidence";
+});
+
+await step("the evidence behind a type is shown, not just the verdict", async () => {
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const text = (await drawer.innerText()).toLowerCase();
+  for (const fragment of ["_ipp._tcp", "hewlett packard", "mdns", "ssdp"]) {
+    if (!text.includes(fragment)) throw new Error(`missing evidence: ${fragment}`);
+  }
+  return "service, manufacturer and both protocols named";
+});
+
+await step("a name the operator chose still wins over the detected one", async () => {
+  const drawer = await openDeviceByIp("192.168.1.31");
+  // The drawer names itself with the device's display name.
+  const heading = (await drawer.getAttribute("aria-label"))?.trim();
+  if (heading !== "Office Printer") throw new Error(`drawer titled "${heading}"`);
+  const text = await drawer.innerText();
+  if (!text.includes("Acme LaserFast 400")) throw new Error("detected name was discarded");
+  if (!text.toLowerCase().includes("your name is used")) {
+    throw new Error("the drawer does not say the operator's name is preferred");
+  }
+  return "Office Printer shown, Acme LaserFast 400 offered alongside";
+});
+
+await step("a supplemental IPv6 address never claims IPv6 was scanned", async () => {
+  const drawer = await openDeviceByIp("192.168.1.12");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("2001:db8")) throw new Error("no IPv6 address shown");
+  if (!text.includes("scans ipv4 only")) throw new Error("no clarification beside it");
+  return "shown as supplemental, with the limitation stated";
+});
+
+await step("a generic advertisement does not become a device's name", async () => {
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const row = page.locator('tbody tr:has-text("192.168.1.23")').first();
+  const name = (await row.locator("td").nth(1).innerText()).trim().toLowerCase();
+  if (name === "speaker") throw new Error("a generic name was used as the device name");
+  return `kept as "${name}" rather than "speaker"`;
+});
+
+await step("Inventory search finds a device by model and by service", async () => {
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const search = page.getByPlaceholder("Search inventory");
+  for (const [query, expected] of [
+    ["laserfast", "192.168.1.31"],
+    ["ipp printing", "192.168.1.31"],
+    ["_googlecast", "192.168.1.44"],
+  ]) {
+    await search.fill(query);
+    await page.waitForTimeout(250);
+    const rows = await page.locator("tbody tr").count();
+    const text = await page.locator("tbody").innerText();
+    if (rows === 0 || !text.includes(expected)) {
+      throw new Error(`"${query}" did not find ${expected} (${rows} rows)`);
+    }
+  }
+  await search.fill("");
+  return "model, friendly service name and protocol service name all match";
+});
+
+await step("the device-type filter narrows the table", async () => {
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const filter = page.getByLabel("Filter by device type");
+  if ((await filter.count()) === 0) throw new Error("no type filter offered");
+  await filter.selectOption("printer");
+  await page.waitForTimeout(250);
+  const text = await page.locator("tbody").innerText();
+  if (!text.includes("192.168.1.31")) throw new Error("the printer was filtered out");
+  if (text.includes("192.168.1.44")) throw new Error("a television survived a printer filter");
+  await filter.selectOption("");
+  return "Printer shows the printer and nothing else";
+});
+
+await step("the optional discovery columns appear when turned on", async () => {
+  await enableColumns(["type", "model", "detected_name"]);
+  await nav("Inventory").click();
+  await page.waitForTimeout(350);
+  const headers = (await page.locator("thead").innerText()).toLowerCase();
+  for (const column of ["type", "model", "detected name"]) {
+    if (!headers.includes(column)) throw new Error(`no ${column} column: ${headers}`);
+  }
+  return headers.replace(/\s+/g, " ").trim().slice(0, 120);
+});
+
+await step("a scan shows the discovery phases while it runs", async () => {
+  await page.goto(`${URL}?discovery=slow`, { waitUntil: "networkidle" });
+  await scanButton().click();
+  const seen = new Set();
+  for (let i = 0; i < 80; i++) {
+    const text = (await page.locator("body").innerText()).toLowerCase();
+    for (const phase of [
+      "discovering local services",
+      "reading device descriptions",
+      "classifying devices",
+    ]) {
+      if (text.includes(phase)) seen.add(phase);
+    }
+    if (seen.size === 3) break;
+    await page.waitForTimeout(120);
+  }
+  if (seen.size === 0) throw new Error("no discovery phase was ever shown");
+  await page.waitForTimeout(2500);
+  return [...seen].join(", ");
+});
+
+await step("Stop during discovery keeps results and records no discovery events", async () => {
+  await page.goto(`${URL}?discovery=slow`, { waitUntil: "networkidle" });
+  await scanButton().click();
+  // Wait until discovery is under way, then stop mid-phase.
+  for (let i = 0; i < 80; i++) {
+    const text = (await page.locator("body").innerText()).toLowerCase();
+    if (text.includes("discovering local services")) break;
+    await page.waitForTimeout(120);
+  }
+  const stop = page.getByRole("button", { name: /stop/i }).first();
+  if ((await stop.count()) > 0) await stop.click();
+  await page.waitForTimeout(1500);
+
+  await nav("Changes").click();
+  await page.waitForTimeout(400);
+  const inbox = await inboxText();
+  for (const forbidden of ["detected name change", "device type change", "service appeared"]) {
+    if (inbox.includes(forbidden)) throw new Error(`a stopped scan produced "${forbidden}"`);
+  }
+  return "partial results kept, no discovery events written";
+});
+
+await step("with discovery off, the interface shows no discovery at all", async () => {
+  await page.goto(`${URL}?discovery=none`, { waitUntil: "networkidle" });
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (text.includes("acme laserfast")) throw new Error("a detected name appeared with discovery off");
+  return "no Discovery section, and the device keeps its ordinary name";
+});
+
+await step("a hostile advertisement renders as text and breaks nothing", async () => {
+  await page.goto(`${URL}?discovery=malformed`, { waitUntil: "networkidle" });
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const text = await drawer.innerText();
+  // The script tag must appear as characters, never as an element.
+  if (!text.includes("<script>")) throw new Error("the hostile name was not rendered at all");
+  const injected = await page.locator("aside script, [role='dialog'] script").count();
+  if (injected > 0) throw new Error("a script element was created from device text");
+  const bold = await page.locator("aside b, [role='dialog'] b").count();
+  if (bold > 0) throw new Error("device text was interpreted as markup");
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+  );
+  if (overflow) throw new Error("a long advertised name pushed the page sideways");
+  return "rendered as text, no markup interpreted, no overflow";
+});
+
+await step("conflicting evidence is shown rather than silently resolved", async () => {
+  await page.goto(`${URL}?discovery=conflict`, { waitUntil: "networkidle" });
+  const drawer = await openDeviceByIp("192.168.1.50");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("also consistent with")) throw new Error("no conflicts shown");
+  if (!text.includes("other names it advertised")) throw new Error("no alternate names shown");
+  return "both the competing types and the competing names are visible";
+});
+
+await page.goto(URL, { waitUntil: "networkidle" });
+
 await step("no duplicate element ids anywhere in the tree", async () => {
   const duplicates = await page.evaluate(() => {
     const seen = new Map();

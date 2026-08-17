@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ArcScan site build: v1.8.1 -->
+<!-- ArcScan site build: v1.8.2 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -72,7 +72,7 @@
         "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps a persistent inventory of them on your own computer, and lists the changes found in later scans.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
-        "softwareVersion": "1.8.1",
+        "softwareVersion": "1.8.2",
         "license": "https://github.com/kingnazz/ArcScan/blob/main/LICENSE",
         "isAccessibleForFree": true,
         "screenshot": "https://kingnazz.github.io/ArcScan/assets/shots/inventory-dark.png",
@@ -312,15 +312,15 @@
           </div>
 
           <p class="release-line">
-            <span id="version-fallback">v1.8.1</span><span id="release-meta"></span>
+            <span id="version-fallback">v1.8.2</span><span id="release-meta"></span>
             <!--
               A local page rather than the GitHub release, so the first thing a
               curious visitor reads is written for them. The technical notes are
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.1.html"
-              >What changed in 1.8.1</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.2.html"
+              >What changed in 1.8.2</a
             >
           </p>
 
@@ -794,7 +794,7 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.1 -->
+      <!-- ====================================================== new in 1.8.2 -->
       <!--
         Sits directly above the downloads, so what changed is in front of the
         person about to install it. Divided columns rather than another card
@@ -804,43 +804,43 @@
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.1</p>
-            <h2>A cleaner window over the same engine.</h2>
+            <p class="eyebrow">New in 1.8.2</p>
+            <h2>It now recognises more of what it finds.</h2>
             <p>
-              ArcScan 1.8.1 is a tidying release. The window no longer shows the product name twice,
-              the Scan screen reads in a clearer order, and the optional public IP lookup has moved
-              somewhere you can reach it. Scanning, the inventory and the changes list are
-              unchanged from 1.8.0.
+              ArcScan can now recognise more devices using mDNS and SSDP, while showing where each
+              detected name and type came from. It asks your local network only, uses no
+              credentials, and contacts no cloud service.
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>The name at the top, once</h3>
+              <h3>Devices that have a name show it</h3>
               <p>
-                Earlier versions drew an ArcScan icon and title of their own directly under the one
-                your operating system already draws. The second copy is gone, the standard window
-                buttons, dragging and snapping stay exactly as they were, and the view switcher
-                takes the start of the first row.
+                Printers, televisions, routers and media players announce what they are on the
+                local network. ArcScan asks, and shows the name and model it hears instead of a
+                bare address. A name you typed yourself always wins: discovery can name a
+                device that had none, never rename one you named.
               </p>
             </article>
 
             <article>
-              <h3>Public IP where you can find it</h3>
+              <h3>Device types, with confidence</h3>
               <p>
-                The optional lookup has moved out of Settings and onto the Scan screen, beside the
-                local network. It stays optional: it runs only when you press Check, it is not
-                needed for scanning, and the answer is kept for the session rather than stored with
-                your inventory.
+                Printer, router, television, camera, NAS and ten more, each marked high,
+                medium or low confidence, and left as Unknown when nothing supports an answer. The
+                device panel shows the evidence behind the verdict rather than asking you to take
+                it on trust.
               </p>
             </article>
 
             <article>
-              <h3>Spacing, alignment and contrast</h3>
+              <h3>Local, read-only, no credentials</h3>
               <p>
-                Controls in a row share a height, the tab counts no longer shift the tabs as they
-                grow, two colours that fell under the contrast standard have been darkened, and two
-                buttons that shared a name now say which is which.
+                Discovery runs only on a network this computer is attached to; remote and routed
+                targets never receive a query. Nothing is sent to any service, nothing is
+                configured or changed, and everything a device says is treated as text. You can
+                switch it all off in Settings.
               </p>
             </article>
           </div>
@@ -854,36 +854,36 @@
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/results-dark.webp"
-                srcset="assets/shots/results-dark-800.webp 800w, assets/shots/results-dark.webp 1440w"
+                src="assets/shots/inventory-types-dark.webp"
+                srcset="assets/shots/inventory-types-dark-800.webp 800w, assets/shots/inventory-types-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The ArcScan scan results with the view switcher at the very top of the window and no ArcScan icon or wordmark beside it, above the local network row and a table of discovered devices."
+                alt="The ArcScan Inventory with an added Type column, showing a router, a computer, a printer, a television, a NAS, a camera and a game console, each with a confidence badge, and two devices with no type at all."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                The switcher is the first thing in the window, with nothing left in the space the
-                duplicate title used to take.
+                Device types in the Inventory, with the confidence beside each one. Two devices
+                advertise nothing, so they carry no type.
               </figcaption>
             </figure>
 
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/public-ip-dark.webp"
-                srcset="assets/shots/public-ip-dark-800.webp 800w, assets/shots/public-ip-dark.webp 1440w"
+                src="assets/shots/device-discovery-dark.webp"
+                srcset="assets/shots/device-discovery-dark-800.webp 800w, assets/shots/device-discovery-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The row under the ArcScan view switcher, showing the local network on the left and, on the right, Public IP followed by an example address, the words Checked just now, and buttons to copy it or check again."
+                alt="The ArcScan device panel for a printer, showing a Discovery section with the detected name, the device type Printer marked high confidence, the manufacturer, the model, and the protocols it was discovered by."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                The public IP lookup after it has been asked. It says Not checked until you press
-                Check, and the address here is one reserved for documentation.
+                The detected name, the type, and which protocols found them. The operator named
+                this printer, so their name is the one shown.
               </figcaption>
             </figure>
           </div>
@@ -913,7 +913,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.1</dd>
+                <dd data-field="version">1.8.2</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -938,7 +938,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.1</dd>
+                <dd data-field="version">1.8.2</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -963,7 +963,7 @@
                 <dt>Installer</dt>
                 <dd>Disk image (.dmg)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.1</dd>
+                <dd data-field="version">1.8.2</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -1256,6 +1256,7 @@
           <nav aria-label="Footer">
             <a href="#download">Download</a>
             <a href="#features">Features</a>
+            <a href="whats-new-1.8.2.html">What's new in 1.8.2</a>
             <a href="whats-new-1.8.1.html">What's new in 1.8.1</a>
             <a href="whats-new-1.8.0.html">What's new in 1.8</a>
             <a href="#faq">FAQ</a>

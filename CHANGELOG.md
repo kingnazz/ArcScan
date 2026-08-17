@@ -3,7 +3,121 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.1] - unreleased
+## [1.8.2] - unreleased
+
+Better device discovery. ArcScan now asks the local network what its devices
+are, using the two protocols printers, televisions, routers, cameras and media
+equipment already speak, and shows what it hears along with where each answer
+came from. Install over 1.8.x, 1.7.x or 1.6.x without losing anything. Full
+notes: [docs/RELEASE-NOTES-1.8.2.md](docs/RELEASE-NOTES-1.8.2.md).
+
+### Added
+
+- **mDNS discovery.** ArcScan asks the local link which services exist on it and
+  follows up only on what the link named, rather than sending a fixed list of
+  guesses. It speaks as a one-shot querier — an ephemeral port, a few seconds of
+  listening, then the socket closes — so it never binds port 5353, never
+  collides with the Bonjour or Avahi responder already running, never answers a
+  query, and keeps nothing between scans.
+- **SSDP discovery.** A standards-compliant `M-SEARCH` with a small `MX`. Where
+  a device advertises a description document, ArcScan reads it for the
+  manufacturer and model, subject to the URL rules below.
+- **Better detected names.** A device that publishes `Acme LaserFast 400` is no
+  longer shown as its address. The order is fixed: a name you typed, then a
+  high-confidence mDNS name, then a high-confidence SSDP friendly name, then the
+  reverse-DNS hostname, then the manufacturer with an established type, then an
+  mDNS host name, then the address. **A name you typed always wins**, before any
+  other rule is consulted. Names that describe a category rather than a device
+  (`printer`, `android`, `UPnP Device`) are demoted below the hostname.
+- **Device types with confidence and evidence.** Fourteen types and four words —
+  high, medium, low, unknown — rather than a score, because there is no sense in
+  which a printer service is 0.7 of a printer. The drawer shows what the verdict
+  rests on, and where the evidence supports two answers it shows both.
+- **Discovery sources.** Every detected name, model and type records which
+  protocol it came from, and the Inventory, the drawer and the export all say so.
+- **Five optional Inventory columns** (Type, Detected name, Model, Discovered by,
+  Last discovered) and a device-type filter, all off by default. Search reaches
+  detected names, models, types and services, and indexes each service under both
+  its protocol name and its friendly one, so `_ipp._tcp` and "IPP printing" both
+  find the printer.
+- **A Local discovery section in Settings**: a master switch, and under it
+  whether description documents may be read. Both on by default.
+- **Eight new Inventory export columns.** A device no discovery-capable scan has
+  reached exports blank cells rather than the word "Unknown", which would read as
+  an answer.
+- **A deterministic discovery demo.** `?discovery=normal|none|conflict|malformed|slow`
+  drives the browser demo through the real merge, naming and rendering code. The
+  malformed case has devices advertise script tags, control characters and an
+  80-character service name, so the interface's handling of hostile input is
+  something the suite checks rather than something the notes claim.
+
+### Security
+
+- **SSDP `LOCATION` is treated as hostile input.** Refused outright: any scheme
+  but plain `http`, embedded credentials, fragments, IPv6 literals, ports 0, 22,
+  23, 25, 465 and 587, control characters anywhere, and anything past a length
+  cap. The destination must then be inside the local network the scan actually
+  ran against — loopback, link-local (including the cloud-metadata address),
+  multicast, broadcast and *other private subnets* are all refused. A host name
+  answering with one local and one public address is refused entirely. Unusual
+  address spellings (`0x7f.0.0.1`, `2130706433`, `0177.0.0.1`) are normalised
+  before the check.
+- **No DNS-rebinding window.** The approved address is what the connection uses;
+  there is no second resolution between the check and the connect.
+- **No redirects and no proxy.** A `3xx` is an error, not an instruction, and the
+  fetcher builds its own connection rather than consulting a system proxy that
+  would send the request to a host nothing validated.
+- **`https` descriptions are refused deliberately.** A local device serves one
+  under a self-signed certificate for an address, which nothing can verify;
+  supporting it would mean a TLS stack with verification switched off. The SSDP
+  headers still carry a manufacturer and a device type.
+- **Description documents allow no DTD.** A document containing `<!DOCTYPE` is
+  refused before a field is read, which removes external entities, parameter
+  entities and expansion bombs in one rule. Only the five predefined entities and
+  numeric character references decode. Nesting is capped with an explicit stack
+  rather than recursion, and document size, field length, service count and
+  element count are all bounded. Every value is rendered as plain text.
+- **No new webview permissions.** Multicast and description fetching are entirely
+  in Rust, so the Content Security Policy and the Tauri capability set are
+  unchanged.
+
+### Changed
+
+- **Discovery is local-only, and uncertainty means not sending.** It runs only
+  when the target is inside a subnet this computer is attached to. Remote-subnet
+  scans, routed targets and public targets never send a multicast packet, and the
+  multicast TTL is 1 so nothing leaves the local link regardless of how a router
+  is configured.
+- **The Changes inbox stays quiet.** Discovery records events only for a
+  materially changed high-confidence name, a changed high-confidence type, a
+  meaningful service appearing or disappearing, and a manufacturer or model
+  change. Nothing is recorded for the first sighting of a device, for anything
+  below high confidence, for whitespace or casing, for TTLs, `CACHE-CONTROL`,
+  `BOOTID`, `CONFIGID`, `SEARCHPORT` or `SERVER` banners, for TXT ordering, or
+  for a failed description fetch. A service is only reported as gone after **two
+  consecutive** discovery-complete scans miss it, because one missed multicast
+  response is ordinary on Wi-Fi.
+- **A stopped scan records no discovery events**, and a scan that ran discovery
+  is never compared on discovery-derived facts against one that could not.
+- **New scan phases** — Discovering local services, Reading device descriptions,
+  Classifying devices — shown in the progress strip. Stop interrupts every one of
+  them, keeping whatever had already been parsed.
+- **Device identity is untouched.** Matching is still MAC, then
+  hostname-and-vendor, then address, scoped to a network. A detected name is
+  evidence attached to a device, never a key; it never merges devices and never
+  crosses a network scope, and neither does an mDNS instance name or a UPnP UDN.
+  Presence semantics and port comparison compatibility are unchanged.
+- **An IPv6 address learned from mDNS is shown as supplemental information**,
+  with a note saying so. ArcScan scans IPv4 only, and showing an address is not a
+  claim that anything was scanned at it.
+
+### Fixed
+
+- **A newly published advisory against `nanoid`** (GHSA-2v37-7h3g-55p8), which
+  arrives transitively under postcss and runs at build time only. A lockfile bump
+  within the existing range.
+
+## [1.8.1] - 2026-08-04
 
 Visual polish and the public-IP lookup on the Scan screen. No scanner,
 Inventory, Changes or database change: this release is about the window and
@@ -62,7 +176,7 @@ where one existing feature lives. Full notes:
   provider that never answers now fails with a timeout instead of leaving the
   control spinning.
 
-## [1.8.0] - unreleased
+## [1.8.0] - 2026-08-03
 
 A persistent Inventory, honest presence states, and a Changes list that stays
 until you have read it. Navigation becomes `Scan · Inventory · Changes · History`.
@@ -155,7 +269,7 @@ already held. Full notes: [docs/RELEASE-NOTES-1.8.0.md](docs/RELEASE-NOTES-1.8.0
   and would create a backlog nobody asked to review. Those differences are still
   in each scan's own comparison.
 
-## [1.7.1] - unreleased
+## [1.7.1] - 2026-08-01
 
 A correctness, reliability and security hardening release. No new product
 surface: v1.7.1 fixes the ways v1.7.0 could tell you something untrue about a
