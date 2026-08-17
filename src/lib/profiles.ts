@@ -127,6 +127,12 @@ export function profileName(id: string | null | undefined): string {
 }
 
 /** The settings a profile overrides, for building scan options. */
+/** Which parts of local discovery the operator has left switched on. */
+export interface DiscoveryPreference {
+  enabled: boolean;
+  descriptions: boolean;
+}
+
 export interface ProfileOverrides {
   ports?: number[];
   timeout_ms?: number;
@@ -146,6 +152,7 @@ export function buildScanOptions(
   target: string,
   profileId: ProfileId,
   overrides: ProfileOverrides = {},
+  discovery: DiscoveryPreference = { enabled: true, descriptions: true },
 ): ScanOptions {
   const profile = PROFILES[profileId];
   const tunable = profileId === "custom" || profileId === "full-tcp";
@@ -165,6 +172,16 @@ export function buildScanOptions(
     ping_concurrency: pick("ping_concurrency", profile.ping_concurrency),
     profile: profileId,
     arp_assist: profile.arp_assist,
+    // The Remote subnet profile declares up front that the target is somewhere
+    // else, so discovery is switched off here as well as being refused by the
+    // backend's own eligibility gate. Two independent checks, because sending
+    // multicast at the wrong network is the one mistake this must not make.
+    discovery: {
+      enabled: discovery.enabled && profile.arp_assist !== false,
+      mdns: true,
+      ssdp: true,
+      descriptions: discovery.descriptions,
+    },
   };
 }
 

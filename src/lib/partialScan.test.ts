@@ -80,6 +80,8 @@ describe("history labels for partial scans", () => {
     target: "10.0.0.0/24",
     target_key: "cidr:10.0.0.0/24",
     profile: "quick-lan",
+    discovery_mode: "full",
+    discovery_summary: null,
     created_at: "2026-07-01T10:00:00Z",
     duration_ms: 900,
     scanned: 254,

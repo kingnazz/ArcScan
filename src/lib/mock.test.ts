@@ -251,3 +251,73 @@ describe("deleting a scan", () => {
     expect(mock.changeEvents().total).toBe(eventsBefore);
   });
 });
+
+
+describe("demo discovery", () => {
+  it("gives the printer a detected name the operator's name still overrides", () => {
+    const printer = mock
+      .inventory()
+      .rows.find((r) => r.current_ip === "192.168.1.31");
+    expect(printer).toBeDefined();
+    // The operator named it, so that is what shows.
+    expect(printer?.display_name).toBe("Office Printer");
+    // The detected name is kept alongside, not thrown away.
+    expect(printer?.discovery?.detected_name).toBe("Acme LaserFast 400");
+    expect(printer?.discovery?.device_type).toBe("printer");
+    expect(printer?.discovery?.type_confidence).toBe("high");
+  });
+
+  it("types the router, the TV and the camera from what they advertise", () => {
+    const rows = mock.inventory().rows;
+    const typeOf = (ip: string) =>
+      rows.find((r) => r.current_ip === ip)?.discovery?.device_type;
+    expect(typeOf("192.168.1.1")).toBe("router");
+    expect(typeOf("192.168.1.44")).toBe("television");
+    expect(typeOf("192.168.1.60")).toBe("camera");
+    expect(typeOf("192.168.1.50")).toBe("nas");
+  });
+
+  it("leaves a device that advertises nothing without a discovery record", () => {
+    const rows = mock.inventory().rows;
+    // The Windows desktop resolves reverse DNS and nothing else.
+    const desktop = rows.find((r) => r.current_ip === "192.168.1.15");
+    expect(desktop?.discovery).toBeNull();
+    // As does the wholly unidentified device.
+    const unknown = rows.find((r) => r.current_ip === "192.168.1.88");
+    expect(unknown?.discovery).toBeNull();
+  });
+
+  it("down-ranks a device that advertises only its category", () => {
+    const rows = mock.inventory().rows;
+    const speaker = rows.find((r) => r.current_ip === "192.168.1.23");
+    expect(speaker?.discovery?.detected_name).toBe("speaker");
+    // "speaker" is generic, so it does not become the device's name.
+    expect(speaker?.display_name).not.toBe("speaker");
+    expect(speaker?.discovery?.type_confidence).toBe("low");
+  });
+
+  it("gives the drawer the evidence behind what it shows", () => {
+    const printer = mock
+      .inventory()
+      .rows.find((r) => r.current_ip === "192.168.1.31");
+    const detail = mock.deviceDetail(printer!.device_id);
+    const record = detail.discovery;
+    expect(record).toBeTruthy();
+    expect(record?.type_evidence.length).toBeGreaterThan(0);
+    expect(record?.evidence.some((e) => e.kind === "service")).toBe(true);
+    expect(record?.evidence.every((e) => e.first_seen !== "")).toBe(true);
+    // A second name it advertised is offered rather than silently dropped.
+    expect(record?.alternate_names).toContain("Acme LaserFast 400 (Office)");
+  });
+
+  it("records what the discovery pass managed with each scan", () => {
+    const scans = mock.listScans();
+    const completed = scans.find((s) => s.status === "completed");
+    expect(completed?.discovery_mode).toBe("full");
+
+    // A stopped scan never claims a full pass, whatever it managed to hear:
+    // the phases after Stop did not run, and that is what gates change events.
+    const cancelled = scans.find((s) => s.status === "cancelled");
+    expect(cancelled?.discovery_mode).toBe("none");
+  });
+});

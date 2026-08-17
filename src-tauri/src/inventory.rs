@@ -238,6 +238,22 @@ pub enum ChangeType {
     OsChanged,
     MacChanged,
     PortsChanged,
+    // --- Discovery-derived changes (v1.8.2) ---------------------------------
+    //
+    // Recorded only when both the scan and its baseline ran a *full* discovery
+    // pass, and only for facts stable enough to be worth a person's attention.
+    // The rules that keep these quiet live in `crate::db::record_discovery_events`.
+    /// The name a device advertises for itself changed, at high confidence.
+    DetectedNameChanged,
+    /// The kind of device ArcScan is confident it is changed.
+    DeviceTypeChanged,
+    /// A meaningful advertised service appeared.
+    ServiceAppeared,
+    /// A meaningful advertised service stopped being advertised, and stayed
+    /// gone long enough to be believed.
+    ServiceDisappeared,
+    /// The manufacturer or model a device reports changed.
+    ModelChanged,
 }
 
 impl ChangeType {
@@ -252,6 +268,11 @@ impl ChangeType {
             ChangeType::OsChanged => "os_changed",
             ChangeType::MacChanged => "mac_changed",
             ChangeType::PortsChanged => "ports_changed",
+            ChangeType::DetectedNameChanged => "detected_name_changed",
+            ChangeType::DeviceTypeChanged => "device_type_changed",
+            ChangeType::ServiceAppeared => "service_appeared",
+            ChangeType::ServiceDisappeared => "service_disappeared",
+            ChangeType::ModelChanged => "model_changed",
         }
     }
 
@@ -266,6 +287,11 @@ impl ChangeType {
             "os_changed" => ChangeType::OsChanged,
             "mac_changed" => ChangeType::MacChanged,
             "ports_changed" => ChangeType::PortsChanged,
+            "detected_name_changed" => ChangeType::DetectedNameChanged,
+            "device_type_changed" => ChangeType::DeviceTypeChanged,
+            "service_appeared" => ChangeType::ServiceAppeared,
+            "service_disappeared" => ChangeType::ServiceDisappeared,
+            "model_changed" => ChangeType::ModelChanged,
             _ => return None,
         })
     }
@@ -347,10 +373,34 @@ pub fn display_name(
     vendor: Option<&str>,
     ip: &str,
 ) -> String {
+    display_name_detected(custom_name, None, hostname, vendor, ip)
+}
+
+/// The same order, with a name the device advertised for itself slotted in.
+///
+/// A detected name sits above the reverse-DNS hostname because it is what the
+/// device's owner typed into it, while a hostname is usually what DHCP made up.
+/// It sits below `custom_name` for the reason that governs this whole release:
+/// a name a person chose is never replaced by one a device announced.
+///
+/// Only a *strong* detected name should be passed here — the full ranking,
+/// including how generic names are demoted, lives in
+/// [`crate::discovery::names::resolve`], which is what decides whether a device
+/// has a detected name at all.
+pub fn display_name_detected(
+    custom_name: Option<&str>,
+    detected_name: Option<&str>,
+    hostname: Option<&str>,
+    vendor: Option<&str>,
+    ip: &str,
+) -> String {
     fn pick(s: Option<&str>) -> Option<&str> {
         s.map(str::trim).filter(|v| !v.is_empty())
     }
     if let Some(name) = pick(custom_name) {
+        return name.to_string();
+    }
+    if let Some(name) = pick(detected_name) {
         return name.to_string();
     }
     if let Some(name) = pick(hostname) {
@@ -659,6 +709,7 @@ mod tests {
             tcp_ms: Some(3.1),
             ttl: Some(64),
             os_guess: Some("Linux/Unix/macOS".into()),
+            discovery: None,
             last_seen: "2026-07-01T10:00:00+00:00".into(),
         }
     }
@@ -935,6 +986,11 @@ mod tests {
             ChangeType::OsChanged,
             ChangeType::MacChanged,
             ChangeType::PortsChanged,
+            ChangeType::DetectedNameChanged,
+            ChangeType::DeviceTypeChanged,
+            ChangeType::ServiceAppeared,
+            ChangeType::ServiceDisappeared,
+            ChangeType::ModelChanged,
         ] {
             assert_eq!(ChangeType::parse(kind.as_str()), Some(kind));
         }

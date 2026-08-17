@@ -68,13 +68,21 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
 
   const options = useMemo(
     () =>
-      buildScanOptions(target, profileId, {
-        ports: parsed.ports,
-        timeout_ms: settings.timeoutMs,
-        concurrency: settings.hostConcurrency,
-        tcp_concurrency: settings.tcpConcurrency,
-        ping_concurrency: settings.pingConcurrency,
-      }),
+      buildScanOptions(
+        target,
+        profileId,
+        {
+          ports: parsed.ports,
+          timeout_ms: settings.timeoutMs,
+          concurrency: settings.hostConcurrency,
+          tcp_concurrency: settings.tcpConcurrency,
+          ping_concurrency: settings.pingConcurrency,
+        },
+        {
+          enabled: settings.localDiscovery,
+          descriptions: settings.readDeviceDescriptions,
+        },
+      ),
     [
       target,
       profileId,
@@ -83,6 +91,8 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
       settings.hostConcurrency,
       settings.tcpConcurrency,
       settings.pingConcurrency,
+      settings.localDiscovery,
+      settings.readDeviceDescriptions,
     ],
   );
 
