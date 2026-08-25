@@ -43,6 +43,8 @@
 //! stops it from producing change events.
 
 pub mod classify;
+pub mod diagnostics;
+pub mod effective;
 pub mod http;
 pub mod mdns;
 pub mod model;
@@ -61,9 +63,13 @@ use tokio::net::UdpSocket;
 use crate::scanner;
 
 pub use classify::{classify, Classification, ClassifyFacts};
+pub use effective::{
+    cap_for_freshness, effective_type, freshness, EffectiveType, Freshness, TypeSource,
+    STALE_AFTER_MISSES,
+};
 pub use model::{
-    Confidence, DeviceType, DiscoveredDevice, DiscoveryReport, DiscoverySource, Evidence,
-    EvidenceKind,
+    Confidence, DeviceType, DiscoveredDevice, DiscoveryQuality, DiscoveryReport, DiscoverySource,
+    Evidence, EvidenceKind,
 };
 
 // --- Hard limits ----------------------------------------------------------
@@ -257,12 +263,16 @@ pub async fn run(ctx: &DiscoveryContext) -> DiscoveryOutcome {
 
     if let Some(harvest) = &mdns_result {
         report.mdns_responses = harvest.packets;
+        report.mdns_socket_failed = !harvest.socket_ok;
+        report.mdns_capped = harvest.capped;
         merge_mdns(harvest, &policy, &mut devices);
     }
 
     let mut fetch_targets: Vec<(Ipv4Addr, String)> = Vec::new();
     if let Some(harvest) = &ssdp_result {
         report.ssdp_responses = harvest.responses.len();
+        report.ssdp_socket_failed = !harvest.socket_ok;
+        report.ssdp_capped = harvest.capped;
         fetch_targets = merge_ssdp(harvest, &mut devices);
     }
 
@@ -273,6 +283,7 @@ pub async fn run(ctx: &DiscoveryContext) -> DiscoveryOutcome {
         let outcome = fetch_descriptions(ctx.scan_id, &policy, fetch_targets, &mut devices).await;
         report.descriptions_fetched = outcome.fetched;
         report.descriptions_rejected = outcome.rejected;
+        report.descriptions_capped = outcome.capped;
         report.description_notes = outcome.notes;
     }
 
@@ -306,10 +317,32 @@ pub async fn run(ctx: &DiscoveryContext) -> DiscoveryOutcome {
 // --- mDNS -----------------------------------------------------------------
 
 /// Records read from the link, each paired with the address that sent them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MdnsHarvest {
     pub records: Vec<(Ipv4Addr, mdns::Record)>,
     pub packets: usize,
+    /// False when the socket could not be opened. A pass that never got a
+    /// socket heard nothing for a reason worth telling a person about, rather
+    /// than because the network was quiet.
+    pub socket_ok: bool,
+    /// True when a cap stopped the listening while the link was still talking.
+    pub capped: bool,
+}
+
+/// `socket_ok` defaults to *true*, unlike the derived default.
+///
+/// The field is a record of an observed failure, and a harvest nobody opened a
+/// socket for has not observed one. Defaulting it to false would have every
+/// fixture and every unused harvest claim the interface was broken.
+impl Default for MdnsHarvest {
+    fn default() -> Self {
+        MdnsHarvest {
+            records: Vec::new(),
+            packets: 0,
+            socket_ok: true,
+            capped: false,
+        }
+    }
 }
 
 async fn run_mdns(scan_id: u64, interface: Ipv4Addr) -> MdnsHarvest {
@@ -317,6 +350,7 @@ async fn run_mdns(scan_id: u64, interface: Ipv4Addr) -> MdnsHarvest {
     let deadline = Instant::now() + MDNS_BUDGET;
 
     let Some(socket) = open_socket(interface).await else {
+        harvest.socket_ok = false;
         return harvest;
     };
     let group = SocketAddr::V4(SocketAddrV4::new(MDNS_GROUP, MDNS_PORT));
@@ -432,11 +466,15 @@ async fn collect_mdns(
         };
         for record in message.answers {
             if harvest.records.len() >= MAX_MDNS_PACKETS * 8 {
+                harvest.capped = true;
                 return;
             }
             harvest.records.push((source, record));
         }
     }
+    // Left the loop on the count rather than on the deadline: the link had more
+    // to say than this pass was prepared to hear.
+    harvest.capped = true;
 }
 
 /// Turn harvested records into per-address evidence.
@@ -639,10 +677,25 @@ fn apply_txt(
 
 // --- SSDP -----------------------------------------------------------------
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SsdpHarvest {
     /// Responses paired with the address they came from.
     pub responses: Vec<(Ipv4Addr, ssdp::Response)>,
+    /// False when the socket could not be opened.
+    pub socket_ok: bool,
+    /// True when the response cap stopped the listening early.
+    pub capped: bool,
+}
+
+/// See [`MdnsHarvest`]'s `Default`: an unopened socket has not failed.
+impl Default for SsdpHarvest {
+    fn default() -> Self {
+        SsdpHarvest {
+            responses: Vec::new(),
+            socket_ok: true,
+            capped: false,
+        }
+    }
 }
 
 async fn run_ssdp(scan_id: u64, interface: Ipv4Addr) -> SsdpHarvest {
@@ -650,6 +703,7 @@ async fn run_ssdp(scan_id: u64, interface: Ipv4Addr) -> SsdpHarvest {
     let deadline = Instant::now() + SSDP_BUDGET;
 
     let Some(socket) = open_socket(interface).await else {
+        harvest.socket_ok = false;
         return harvest;
     };
     let group = SocketAddr::V4(SocketAddrV4::new(SSDP_GROUP, SSDP_PORT));
@@ -681,6 +735,9 @@ async fn run_ssdp(scan_id: u64, interface: Ipv4Addr) -> SsdpHarvest {
             continue;
         }
         harvest.responses.push((source, response));
+    }
+    if harvest.responses.len() >= MAX_SSDP_RESPONSES {
+        harvest.capped = true;
     }
 
     harvest
@@ -755,8 +812,21 @@ pub fn merge_ssdp(
 struct DescriptionOutcome {
     fetched: usize,
     rejected: usize,
+    /// True when a queued description was never read because the budget ran
+    /// out. Not a refusal and not an error — a limit — which is why it makes
+    /// the pass Limited rather than adding a note about a specific device.
+    capped: bool,
     notes: Vec<String>,
 }
+
+/// Why a queued description was not read, when the reason is not worth telling
+/// a person about.
+///
+/// A leading NUL is the marker: every real reason comes from
+/// [`urlguard::Rejection::reason`] or [`http`], which produce plain sentences,
+/// so these can never collide with one.
+const SKIP_CANCELLED: &str = "\u{0}stopped";
+const SKIP_BUDGET: &str = "\u{0}budget";
 
 impl DescriptionOutcome {
     /// Record a reason, de-duplicated and capped. History shows these, and a
@@ -822,8 +892,11 @@ async fn fetch_descriptions(
     type FetchResult = (Ipv4Addr, Result<xml::Description, String>);
     let results: Vec<FetchResult> = stream::iter(approved)
         .map(|(source, url)| async move {
-            if scanner::is_cancelled(scan_id) || Instant::now() >= deadline {
-                return (source, Err(String::new()));
+            if scanner::is_cancelled(scan_id) {
+                return (source, Err(SKIP_CANCELLED.to_string()));
+            }
+            if Instant::now() >= deadline {
+                return (source, Err(SKIP_BUDGET.to_string()));
             }
             let document = match http::fetch_description(&url).await {
                 Ok(body) => body,
@@ -859,6 +932,8 @@ async fn fetch_descriptions(
                 apply_description(entry, &description);
             }
             Ok(_) => {}
+            Err(note) if note == SKIP_CANCELLED => {}
+            Err(note) if note == SKIP_BUDGET => outcome.capped = true,
             Err(note) if note.is_empty() => {}
             Err(note) => outcome.note(note),
         }
@@ -1220,6 +1295,7 @@ mod tests {
                     ),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -1280,6 +1356,7 @@ mod tests {
                     mdns::RecordData::Ptr("Ghost._ipp._tcp.local".into()),
                 ),
             )],
+            ..Default::default()
         };
         let mut devices = HashMap::new();
         merge_mdns(&harvest, &policy(), &mut devices);
@@ -1330,6 +1407,7 @@ mod tests {
                      USN: uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee::upnp:rootdevice\r\n",
                 ),
             )],
+            ..Default::default()
         };
         let mut devices = HashMap::new();
         let fetches = merge_ssdp(&harvest, &mut devices);
@@ -1359,6 +1437,7 @@ mod tests {
                 ("192.0.2.1".parse().unwrap(), response.clone()),
                 ("192.0.2.1".parse().unwrap(), response),
             ],
+            ..Default::default()
         };
         let mut devices = HashMap::new();
         assert_eq!(merge_ssdp(&harvest, &mut devices).len(), 1);
@@ -1378,7 +1457,13 @@ mod tests {
             })
             .collect();
         let mut devices = HashMap::new();
-        let fetches = merge_ssdp(&SsdpHarvest { responses }, &mut devices);
+        let fetches = merge_ssdp(
+            &SsdpHarvest {
+                responses,
+                ..Default::default()
+            },
+            &mut devices,
+        );
         assert_eq!(fetches.len(), MAX_DESCRIPTION_FETCHES);
     }
 
