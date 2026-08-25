@@ -1727,6 +1727,12 @@ export const mock = {
       }
     }
 
+    // Re-read after the discovery phases: Stop can land inside one of them, and
+    // the backend records exactly that (`report.interrupted = is_cancelled`).
+    // Reading it only before discovery would let the demo show a pass the
+    // operator cut short as though it had finished.
+    const stopped = cancelled || cancelRequested;
+
     listeners.onProgress?.({
       scan_id: scanId,
       done,
@@ -1735,7 +1741,7 @@ export const mock = {
       phase: "resolving",
       elapsed_ms: Date.now() - started,
     });
-    if (!cancelled) await sleep(300);
+    if (!stopped) await sleep(300);
 
     for (const host of found) {
       listeners.onHostUpdated?.({ scan_id: scanId, host });
@@ -1745,7 +1751,7 @@ export const mock = {
       done,
       total,
       found: found.length,
-      phase: cancelled ? "cancelled" : "done",
+      phase: stopped ? "cancelled" : "done",
       elapsed_ms: Date.now() - started,
     });
 
@@ -1757,7 +1763,7 @@ export const mock = {
       scanned: total,
       probed: done,
       hosts: found,
-      cancelled,
+      cancelled: stopped,
       ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
       arp_assist: opts.arp_assist,
       discovery: {
