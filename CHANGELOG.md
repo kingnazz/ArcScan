@@ -3,7 +3,7 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.2] - unreleased
+## [1.8.2] - 2026-08-18
 
 Better device discovery. ArcScan now asks the local network what its devices
 are, using the two protocols printers, televisions, routers, cameras and media
