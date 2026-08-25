@@ -61,6 +61,24 @@ export type DiscoverySource =
 /** What one scan's discovery pass managed. */
 export type DiscoveryMode = "full" | "partial" | "none";
 
+/**
+ * How well a scan's discovery pass went, for a person reading History.
+ *
+ * Deliberately separate from `DiscoveryMode`, which gates whether two scans may
+ * be compared and whose meaning may not move.
+ */
+export type DiscoveryQuality = "complete" | "limited" | "skipped" | "interrupted";
+
+/**
+ * How current a piece of discovery evidence is, counted in qualifying scans
+ * rather than in days. ArcScan only learns when it runs, so the calendar is
+ * shown as context and never used to decide anything.
+ */
+export type Freshness = "current" | "aging" | "stale";
+
+/** Who decided the device type shown on screen. */
+export type TypeSource = "user" | "automatic";
+
 /** Discovery facts attached to one observation. */
 export interface HostDiscovery {
   detected_name: string | null;
@@ -87,13 +105,21 @@ export interface HostDiscovery {
 /** The discovery fields the Inventory table, search and export use. */
 export interface InventoryDiscovery {
   detected_name: string | null;
+  /**
+   * What ArcScan detected. The type shown on screen is the row's
+   * `user_device_type` when there is one and this otherwise; `resolveType` in
+   * `lib/effectiveType` is the only place that decides between them.
+   */
   device_type: string;
+  /** The detected confidence, already reduced where its evidence is stale. */
   type_confidence: string;
   manufacturer: string | null;
   model_name: string | null;
   services: string[];
   sources: string[];
   last_discovered_at: string | null;
+  /** How current the freshest claim behind this record is. */
+  evidence_freshness: Freshness | string;
 }
 
 /** One stored claim about a device. */
@@ -105,6 +131,10 @@ export interface DiscoveryEvidenceRow {
   confidence: string;
   first_seen: string;
   last_seen: string;
+  /** `current`, `aging` or `stale`. */
+  freshness: Freshness | string;
+  /** Consecutive qualifying discovery scans that did not re-observe this claim. */
+  misses: number;
 }
 
 /** The full discovery record for one device, as the drawer shows it. */
@@ -130,6 +160,13 @@ export interface DeviceDiscovery {
   last_discovered_at: string | null;
   /** The durable record, distinct from the per-scan observation history. */
   evidence: DiscoveryEvidenceRow[];
+  /** How current the freshest claim behind this record is. */
+  evidence_freshness: Freshness | string;
+  /**
+   * The confidence the classifier reached before any reduction for stale
+   * evidence, so the drawer can explain a reduction rather than only show it.
+   */
+  raw_type_confidence: string;
 }
 
 /** What a scan's discovery pass did, as recorded with the scan. */
@@ -145,6 +182,14 @@ export interface DiscoveryReport {
   duration_ms: number;
   skip_reason: string | null;
   interrupted: boolean;
+  /** True when a socket could not be opened. Observed, never inferred. */
+  mdns_socket_failed?: boolean;
+  ssdp_socket_failed?: boolean;
+  /** True when a response cap stopped the listening while the link was talking. */
+  mdns_capped?: boolean;
+  ssdp_capped?: boolean;
+  /** True when the description budget ran out with documents still queued. */
+  descriptions_capped?: boolean;
 }
 
 /** One device type, as the backend defines it. */
@@ -307,6 +352,14 @@ export interface ScanSummary {
   discovery_mode: DiscoveryMode | string;
   /** The scan's DiscoveryReport as stored JSON, or null. */
   discovery_summary: string | null;
+  /** How well the discovery pass went, derived by the backend. */
+  discovery_quality?: DiscoveryQuality | string;
+  /**
+   * The one thing ArcScan observed that made the pass less than complete, or
+   * null. Never a diagnosis — ArcScan cannot see a firewall and never blames
+   * one.
+   */
+  discovery_quality_reason?: string | null;
 }
 
 export type DeviceStatus = "unclassified" | "known" | "trusted" | "watched" | "ignored";
@@ -372,6 +425,13 @@ export interface InventoryRow {
   latest_tcp_ms: number | null;
   /** What local discovery established, if a discovery-capable scan reached it. */
   discovery?: InventoryDiscovery | null;
+  /**
+   * The operator's device-type correction, or null for Auto.
+   *
+   * On the row rather than inside `discovery`, because a device discovery has
+   * never reached still has a type the operator may have corrected.
+   */
+  user_device_type?: string | null;
 }
 
 /** A network as the Inventory and Changes filters offer it. */
@@ -464,6 +524,13 @@ export interface Device {
   status: DeviceStatus;
   notes: string | null;
   observation_count: number;
+  /**
+   * The operator's device-type correction, or null for Auto.
+   *
+   * An operator label alongside the name, the status and the notes. Nothing
+   * about how devices are matched, scoped or compared reads it.
+   */
+  user_device_type?: string | null;
 }
 
 export interface FieldChange {

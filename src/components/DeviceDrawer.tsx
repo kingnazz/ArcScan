@@ -34,18 +34,29 @@ import { describeChange } from "../lib/changes";
 import { CHANGE_TYPE_LABEL } from "../lib/export";
 import { rowName, type DeviceRow } from "../lib/live";
 import {
-  CONFIDENCE_HINT,
-  confidenceLabel,
-  confidenceTone,
+  DEVICE_TYPE_LABEL,
   deviceTypeLabel,
+  evidenceKindLabel,
   serviceName,
+  sourceLabel,
   sourcesLabel,
 } from "../lib/discovery";
+import {
+  FRESHNESS_HINT,
+  detectedUnderOverride,
+  effectiveTypeSummary,
+  freshnessLabel,
+  isNoteworthyFreshness,
+  missPhrase,
+  resolveType,
+  type EffectiveType,
+} from "../lib/effectiveType";
 import type {
   ChangeEvent,
   DeviceDetail,
   DeviceDiscovery,
   DeviceStatus,
+  DiscoveryEvidenceRow,
   FieldChange,
 } from "../types";
 
@@ -78,6 +89,16 @@ export interface DeviceDrawerProps {
   onRename: (deviceId: number, name: string | null) => void;
   onStatusChange: (deviceId: number, status: DeviceStatus) => void;
   onNotesChange: (deviceId: number, notes: string | null) => void;
+  /**
+   * Correct, change or clear the detected device type.
+   *
+   * Resolves `false` when the save failed, which is what lets the editor put
+   * the previous value back rather than leave the drawer showing a type the
+   * database does not hold.
+   */
+  onTypeChange?: (deviceId: number, deviceType: string | null) => Promise<boolean>;
+  /** Copy the redacted discovery report for this device. */
+  onCopyDiscovery?: (deviceId: number) => void;
   /** Identity of the scan being shown, scoping drafts for rows not yet saved. */
   scanKey: number | string | null;
   /**
@@ -105,6 +126,8 @@ export function DeviceDrawer({
   onRename,
   onStatusChange,
   onNotesChange,
+  onTypeChange,
+  onCopyDiscovery,
   scanKey,
   context = "scan",
   highlightEventId = null,
@@ -349,12 +372,16 @@ export function DeviceDrawer({
           )}
         </section>
 
-        {rowDetail?.discovery ? (
+        {rowDetail?.discovery || deviceId != null ? (
           <>
             <div className="divider" />
             <DiscoverySection
-              discovery={rowDetail.discovery}
+              discovery={rowDetail?.discovery ?? null}
               hasUserName={Boolean(row.custom_name?.trim())}
+              deviceId={deviceId}
+              userType={rowDetail?.device.user_device_type ?? null}
+              onTypeChange={onTypeChange}
+              onCopyDiscovery={onCopyDiscovery}
             />
           </>
         ) : null}
@@ -445,162 +472,386 @@ export function DeviceDrawer({
 }
 
 /**
- * What local discovery established about a device, and what it was based on.
+ * What local discovery established about a device, what the operator made of
+ * it, and what all of it rests on.
  *
- * Two things this section is careful about. It never competes with the name at
- * the top of the drawer: when the operator has named the device, the detected
- * name is shown as something ArcScan found, not as a correction. And every
- * value here came off the network from an unauthenticated device, so it is
- * rendered as text — React escapes it, the Rust parsers already bounded its
- * length and stripped its control characters, and `break-words` keeps a device
- * that advertises a 128-character model number from breaking the layout.
+ * The section answers seven questions, in this order, because that is the order
+ * a person asks them: what does ArcScan call this, what type is it, who decided
+ * that, what did ArcScan itself think, why, what else did it see, and what has
+ * it stopped hearing.
+ *
+ * Two things it is careful about. It never competes with the name at the top of
+ * the drawer: when the operator has named the device, the detected name is
+ * shown as something ArcScan found, not as a correction. And every value here
+ * came off the network from an unauthenticated device, so it is rendered as
+ * text — React escapes it, the Rust parsers already bounded its length and
+ * stripped its control characters, and `break-words` keeps a device that
+ * advertises a 128-character model number from breaking the layout.
  */
 function DiscoverySection({
   discovery,
   hasUserName,
+  deviceId,
+  userType,
+  onTypeChange,
+  onCopyDiscovery,
 }: {
-  discovery: DeviceDiscovery;
+  discovery: DeviceDiscovery | null;
   hasUserName: boolean;
+  deviceId: number | null;
+  userType: string | null;
+  onTypeChange?: (deviceId: number, deviceType: string | null) => Promise<boolean>;
+  onCopyDiscovery?: (deviceId: number) => void;
 }) {
-  const typed = discovery.device_type !== "unknown";
+  const resolved = resolveType({
+    userOverride: userType,
+    detectedType: discovery?.device_type,
+    detectedConfidence: discovery?.type_confidence,
+  });
+  const detectedLine = detectedUnderOverride(resolved);
+  const stale = discovery?.evidence_freshness === "stale";
+  // A reduction is only worth explaining when there is one to explain.
+  const reduced =
+    stale &&
+    discovery != null &&
+    discovery.raw_type_confidence === "high" &&
+    discovery.type_confidence !== "high";
+
+  const evidence = discovery?.evidence ?? [];
+  const staleEvidence = evidence.filter((row) => row.freshness === "stale");
+  const agingEvidence = evidence.filter((row) => row.freshness === "aging");
+
   return (
     <section>
       <SectionHeading>Discovery</SectionHeading>
-      <dl>
-        {discovery.detected_name ? (
-          <DetailRow label="Detected as">
-            <span className="break-words">{discovery.detected_name}</span>
-            {hasUserName ? (
-              <p className="mt-0.5 text-xs text-text-muted">
-                Your name is used everywhere instead.
+
+      <TypeEditor
+        deviceId={deviceId}
+        userType={userType}
+        resolved={resolved}
+        onTypeChange={onTypeChange}
+      />
+
+      {detectedLine ? (
+        <p className="mt-1 text-xs text-text-muted">
+          {/* Kept underneath rather than replaced, so clearing the correction
+              is never a loss and the operator can see what they overruled. */}
+          ArcScan detected: <span className="text-text-secondary">{detectedLine}</span>
+        </p>
+      ) : null}
+      {reduced ? (
+        <p className="mt-1 text-xs text-text-muted">
+          Reduced from high confidence: nothing has confirmed this in the last few scans that
+          could have.
+        </p>
+      ) : null}
+
+      {discovery ? (
+        <>
+          <dl className="mt-2">
+            {discovery.detected_name ? (
+              <DetailRow label="Detected as">
+                <span className="break-words">{discovery.detected_name}</span>
+                {hasUserName ? (
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    Your name is used everywhere instead.
+                  </p>
+                ) : null}
+              </DetailRow>
+            ) : null}
+
+            {discovery.manufacturer ? (
+              <DetailRow label="Manufacturer">
+                <span className="break-words">{discovery.manufacturer}</span>
+              </DetailRow>
+            ) : null}
+            {discovery.model_name ? (
+              <DetailRow label="Model">
+                <span className="break-words">
+                  {discovery.model_name}
+                  {discovery.model_number && discovery.model_number !== discovery.model_name
+                    ? ` (${discovery.model_number})`
+                    : ""}
+                </span>
+              </DetailRow>
+            ) : null}
+            {discovery.mdns_hostname ? (
+              <DetailRow label="mDNS host name" mono>
+                <span className="break-words">{discovery.mdns_hostname}</span>
+              </DetailRow>
+            ) : null}
+            {discovery.ssdp_friendly_name &&
+            discovery.ssdp_friendly_name !== discovery.detected_name ? (
+              <DetailRow label="SSDP name">
+                <span className="break-words">{discovery.ssdp_friendly_name}</span>
+              </DetailRow>
+            ) : null}
+            <DetailRow label="Discovered by">{sourcesLabel(discovery.sources)}</DetailRow>
+            <DetailRow label="Evidence">
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                <Badge
+                  tone={stale ? "warning" : discovery.evidence_freshness === "aging" ? "accent" : "online"}
+                  title={FRESHNESS_HINT[discovery.evidence_freshness] ?? FRESHNESS_HINT.current}
+                >
+                  {freshnessLabel(discovery.evidence_freshness)}
+                </Badge>
+              </span>
+            </DetailRow>
+            {discovery.last_discovered_at ? (
+              <DetailRow label="Last discovered">
+                <span title={discovery.last_discovered_at}>
+                  {formatRelative(discovery.last_discovered_at)}
+                </span>
+              </DetailRow>
+            ) : null}
+            {discovery.ipv6_addresses.length > 0 ? (
+              <DetailRow label="IPv6 addresses" mono>
+                <span className="break-words">{discovery.ipv6_addresses.join(", ")}</span>
+                {/* Said plainly, because showing a v6 address next to a scanner
+                    that only speaks v4 would otherwise imply it was scanned. */}
+                <p className="font-sans text-xs text-text-muted">
+                  Learned from mDNS. ArcScan scans IPv4 only.
+                </p>
+              </DetailRow>
+            ) : null}
+          </dl>
+
+          {discovery.type_evidence.length > 0 ? (
+            <div className="mt-2">
+              <p className="field-label">Why</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {discovery.type_evidence.map((line) => (
+                  <li key={line} className="break-words text-[13px] text-text-secondary">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {discovery.services.length > 0 ? (
+            <div className="mt-2">
+              <p className="field-label">Advertised now</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {discovery.services.map((service) => (
+                  <li key={service} className="text-[13px] text-text-secondary">
+                    <span className="break-words">{serviceName(service)}</span>
+                    <span className="mono ml-1.5 text-xs text-text-muted">{service}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {/* Evidence ArcScan has stopped hearing, kept and dated rather than
+              deleted. Counted in scans, never in days: ArcScan only learns when
+              it runs, and "four months ago" would say more about the operator's
+              calendar than about the device. */}
+          {agingEvidence.length > 0 ? (
+            <EvidenceGroup heading="Not heard recently" rows={agingEvidence} />
+          ) : null}
+          {staleEvidence.length > 0 ? (
+            <EvidenceGroup heading="Stale evidence" rows={staleEvidence} />
+          ) : null}
+
+          {/* A device that looks like two things is shown as such rather than
+              having the disagreement resolved silently. */}
+          {discovery.type_conflicts.length > 0 ? (
+            <div className="mt-2">
+              <p className="field-label">Also consistent with</p>
+              <p className="mt-0.5 text-[13px] text-text-secondary">
+                {discovery.type_conflicts.join(" · ")}
               </p>
-            ) : null}
-          </DetailRow>
-        ) : null}
+            </div>
+          ) : null}
 
-        <DetailRow label="Device type">
-          <span className="inline-flex flex-wrap items-center gap-1.5">
-            <span>{deviceTypeLabel(discovery.device_type)}</span>
-            {typed ? (
-              <Badge
-                tone={confidenceTone(discovery.type_confidence)}
-                title={CONFIDENCE_HINT[discovery.type_confidence]}
-              >
-                {confidenceLabel(discovery.type_confidence)}
-              </Badge>
-            ) : null}
-          </span>
-        </DetailRow>
+          {discovery.alternate_names.length > 0 ? (
+            <div className="mt-2">
+              <p className="field-label">Other names it advertised</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {discovery.alternate_names.map((name) => (
+                  <li key={name} className="break-words text-[13px] text-text-secondary">
+                    {name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
-        {discovery.manufacturer ? (
-          <DetailRow label="Manufacturer">
-            <span className="break-words">{discovery.manufacturer}</span>
-          </DetailRow>
-        ) : null}
-        {discovery.model_name ? (
-          <DetailRow label="Model">
-            <span className="break-words">
-              {discovery.model_name}
-              {discovery.model_number && discovery.model_number !== discovery.model_name
-                ? ` (${discovery.model_number})`
-                : ""}
-            </span>
-          </DetailRow>
-        ) : null}
-        {discovery.mdns_hostname ? (
-          <DetailRow label="mDNS host name" mono>
-            <span className="break-words">{discovery.mdns_hostname}</span>
-          </DetailRow>
-        ) : null}
-        {discovery.ssdp_friendly_name &&
-        discovery.ssdp_friendly_name !== discovery.detected_name ? (
-          <DetailRow label="SSDP name">
-            <span className="break-words">{discovery.ssdp_friendly_name}</span>
-          </DetailRow>
-        ) : null}
-        <DetailRow label="Discovered by">{sourcesLabel(discovery.sources)}</DetailRow>
-        {discovery.last_discovered_at ? (
-          <DetailRow label="Last discovered">
-            <span title={discovery.last_discovered_at}>
-              {formatRelative(discovery.last_discovered_at)}
-            </span>
-          </DetailRow>
-        ) : null}
-        {discovery.ipv6_addresses.length > 0 ? (
-          <DetailRow label="IPv6 addresses" mono>
-            <span className="break-words">{discovery.ipv6_addresses.join(", ")}</span>
-            {/* Said plainly, because showing a v6 address next to a scanner
-                that only speaks v4 would otherwise imply it was scanned. */}
-            <p className="font-sans text-xs text-text-muted">
-              Learned from mDNS. ArcScan scans IPv4 only.
+          {discovery.presentation_url ? (
+            <p className="mt-2 text-xs text-text-muted">
+              {/* Recorded, never opened: the Web action below validates the
+                  address itself, and a device-supplied URL is not a link to
+                  hand a person. */}
+              This device advertises its own page at{" "}
+              <span className="mono break-all text-text-secondary">
+                {discovery.presentation_url}
+              </span>
+              .
             </p>
-          </DetailRow>
-        ) : null}
-      </dl>
+          ) : null}
+        </>
+      ) : (
+        <p className="mt-2 text-[13px] text-text-secondary">
+          No discovery-capable scan has reached this device, so ArcScan has nothing of its own to
+          go on. You can still set the type yourself.
+        </p>
+      )}
 
-      {discovery.services.length > 0 ? (
-        <div className="mt-2">
-          <p className="field-label">Advertised services</p>
-          <ul className="mt-0.5 space-y-0.5">
-            {discovery.services.map((service) => (
-              <li key={service} className="text-[13px] text-text-secondary">
-                <span className="break-words">{serviceName(service)}</span>
-                <span className="mono ml-1.5 text-xs text-text-muted">{service}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {discovery.type_evidence.length > 0 ? (
-        <div className="mt-2">
-          <p className="field-label">Evidence</p>
-          <ul className="mt-0.5 space-y-0.5">
-            {discovery.type_evidence.map((line) => (
-              <li key={line} className="break-words text-[13px] text-text-secondary">
-                {line}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {/* A device that looks like two things is shown as such rather than
-          having the disagreement resolved silently. */}
-      {discovery.type_conflicts.length > 0 ? (
-        <div className="mt-2">
-          <p className="field-label">Also consistent with</p>
-          <p className="mt-0.5 text-[13px] text-text-secondary">
-            {discovery.type_conflicts.join(" · ")}
+      {deviceId != null && onCopyDiscovery ? (
+        <div className="mt-3">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Copy className="h-3.5 w-3.5" />}
+            onClick={() => onCopyDiscovery(deviceId)}
+            title="A short, redacted summary for a bug report. Built here and sent nowhere."
+          >
+            Copy discovery details
+          </Button>
+          <p className="mt-1 text-xs text-text-muted">
+            A redacted summary for reporting bad detection. It leaves out your notes, the MAC
+            address, the serial number and the full IP address, and nothing is sent anywhere.
           </p>
         </div>
       ) : null}
+    </section>
+  );
+}
 
-      {discovery.alternate_names.length > 0 ? (
-        <div className="mt-2">
-          <p className="field-label">Other names it advertised</p>
-          <ul className="mt-0.5 space-y-0.5">
-            {discovery.alternate_names.map((name) => (
-              <li key={name} className="break-words text-[13px] text-text-secondary">
-                {name}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+/**
+ * The device type, and the control that corrects it.
+ *
+ * A plain `<select>` and a reset button, in the flow of the section rather than
+ * behind a modal or a right-click: a correction is an ordinary edit and should
+ * cost one keystroke to make and one to undo. The drawer stays open throughout.
+ *
+ * The value is optimistic and rolls back on failure, so a save the backend
+ * refuses leaves the control showing what the database actually holds rather
+ * than what the operator hoped it would.
+ */
+function TypeEditor({
+  deviceId,
+  userType,
+  resolved,
+  onTypeChange,
+}: {
+  deviceId: number | null;
+  userType: string | null;
+  resolved: EffectiveType;
+  onTypeChange?: (deviceId: number, deviceType: string | null) => Promise<boolean>;
+}) {
+  // `""` is Auto. An explicit `"unknown"` is a different option and a different
+  // answer: a person saying "ArcScan is wrong and I do not know either".
+  const [pending, setPending] = useState<string | null>(null);
+  const shown = pending ?? userType ?? "";
+  useEffect(() => setPending(null), [deviceId, userType]);
 
-      {discovery.presentation_url ? (
-        <p className="mt-2 text-xs text-text-muted">
-          {/* Recorded, never opened: the Web action below validates the address
-              itself, and a device-supplied URL is not a link to hand a person. */}
-          This device advertises its own page at{" "}
-          <span className="mono break-all text-text-secondary">
-            {discovery.presentation_url}
-          </span>
-          .
+  const editable = deviceId != null && onTypeChange != null;
+  return (
+    <>
+      <label className="field-label" htmlFor="device-type">
+        Device type
+      </label>
+      <Select
+        id="device-type"
+        aria-label="Device type"
+        value={shown}
+        disabled={!editable}
+        onChange={(event) => {
+          if (!editable) return;
+          const next = event.target.value || null;
+          const previous = userType;
+          setPending(next ?? "");
+          void onTypeChange(deviceId, next).then((ok) => {
+            // Put the previous value back rather than leave the control showing
+            // a type nothing stored.
+            if (!ok) setPending(previous ?? "");
+          });
+        }}
+      >
+        <option value="">
+          Automatic{resolved.detectedType !== "unknown"
+            ? ` (${deviceTypeLabel(resolved.detectedType)})`
+            : ""}
+        </option>
+        {Object.keys(DEVICE_TYPE_LABEL).map((id) => (
+          <option key={id} value={id}>
+            {DEVICE_TYPE_LABEL[id]}
+          </option>
+        ))}
+      </Select>
+      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
+        <span>
+          {resolved.isUserSet ? "Set by you." : "Detected automatically."}{" "}
+          {resolved.isUserSet ? "" : effectiveTypeSummary(resolved)}
+        </span>
+        {resolved.isUserSet && editable ? (
+          <button
+            type="button"
+            className="rounded text-xs font-medium text-accent-text underline decoration-dotted underline-offset-2 hover:no-underline"
+            onClick={() => {
+              const previous = userType;
+              setPending("");
+              void onTypeChange(deviceId, null).then((ok) => {
+                if (!ok) setPending(previous ?? "");
+              });
+            }}
+          >
+            Use automatic detection
+          </button>
+        ) : null}
+      </p>
+      {deviceId == null ? (
+        <p className="mt-1 text-xs text-text-muted">
+          Correcting the type becomes available once the scan has been saved.
         </p>
       ) : null}
-    </section>
+    </>
+  );
+}
+
+/**
+ * A group of evidence ArcScan has stopped hearing.
+ *
+ * Each row says how many *discovery scans* have missed it, which is the only
+ * count ArcScan actually observed. A wall-clock age would be a fact about when
+ * the operator last ran a scan, dressed up as a fact about the device.
+ */
+function EvidenceGroup({
+  heading,
+  rows,
+}: {
+  heading: string;
+  rows: DiscoveryEvidenceRow[];
+}) {
+  return (
+    <div className="mt-2">
+      <p className="field-label">{heading}</p>
+      <ul className="mt-0.5 space-y-0.5">
+        {rows.slice(0, 8).map((row) => (
+          <li
+            key={`${row.source}-${row.kind}-${row.key}-${row.value}`}
+            className="text-[13px] text-text-secondary"
+          >
+            <span className="break-words">
+              {row.kind === "service" ? serviceName(row.value) : row.value}
+            </span>
+            <span className="ml-1.5 text-xs text-text-muted">
+              {sourceLabel(row.source)} {evidenceKindLabel(row.kind).toLowerCase()}
+              {isNoteworthyFreshness(row.freshness) && missPhrase(row.misses)
+                ? ` · ${missPhrase(row.misses)}`
+                : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {rows.length > 8 ? (
+        <p className="mt-1 text-xs text-text-muted">
+          Showing 8 of {rows.length}. The rest are in Copy discovery details.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

@@ -9,7 +9,7 @@ import { Download, FolderOpen, GitCompare, Trash2 } from "lucide-react";
 import { Badge, EmptyState, IconButton } from "../ui/primitives";
 import { Popover } from "../ui/Popover";
 import { formatCount, formatDateTime, formatDuration } from "../lib/format";
-import { discoveryModeLabel } from "../lib/discovery";
+import { DISCOVERY_QUALITY_HINT, discoverySummaryLine } from "../lib/discovery";
 import { profileName } from "../lib/profiles";
 import type { ExportFormat, ScanSummary } from "../types";
 
@@ -106,14 +106,19 @@ export function HistoryPanel({
                     : `${formatCount(scan.scanned)} addresses`}
                   {" · "}
                   {formatDuration(scan.duration_ms)}
-                  {/* What the discovery pass managed, so a scan that heard
-                      nothing reads as "no discovery" rather than as a network
-                      with nothing on it. Only shown once a scan has recorded
-                      one, so history from before this version stays unchanged. */}
-                  {scan.discovery_mode && scan.discovery_mode !== "none" ? (
+                  {/* How well the discovery pass went, and either what it heard
+                      or the one thing that limited it. A scan that heard
+                      nothing reads as "Skipped" rather than as a network with
+                      nothing on it, and a scan that could not finish says so
+                      rather than looking like a quiet one. Only shown once a
+                      scan has recorded discovery at all, so history from before
+                      v1.8.2 stays exactly as it was. */}
+                  {scan.discovery_quality || scan.discovery_mode !== "none" ? (
                     <>
                       {" · "}
-                      {discoveryModeLabel(scan.discovery_mode)}
+                      <span title={DISCOVERY_QUALITY_HINT[scan.discovery_quality ?? "skipped"]}>
+                        Discovery: {discoverySummaryLine(scan)}
+                      </span>
                     </>
                   ) : null}
                 </p>

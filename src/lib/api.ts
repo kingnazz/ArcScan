@@ -202,6 +202,31 @@ export const api = {
     mock.setDeviceNotes(id, notes);
   },
 
+  /**
+   * Correct, change or clear ArcScan's detected device type for one device.
+   *
+   * `null` restores Auto. An explicit `"unknown"` is a real answer and is
+   * stored as one. The backend validates the value and refuses anything that is
+   * not a shipped type, so a save failure here is a message the caller shows
+   * rather than a value quietly recorded.
+   */
+  async setDeviceTypeOverride(id: number, deviceType: string | null): Promise<void> {
+    if (isTauri()) return invoke<void>("set_device_type_override", { id, deviceType });
+    mock.setDeviceTypeOverride(id, deviceType);
+  },
+
+  /**
+   * The redacted discovery report for one device, for the clipboard.
+   *
+   * Contacts nothing and writes nothing. What it omits is enforced where it is
+   * built: in Rust for the packaged app, and in `lib/diagnostics` for the
+   * browser demo.
+   */
+  async deviceDiscoveryReport(id: number): Promise<string> {
+    if (isTauri()) return invoke<string>("device_discovery_report", { id });
+    return mock.deviceDiscoveryReport(id);
+  },
+
   /** Note bodies for the devices an export covers. */
   async deviceNotes(ids: number[]): Promise<Map<number, string>> {
     const pairs = isTauri()
