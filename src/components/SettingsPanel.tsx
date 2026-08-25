@@ -320,6 +320,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 />
               </div>
             ) : null}
+
+            {/* No threshold, no weights, no classifier controls. The number
+                only means anything alongside the definition of a qualifying
+                miss, and exposing one without the other invites a person to
+                turn it down to one and then disbelieve the result. */}
+            <p className="mt-3 text-xs leading-relaxed text-text-muted">
+              ArcScan keeps older discovery evidence for history, but stops relying on it after
+              repeated completed scans no longer confirm it. Nothing is deleted: the device drawer
+              still shows it, dated by how many discovery scans have missed it.
+            </p>
           </section>
 
           <div className="divider" />
