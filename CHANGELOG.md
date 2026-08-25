@@ -79,6 +79,16 @@ losing anything. Full notes:
 - The browser demo now records a Stop that lands inside a discovery phase as
   interrupted, matching the real backend.
 
+### Performance
+
+- The freshness state is one grouped pass over the evidence table, not a query
+  per row. Measured against 5,000 devices, 100,000 observations and 50,000
+  evidence rows it accounts for about 42 ms, roughly 1% of an Inventory load;
+  opening a device panel takes ~2 ms and setting a correction ~1 ms. No index
+  was added, because measurement showed none was needed. The rest of the
+  Inventory load time is the v1.8.2 query and is unchanged here. The Rust suite
+  builds that fixture and re-measures it on every run.
+
 ### Fixed
 
 - **No Changes backlog from the upgrade.** Each stored discovery record now
