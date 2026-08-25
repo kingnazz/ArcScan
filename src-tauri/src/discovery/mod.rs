@@ -63,10 +63,7 @@ use tokio::net::UdpSocket;
 use crate::scanner;
 
 pub use classify::{classify, Classification, ClassifyFacts};
-pub use effective::{
-    cap_for_freshness, effective_type, freshness, EffectiveType, Freshness, TypeSource,
-    STALE_AFTER_MISSES,
-};
+pub use effective::{cap_for_freshness, effective_type, freshness, Freshness};
 pub use model::{
     Confidence, DeviceType, DiscoveredDevice, DiscoveryQuality, DiscoveryReport, DiscoverySource,
     Evidence, EvidenceKind,

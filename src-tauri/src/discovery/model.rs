@@ -679,15 +679,6 @@ impl DiscoveryQuality {
         }
     }
 
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "complete" => DiscoveryQuality::Complete,
-            "limited" => DiscoveryQuality::Limited,
-            "interrupted" => DiscoveryQuality::Interrupted,
-            _ => DiscoveryQuality::Skipped,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             DiscoveryQuality::Complete => "Complete",
@@ -960,14 +951,14 @@ mod tests {
     }
 
     #[test]
-    fn quality_round_trips_and_never_claims_a_firewall() {
+    fn every_quality_has_a_wire_name_and_a_word_and_never_claims_a_firewall() {
         for quality in [
             DiscoveryQuality::Complete,
             DiscoveryQuality::Limited,
             DiscoveryQuality::Skipped,
             DiscoveryQuality::Interrupted,
         ] {
-            assert_eq!(DiscoveryQuality::parse(quality.as_str()), quality);
+            assert!(!quality.as_str().is_empty());
             assert!(!quality.label().is_empty());
         }
         // ArcScan cannot observe a firewall, so it must never name one.
