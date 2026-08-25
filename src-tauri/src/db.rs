@@ -6612,6 +6612,239 @@ mod tests {
         assert!(record.evidence.iter().all(|e| !e.first_seen.is_empty()));
     }
 
+    // --- v1.8.3: the shape of the work at scale ----------------------------
+
+    /// Build a database at the scale the release notes claim to have measured:
+    /// 5,000 devices, 100,000 observations, 50,000 evidence rows, 1,000 type
+    /// corrections and 1,000 devices whose evidence has gone stale.
+    ///
+    /// Written with raw inserts rather than through `save_scan`, because the
+    /// point is to measure the *read* paths against a large database, not to
+    /// measure how long it takes to create one.
+    fn seed_at_scale(path: &std::path::Path) {
+        const DEVICES: i64 = 5_000;
+        const SCANS: i64 = 20;
+        const EVIDENCE_PER_DEVICE: i64 = 10;
+
+        {
+            // Create the current schema through the real migration, so the
+            // fixture cannot drift from the shape the app actually uses.
+            let _ = Db::open(path).unwrap();
+        }
+        let mut conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let tx = conn.transaction().unwrap();
+
+        tx.execute(
+            "INSERT INTO network_scopes (id, stable_key, display_name, canonical_target,
+                                         created_at, updated_at)
+             VALUES (1, 'scale', 'Scale', '10.0.0.0/16',
+                     '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+
+        for scan in 1..=SCANS {
+            tx.execute(
+                "INSERT INTO scans (id, target, created_at, duration_ms, scanned, target_key,
+                                    profile, probed, status, network_scope_id, coverage_key,
+                                    discovery_mode)
+                 VALUES (?1, '10.0.0.0/16', ?2, 4000, 65536, 'cidr:10.0.0.0/16',
+                         'quick-lan', 65536, 'completed', 1, 'v1|ports:22,80,443', 'full')",
+                params![scan, format!("2026-02-{:02}T09:00:00+00:00", scan)],
+            )
+            .unwrap();
+        }
+
+        {
+            let mut device = tx
+                .prepare(
+                    "INSERT INTO devices (id, network_scope_id, identity_key, identity_source, mac,
+                                          custom_name, hostname, vendor, last_ip, first_seen,
+                                          last_seen, status, user_device_type)
+                     VALUES (?1, 1, ?2, 'mac', ?3, NULL, ?4, 'Example Corp', ?5,
+                             '2026-02-01T09:00:00+00:00', '2026-02-20T09:00:00+00:00',
+                             'unclassified', ?6)",
+                )
+                .unwrap();
+            let mut discovery = tx
+                .prepare(
+                    "INSERT INTO device_discovery (device_id, network_scope_id, detected_name,
+                                                   name_source, device_type, type_confidence,
+                                                   services, sources, first_discovered_at,
+                                                   last_discovered_at, naming_rules_version)
+                     VALUES (?1, 1, ?2, 'mdns', 'printer', 'high', '[\"_ipp._tcp\"]',
+                             '[\"mdns\"]', '2026-02-01T09:00:00+00:00',
+                             '2026-02-20T09:00:00+00:00', ?3)",
+                )
+                .unwrap();
+            let mut evidence = tx
+                .prepare(
+                    "INSERT INTO discovery_evidence (device_id, network_scope_id, source, kind, key,
+                                                     value, normalized_value, confidence,
+                                                     first_seen, last_seen, last_scan_id, misses)
+                     VALUES (?1, 1, 'mdns', ?2, ?3, ?4, ?4, 'high',
+                             '2026-02-01T09:00:00+00:00', '2026-02-20T09:00:00+00:00', 20, ?5)",
+                )
+                .unwrap();
+            let mut host = tx
+                .prepare(
+                    "INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports,
+                                        response_ms, last_seen, device_id, ttl, os_guess)
+                     VALUES (?1, ?2, ?3, ?4, 'Example Corp', '22,80,443', 3, ?5, ?6, 64, 'Linux')",
+                )
+                .unwrap();
+
+            for id in 1..=DEVICES {
+                let mac = format!(
+                    "AA:BB:{:02X}:{:02X}:{:02X}:{:02X}",
+                    id >> 24,
+                    (id >> 16) & 0xFF,
+                    (id >> 8) & 0xFF,
+                    id & 0xFF
+                );
+                let ip = format!("10.0.{}.{}", id / 254, id % 254 + 1);
+                let hostname = format!("device-{id}");
+                // 1,000 devices carry an operator correction, and a different
+                // 1,000 have evidence that has gone stale.
+                let override_type = (id % 5 == 0).then_some("television");
+                let misses = if id % 5 == 1 { 4 } else { 0 };
+
+                device
+                    .execute(params![
+                        id,
+                        format!("mac:{mac}"),
+                        mac,
+                        hostname,
+                        ip,
+                        override_type
+                    ])
+                    .unwrap();
+                discovery
+                    .execute(params![id, format!("Device {id}"), NAMING_RULES_VERSION])
+                    .unwrap();
+                for n in 0..EVIDENCE_PER_DEVICE {
+                    evidence
+                        .execute(params![
+                            id,
+                            "service",
+                            format!("_svc{n}._tcp"),
+                            format!("_svc{n}._tcp"),
+                            misses
+                        ])
+                        .unwrap();
+                }
+                for scan in 1..=SCANS {
+                    host.execute(params![
+                        scan,
+                        ip,
+                        hostname,
+                        mac,
+                        format!("2026-02-{:02}T09:00:00+00:00", scan),
+                        id
+                    ])
+                    .unwrap();
+                }
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn the_inventory_and_the_drawer_stay_fast_on_a_large_database() {
+        // 5,000 devices, 100,000 observations and 50,000 evidence rows, with
+        // 1,000 type corrections and 1,000 devices whose evidence is stale.
+        //
+        // The bounds below are deliberately loose: this runs on shared CI
+        // hardware and the point is to catch a *change of shape* — a query per
+        // device, or a scan of all evidence per row — not to police tens of
+        // milliseconds. A per-device query at this size costs seconds, not
+        // hundreds of milliseconds, so the gap between the real numbers and
+        // these limits is what makes the test meaningful rather than flaky.
+        let dir = std::env::temp_dir().join(format!("arcscan-scale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scale.db");
+        let _ = std::fs::remove_file(&path);
+        seed_at_scale(&path);
+
+        let db = Db::open(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let inventory = db.inventory().unwrap();
+        let inventory_ms = started.elapsed().as_millis();
+        assert_eq!(inventory.rows.len(), 5_000);
+        assert!(
+            inventory_ms < 6_000,
+            "the inventory took {inventory_ms} ms, which suggests per-device work"
+        );
+
+        // Every state is actually present, or the measurement is of the wrong
+        // thing.
+        let corrected = inventory
+            .rows
+            .iter()
+            .filter(|r| r.user_device_type.is_some())
+            .count();
+        assert_eq!(corrected, 1_000);
+        let stale = inventory
+            .rows
+            .iter()
+            .filter(|r| {
+                r.discovery
+                    .as_ref()
+                    .is_some_and(|d| d.evidence_freshness == "stale")
+            })
+            .count();
+        assert_eq!(stale, 1_000);
+        // And the freshness reduction reached them: a high-confidence type on
+        // wholly stale evidence reads as medium.
+        assert!(inventory.rows.iter().any(|r| {
+            r.discovery
+                .as_ref()
+                .is_some_and(|d| d.evidence_freshness == "stale" && d.type_confidence == "medium")
+        }));
+
+        // Opening a device panel: the full record, its evidence and its history.
+        let device_id = inventory.rows[0].device_id;
+        let started = std::time::Instant::now();
+        let detail = db.device_detail(device_id).unwrap();
+        let drawer_ms = started.elapsed().as_millis();
+        assert!(detail.discovery.is_some());
+        assert!(
+            drawer_ms < 1_500,
+            "opening a device took {drawer_ms} ms on a 50,000-row evidence table"
+        );
+
+        // Building a diagnostic report reads one device, not the whole table.
+        let started = std::time::Instant::now();
+        let report = db.device_discovery_report(device_id, "1.8.3").unwrap();
+        let report_ms = started.elapsed().as_millis();
+        assert!(report.contains("ArcScan discovery report"));
+        assert!(
+            report_ms < 1_500,
+            "building a diagnostic report took {report_ms} ms"
+        );
+
+        // Setting a correction is one row, whatever the size of the database.
+        let started = std::time::Instant::now();
+        db.set_device_type_override(device_id, Some("printer".into()))
+            .unwrap();
+        let write_ms = started.elapsed().as_millis();
+        assert!(
+            write_ms < 1_000,
+            "one correction took {write_ms} ms, which suggests it is not one row"
+        );
+
+        // And it recorded nothing in the inbox, at any size.
+        assert!(db.change_events().unwrap().events.is_empty());
+
+        println!(
+            "scale: inventory {inventory_ms} ms, drawer {drawer_ms} ms, \
+             report {report_ms} ms, correction {write_ms} ms"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     // --- v1.8.3: user type overrides ---------------------------------------
 
     /// One saved device with a detected type, ready to be corrected.

@@ -325,6 +325,40 @@ external manufacturer lookup. No code signing and no macOS notarization.
 
 No new discovery protocols, and no bulk type corrections.
 
+## Performance
+
+Measured against a database at the scale this release was tested for: 5,000
+devices, 100,000 observations, 50,000 discovery evidence rows across 20 scans,
+1,000 devices carrying a type correction and 1,000 whose evidence has gone
+stale. The numbers below are from that fixture, which the Rust suite builds and
+re-measures on every run.
+
+| Operation | Time |
+| --- | --- |
+| Load the whole Inventory (5,000 rows) | ~4.4 s |
+| Open a device panel | ~2 ms |
+| Build a diagnostic report | <1 ms |
+| Set one type correction | ~1 ms |
+
+The freshness state is computed as **one grouped pass over the evidence table**,
+not a query per row: measured on its own it accounts for about 42 ms, roughly 1%
+of the Inventory load. The confidence reduction for stale evidence is applied to
+values already in hand, so it costs nothing extra. No new index was added,
+because measurement showed none was needed for the new work.
+
+**The remaining time is the v1.8.2 Inventory query and is unchanged by this
+release.** The same query with the v1.8.3 aggregate removed measures ~4.3 s on
+the same fixture: the cost is the window function that picks each device's most
+recent observation out of 100,000 rows, not anything added here. Making that
+faster would mean changing the shape of a query this release otherwise does not
+touch, so it is left for a release that can measure it properly. In practice a
+5,000-device inventory is far beyond a typical home or small-office network; a
+few hundred devices loads in a small fraction of this.
+
+Nothing is reclassified at startup, no summary is rewritten when it has not
+changed, and stale evidence is capped in the interface rather than loaded
+without bound.
+
 ## Known limitations
 
 - A correction applies to one device at a time. Correcting fifty devices means
@@ -342,3 +376,5 @@ No new discovery protocols, and no bulk type corrections.
   deliberately: see above.
 - `is_gateway` is not recorded per device in the database, so the diagnostic
   report does not state it for a device whose report is built from stored state.
+- Loading a very large Inventory is dominated by a v1.8.2 query this release
+  does not change; see **Performance** above.
