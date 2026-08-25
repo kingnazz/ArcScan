@@ -15,6 +15,12 @@ import {
   sourcesLabel,
   typeSummary,
 } from "./discovery";
+import {
+  DISCOVERY_QUALITY_HINT,
+  discoveryQualityLabel,
+  discoverySummaryLine,
+  parseDiscoveryReport,
+} from "./discovery";
 import type { DeviceDiscovery, InventoryDiscovery } from "../types";
 
 function discovery(patch: Partial<InventoryDiscovery> = {}): InventoryDiscovery {
@@ -27,6 +33,7 @@ function discovery(patch: Partial<InventoryDiscovery> = {}): InventoryDiscovery 
     services: ["_ipp._tcp", "_printer._tcp"],
     sources: ["mdns", "ssdp"],
     last_discovered_at: "2026-08-05T09:00:00Z",
+    evidence_freshness: "current",
     ...patch,
   };
 }
@@ -210,6 +217,8 @@ describe("name conflicts", () => {
     first_discovered_at: null,
     last_discovered_at: null,
     evidence: [],
+    evidence_freshness: "current",
+    raw_type_confidence: "high",
     ...patch,
   });
 
@@ -217,5 +226,72 @@ describe("name conflicts", () => {
     expect(hasNameConflict(record())).toBe(false);
     expect(hasNameConflict(record({ alternate_names: ["[TV] Living Room"] }))).toBe(true);
     expect(hasNameConflict(null)).toBe(false);
+  });
+});
+
+describe("discovery quality", () => {
+  it("has a word for each state, and reads an unknown one as skipped", () => {
+    expect(discoveryQualityLabel("complete")).toBe("Complete");
+    expect(discoveryQualityLabel("limited")).toBe("Limited");
+    expect(discoveryQualityLabel("skipped")).toBe("Skipped");
+    expect(discoveryQualityLabel("interrupted")).toBe("Interrupted");
+    expect(discoveryQualityLabel("who knows")).toBe("Skipped");
+    expect(discoveryQualityLabel(null)).toBe("Skipped");
+  });
+
+  it("never claims a firewall, because ArcScan cannot observe one", () => {
+    for (const hint of Object.values(DISCOVERY_QUALITY_HINT)) {
+      expect(hint.toLowerCase()).not.toContain("firewall");
+    }
+  });
+
+  it("shows counts for a complete pass and the observed reason otherwise", () => {
+    expect(
+      discoverySummaryLine({
+        discovery_quality: "complete",
+        discovery_summary: JSON.stringify({ mdns_responses: 12, ssdp_responses: 8 }),
+      }),
+    ).toBe("Complete · 12 mDNS · 8 SSDP");
+
+    // Not the counts: a number beside "Limited" invites a reader to treat it as
+    // the whole story, and that is exactly the case where it is not.
+    expect(
+      discoverySummaryLine({
+        discovery_quality: "skipped",
+        discovery_quality_reason: "Remote subnet",
+        discovery_summary: null,
+      }),
+    ).toBe("Skipped · Remote subnet");
+
+    expect(
+      discoverySummaryLine({
+        discovery_quality: "limited",
+        discovery_quality_reason: "mDNS socket unavailable",
+        discovery_summary: JSON.stringify({ mdns_responses: 3, ssdp_responses: 0 }),
+      }),
+    ).toBe("Limited · mDNS socket unavailable");
+
+    expect(
+      discoverySummaryLine({
+        discovery_quality: "interrupted",
+        discovery_quality_reason: "Scan stopped",
+      }),
+    ).toBe("Interrupted · Scan stopped");
+  });
+
+  it("survives a summary written by a newer or a broken build", () => {
+    expect(parseDiscoveryReport(null)).toBeNull();
+    expect(parseDiscoveryReport("")).toBeNull();
+    expect(parseDiscoveryReport("not json")).toBeNull();
+    expect(parseDiscoveryReport("[1,2,3]")?.mdns_responses).toBe(0);
+    const parsed = parseDiscoveryReport(
+      JSON.stringify({ mdns_responses: 4, something_new: true }),
+    );
+    expect(parsed?.mdns_responses).toBe(4);
+    expect(parsed?.ssdp_responses).toBe(0);
+    // A row with no counts still renders a line rather than throwing.
+    expect(discoverySummaryLine({ discovery_quality: "complete", discovery_summary: "junk" })).toBe(
+      "Complete",
+    );
   });
 });

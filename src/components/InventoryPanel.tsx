@@ -37,6 +37,7 @@ import {
   type SortDirection,
 } from "../lib/inventory";
 import { confidenceTone, deviceTypeLabel, sourcesLabel } from "../lib/discovery";
+import { FRESHNESS_HINT, rowType } from "../lib/effectiveType";
 import type { Density } from "../lib/prefs";
 import type { ExportFormat, InventoryRow, NetworkOption, PresenceState } from "../types";
 
@@ -601,16 +602,7 @@ function InventoryRowView({
 
       {show("type") ? (
         <td className="max-w-[11rem]">
-          {row.discovery && row.discovery.device_type !== "unknown" ? (
-            <span className="inline-flex items-center gap-1.5">
-              <span className="truncate">{deviceTypeLabel(row.discovery.device_type)}</span>
-              <Badge tone={confidenceTone(row.discovery.type_confidence)}>
-                {row.discovery.type_confidence}
-              </Badge>
-            </span>
-          ) : (
-            <span className="empty-value" />
-          )}
+          <TypeCell row={row} />
         </td>
       ) : null}
 
@@ -682,6 +674,48 @@ export function PresenceCell({ presence }: { presence: PresenceState }) {
       >
         {PRESENCE_LABEL[presence]}
       </span>
+    </span>
+  );
+}
+
+/**
+ * The Type column.
+ *
+ * Shows the *effective* type — the operator's correction where there is one,
+ * ArcScan's own answer otherwise — so the column, the filter and the export
+ * cannot disagree. Which of the two it is has to be visible without being loud,
+ * so a corrected type carries a quiet "You" rather than a confidence word: a
+ * confidence badge beside a type a person chose would be ArcScan grading them.
+ *
+ * A type resting entirely on stale evidence is marked, because a column that
+ * showed a three-scan-old answer identically to a fresh one would be the
+ * clearest way to make discovery untrustworthy.
+ */
+function TypeCell({ row }: { row: InventoryRow }) {
+  const resolved = rowType(row);
+  if (resolved.effectiveType === "unknown" && !resolved.isUserSet) {
+    return <span className="empty-value" />;
+  }
+  const freshness = row.discovery?.evidence_freshness;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="truncate">{deviceTypeLabel(resolved.effectiveType)}</span>
+      {resolved.isUserSet ? (
+        <Badge tone="accent" title="You set this device type. ArcScan's own answer is in the drawer.">
+          You
+        </Badge>
+      ) : (
+        <>
+          <Badge tone={confidenceTone(resolved.detectedConfidence)}>
+            {resolved.detectedConfidence}
+          </Badge>
+          {freshness === "stale" ? (
+            <Badge tone="warning" title={FRESHNESS_HINT.stale}>
+              stale
+            </Badge>
+          ) : null}
+        </>
+      )}
     </span>
   );
 }
