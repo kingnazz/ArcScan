@@ -2,9 +2,23 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://kingnazz.github.io/ArcScan/</loc>
-    <lastmod>2026-08-04</lastmod>
+    <lastmod>2026-08-25</lastmod>
     <changefreq>monthly</changefreq>
     <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://kingnazz.github.io/ArcScan/whats-new-1.8.3.html</loc>
+    <lastmod>2026-08-25</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <!-- v1.8.2 shipped without its sitemap entry; added here rather than left
+         missing, since the page itself has been published since August. -->
+    <loc>https://kingnazz.github.io/ArcScan/whats-new-1.8.2.html</loc>
+    <lastmod>2026-08-18</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.8</priority>
   </url>
   <url>
     <loc>https://kingnazz.github.io/ArcScan/whats-new-1.8.1.html</loc>

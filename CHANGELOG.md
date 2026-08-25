@@ -3,6 +3,111 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - unreleased
+
+Discovery tuning and user corrections. You can now correct the device type
+ArcScan detected without changing anything else about the device, older
+discovery evidence stops being treated as authoritative once repeated completed
+scans no longer confirm it, and a redacted `Copy discovery details` summary
+makes a bad detection reportable. Install over 1.8.x, 1.7.x or 1.6.x without
+losing anything. Full notes:
+[docs/RELEASE-NOTES-1.8.3.md](docs/RELEASE-NOTES-1.8.3.md).
+
+### Added
+
+- **A device type you can set yourself.** The same fourteen types v1.8.2
+  shipped, plus Automatic, chosen from the device panel and used by the
+  Inventory's Type column, the type filter, search and every export. **The
+  correction changes what ArcScan calls the device and nothing else**: the same
+  identity key, identity source, MAC, network scope, dates, presence, trust
+  status, name, notes and history. Nothing is merged, nothing is split and no
+  duplicate appears. What ArcScan detected is kept underneath, so clearing the
+  correction reveals its *current* answer rather than a snapshot of the old one.
+- **An explicit Unknown, which is not the same as Automatic.** A person who has
+  looked at a device and concluded that neither they nor ArcScan can say what it
+  is has recorded something real, and the next scan does not talk them out of it.
+- **Evidence aging.** Discovery evidence is now `current`, `aging` or `stale`.
+  A claim goes stale after **three consecutive qualifying scans** miss it, where
+  qualifying means the scan completed, ran both protocols, found the device, and
+  actually ran the protocol that would have carried the claim. Nothing ages
+  because a scan was partial, remote, stopped, had discovery switched off, had
+  no eligible interface, or did not find the device. Counted in *scans*, never
+  in days: a wall-clock age would say more about when the operator last ran
+  ArcScan than about the device.
+- **Stale evidence is kept, shown and dated**, never deleted. What it loses is
+  the ability to carry High confidence on its own: a type resting entirely on it
+  is shown at Medium, and the panel explains why. It does not decay further, and
+  the device does not become something else. The reduction happens at read time
+  and is never written, so one confirming scan undoes it.
+- **Discovery quality in History** — `Complete`, `Limited`, `Skipped` or
+  `Interrupted`, with the counts for a complete pass and, for a limited one, the
+  single thing ArcScan actually observed. **It never claims a firewall blocked
+  anything**, because it cannot see one; it reports a socket that would not open,
+  a cap reached, or a description it refused.
+- **`Copy discovery details`**, a redacted summary for a bug report. It never
+  contains notes, the MAC address, the serial number, a UPnP UDN or mDNS
+  instance name, any advertised URL, IPv6 addresses, the network name or a
+  database id, and the local address is masked to `192.168.x.x`. Deterministic,
+  bounded to 4,000 characters, built locally, copied to the clipboard, and sent
+  nowhere.
+- **Five export columns**: Device type, Type source, Detected type, Detected
+  confidence and Discovery freshness, so a type in a spreadsheet can be
+  attributed. Stale evidence rows themselves are not written to CSV or XML.
+
+### Changed
+
+- **Classification tuning, from evidence v1.8.2 already collected.** A
+  television with Cast built in told apart from the stick plugged into it; an
+  Apple TV no longer filed as a speaker for accepting AirPlay audio; Roku; a
+  named speaker at High; a NAS with its own web console at High; a gateway that
+  advertised only `WANDevice`; an access point that still reads as a router when
+  it is the gateway; two smart-home protocols together at High; a desktop
+  sharing its screen and a shell; both printing ports. **RTSP alone is still
+  Low, and one weak fact still produces Unknown.**
+- **Naming tuning.** A `friendlyName` that is really a UDN, and an mDNS label
+  that is really a GUID, are refused. Service-instance suffixes are trimmed, so
+  `Office Printer._ipp._tcp.local` reads as `Office Printer`. A factory label
+  with a separator and a hex tail is demoted below the reverse-DNS hostname
+  rather than discarded. A manufacturer the model already mentions anywhere is
+  no longer repeated. **Names containing digits are left alone**: `Synology
+  DS923+` and `HP LaserJet M404` survive untouched, and a run-together label
+  such as `BRW90E2BA` is deliberately not recognised, because the same rule
+  reads `RT2600AC` as a serial.
+- **Settings gains one paragraph** explaining that older evidence stops being
+  relied on. It still exposes no threshold and no classifier weights: the number
+  only means anything alongside the definition of a qualifying miss.
+- The browser demo now records a Stop that lands inside a discovery phase as
+  interrupted, matching the real backend.
+
+### Fixed
+
+- **No Changes backlog from the upgrade.** Each stored discovery record now
+  carries the generation of the naming rules that wrote it. A record older than
+  the current generation has its name and model compared silently exactly once,
+  so the first scan after upgrading does not report a rename for every device
+  whose name v1.8.3 tidied. The tidied name is still adopted; only the event is
+  suppressed.
+- **Evidence aging creates no change events**, and neither does setting,
+  changing or clearing a type correction. An operator edit is not something that
+  happened on the network.
+- The site's sitemap was missing its `whats-new-1.8.2.html` entry, which is
+  added here.
+
+### Security
+
+- Unchanged, and re-asserted by the same tests: mDNS is still a one-shot
+  querier that never binds port 5353 and never answers a query; the SSDP
+  `LOCATION` rules, the no-redirect and no-proxy rules and the no-DNS-rebinding
+  guarantee are untouched; description documents still allow no DTD and keep
+  every bound on size, nesting, field length and element count.
+- **No new webview permission and no CSP change.** No external API, lookup
+  service, fingerprint database, analytics or telemetry. The diagnostic report
+  is built locally.
+- The type correction is validated against the shipped vocabulary with a strict
+  parser before it reaches the database. A value that is not a type is an error
+  rather than a silent Unknown, because Unknown is itself a meaningful answer
+  that a typo must not be able to impersonate.
+
 ## [1.8.2] - 2026-08-18
 
 Better device discovery. ArcScan now asks the local network what its devices
