@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Capture the product screenshots the website uses.
 //
-// Every shot comes from the real v1.8.2 interface driven in a browser against the
+// Every shot comes from the real v1.8.3 interface driven in a browser against the
 // built-in demo network, so the images can never show an older UI. The networks
 // are entirely fictional, so no real client, hostname, MAC address or public
 // address is ever in a published image.
@@ -189,6 +189,39 @@ await shot("device-dark");
 }
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
+
+// v1.8.3: the same section on a device whose type the operator has corrected.
+// ArcScan reads the television as a media device; the drawer shows the
+// correction, says who made it, and keeps ArcScan's own answer underneath.
+{
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  await page.locator('tbody tr:has-text("192.168.1.44")').first().dblclick();
+  await page.getByRole("complementary").waitFor({ timeout: 5_000 });
+  const drawer = page.getByRole("complementary").last();
+  await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  await shot("device-type-override-dark");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+}
+
+// v1.8.3: a device whose evidence has gone stale. Everything it once
+// advertised is still on file and still dated, in discovery scans rather than
+// in days, and its confidence has been reduced because nothing has confirmed
+// it in three scans that could have.
+{
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  await page.locator('tbody tr:has-text("192.168.1.81")').first().dblclick();
+  await page.getByRole("complementary").waitFor({ timeout: 5_000 });
+  const drawer = page.getByRole("complementary").last();
+  await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  await shot("device-stale-evidence-dark");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+}
 
 await nav("History").click();
 await page.waitForTimeout(400);
