@@ -71,6 +71,22 @@ const GENERIC_NAMES: &[&str] = &[
     "smart tv",
     "new device",
     "my device",
+    // v1.8.3: model strings vendors ship as a friendly name, which are
+    // categories rather than devices in exactly the same way.
+    "media player",
+    "media device",
+    "network device",
+    "access point",
+    "ip camera",
+    "webcam",
+    "wireless device",
+    "smart device",
+    "generic",
+    "renderer",
+    "player",
+    "upnp router",
+    "internet gateway device",
+    "wfadevice",
 ];
 
 /// True when a name says what kind of thing it is and nothing more.
@@ -78,6 +94,84 @@ pub fn is_generic_name(name: &str) -> bool {
     let normal = name.trim().to_lowercase();
     let normal = normal.trim_end_matches(".local").trim();
     GENERIC_NAMES.contains(&normal)
+}
+
+/// True when a string is a protocol identifier wearing a name's clothes.
+///
+/// A UPnP `friendlyName` is occasionally the UDN, and an mDNS instance label is
+/// occasionally a bare GUID. Both are stable, unique and completely
+/// unreadable — showing one is strictly worse than showing the address, which
+/// at least tells a person where to look.
+///
+/// Deliberately narrow. `HP LaserJet 400` and `DS923+` are full of digits and
+/// must survive untouched, so the rule matches only the two shapes that are
+/// unambiguously identifiers: a `uuid:`/`urn:` prefix, and a bare UUID with or
+/// without its dashes.
+pub fn is_protocol_identifier(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    let lower = lower.trim_end_matches(".local").trim();
+    if lower.starts_with("uuid:") || lower.starts_with("urn:") {
+        return true;
+    }
+    let bare = lower.replace('-', "");
+    // 32 hex characters, which is a UUID whether or not it was punctuated. A
+    // real model number never reaches that length in hex alone.
+    bare.len() == 32 && bare.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// True when a name is the label a device left the factory with.
+///
+/// `HP-A1B2C3`, `BRW90E2BA`, `Canon_1A2B3C4D`: a maker prefix and a slice of
+/// the MAC address. It is not wrong, and it is unique, but it says nothing a
+/// person recognises, so it belongs below a reverse-DNS hostname and below the
+/// manufacturer-and-type form rather than at the top.
+///
+/// Demoted, never discarded: it still beats a bare address, and on a network of
+/// three identical printers it is the only thing that tells them apart.
+pub fn is_factory_default_name(name: &str) -> bool {
+    let trimmed = name.trim().trim_end_matches(".local").trim();
+    let Some(split) = trimmed.rfind(['-', '_']) else {
+        return false;
+    };
+    let (head, tail) = trimmed.split_at(split);
+    let tail = &tail[1..];
+    if head.is_empty() || head.len() > 12 || !head.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    // Six or more hex digits, and at least one of them a digit — a suffix of
+    // pure letters (`Office-Printer`) is a word, not a serial.
+    tail.len() >= 6
+        && tail.len() <= 12
+        && tail.chars().all(|c| c.is_ascii_hexdigit())
+        && tail.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Cut an mDNS service-instance suffix off a name.
+///
+/// A PTR target is `Office Printer._ipp._tcp.local`, and the part after the
+/// first `._` is the service type, not the device. Only an actual service type
+/// is removed — `_word._tcp` or `_word._udp`, optionally followed by
+/// `.local` — so a name that merely contains an underscore keeps it.
+fn strip_service_instance(name: &str) -> String {
+    let trimmed = name.trim_end_matches('.');
+    let mut search_from = 0usize;
+    while let Some(offset) = trimmed[search_from..].find("._") {
+        let at = search_from + offset;
+        let rest = trimmed[at + 1..].trim_end_matches('.');
+        let rest = rest
+            .strip_suffix(".local")
+            .or_else(|| rest.strip_suffix(".LOCAL"))
+            .unwrap_or(rest);
+        let lower = rest.to_lowercase();
+        let is_service = (lower.ends_with("._tcp") || lower.ends_with("._udp"))
+            && lower.starts_with('_')
+            && lower.matches('.').count() == 1;
+        if is_service {
+            return trimmed[..at].to_string();
+        }
+        search_from = at + 1;
+    }
+    trimmed.to_string()
 }
 
 /// Tidy a name a device advertised, for display.
@@ -95,13 +189,21 @@ pub fn tidy_name(raw: &str) -> Option<String> {
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = collapsed
+    // The service-instance suffix goes first: `Office Printer._ipp._tcp.local`
+    // has to become `Office Printer`, not `Office Printer._ipp._tcp`.
+    let instance = strip_service_instance(collapsed.trim());
+    let trimmed = instance
         .trim()
         .trim_end_matches('.')
         .trim_end_matches(".local")
         .trim()
         .to_string();
     if trimmed.is_empty() {
+        return None;
+    }
+    // A raw identifier is refused outright rather than demoted. There is no
+    // circumstance in which `uuid:550e8400-...` is the best available name.
+    if is_protocol_identifier(&trimmed) {
         return None;
     }
     let deduped = collapse_repeats(&trimmed);
@@ -147,7 +249,10 @@ pub fn manufacturer_and_model(manufacturer: Option<&str>, model: Option<&str>) -
     let manufacturer = manufacturer.and_then(tidy_name);
     match (manufacturer, model) {
         (Some(make), Some(model)) => {
-            if model.to_lowercase().starts_with(&make.to_lowercase()) {
+            // Not only as a prefix: `Acme` + `LaserFast 400 by Acme` is the
+            // same duplication wearing a different hat, and prepending would
+            // give `Acme LaserFast 400 by Acme`.
+            if contains_word_sequence(&model.to_lowercase(), &make.to_lowercase()) {
                 Some(model)
             } else {
                 tidy_name(&format!("{make} {model}"))
@@ -157,6 +262,20 @@ pub fn manufacturer_and_model(manufacturer: Option<&str>, model: Option<&str>) -
         (None, Some(model)) => Some(model),
         (None, None) => None,
     }
+}
+
+/// True when `haystack` contains every word of `needle`, in order and adjacent.
+///
+/// Word-wise rather than by substring, so `Acme` is found inside
+/// `Acme LaserFast` but not inside `Acmetronic`, which is a different company.
+fn contains_word_sequence(haystack: &str, needle: &str) -> bool {
+    let hay: Vec<&str> = haystack.split_whitespace().collect();
+    let want: Vec<&str> = needle.split_whitespace().collect();
+    if want.is_empty() || want.len() > hay.len() {
+        return false;
+    }
+    hay.windows(want.len())
+        .any(|window| window == want.as_slice())
 }
 
 /// The name ArcScan settled on, and what it was based on.
@@ -212,12 +331,13 @@ pub fn resolve(inputs: &NameInputs<'_>, discovery: Option<&DiscoveredDevice>) ->
             let Some(name) = tidy_name(&evidence.value) else {
                 continue;
             };
-            let bucket =
-                if evidence.confidence.at_least(Confidence::High) && !is_generic_name(&name) {
-                    &mut strong
-                } else {
-                    &mut weak
-                };
+            // Generic (`printer`) and factory-default (`HP-A1B2C3`) names are
+            // demoted for the same reason: neither identifies the device to the
+            // person looking at it. Both stay available further down.
+            let usable = evidence.confidence.at_least(Confidence::High)
+                && !is_generic_name(&name)
+                && !is_factory_default_name(&name);
+            let bucket = if usable { &mut strong } else { &mut weak };
             // De-duplicated *per source*, not across them. Two protocols
             // advertising the same name in different casing is the common case,
             // and collapsing them would let whichever sorted first decide the
@@ -255,7 +375,7 @@ pub fn resolve(inputs: &NameInputs<'_>, discovery: Option<&DiscoveredDevice>) ->
     if let Some(hostname) = inputs
         .hostname
         .and_then(tidy_name)
-        .filter(|h| !is_generic_name(h))
+        .filter(|h| !is_generic_name(h) && !is_factory_default_name(h))
     {
         return ResolvedName {
             name: hostname.clone(),
@@ -538,6 +658,249 @@ mod tests {
         let resolved = resolve(&inputs(), Some(&d));
         assert_eq!(resolved.name, "Studio Printer");
         assert_eq!(resolved.alternates, vec!["Acme LF400"]);
+    }
+
+    #[test]
+    fn a_protocol_identifier_is_never_used_as_a_name() {
+        for identifier in [
+            "uuid:550e8400-e29b-41d4-a716-446655440000",
+            "UUID:550E8400-E29B-41D4-A716-446655440000",
+            "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "550e8400e29b41d4a716446655440000",
+            "550e8400-e29b-41d4-a716-446655440000.local",
+        ] {
+            assert_eq!(tidy_name(identifier), None, "{identifier:?} survived");
+            assert!(is_protocol_identifier(identifier), "{identifier:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_full_of_digits_is_left_completely_alone() {
+        // The identifier rule is the one most likely to eat a real name, so
+        // every shape a real model takes is asserted rather than assumed.
+        for good in [
+            "HP LaserJet M404",
+            "Synology DS923+",
+            "Living Room Apple TV",
+            "Office Chromecast",
+            "AX6000",
+            "EPSON ET-2850 Series",
+            "Bravia KD-55X80J",
+            "192 Studio",
+        ] {
+            assert_eq!(tidy_name(good).as_deref(), Some(good), "{good:?}");
+            assert!(!is_protocol_identifier(good), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn a_service_instance_suffix_is_cut_off_the_instance_label() {
+        assert_eq!(
+            tidy_name("Office Printer._ipp._tcp.local").as_deref(),
+            Some("Office Printer")
+        );
+        assert_eq!(
+            tidy_name("Living Room._airplay._tcp.local.").as_deref(),
+            Some("Living Room")
+        );
+        assert_eq!(
+            tidy_name("Kitchen Speaker._raop._udp").as_deref(),
+            Some("Kitchen Speaker")
+        );
+        // An underscore that is not a service type is not a suffix.
+        assert_eq!(
+            tidy_name("Studio_B Camera").as_deref(),
+            Some("Studio_B Camera")
+        );
+        assert_eq!(tidy_name("Rack._unit_4").as_deref(), Some("Rack._unit_4"));
+    }
+
+    #[test]
+    fn a_factory_default_label_is_demoted_and_not_discarded() {
+        for factory in [
+            "HP-A1B2C3",
+            "Canon_1A2B3C4D",
+            "EPSON-4F2E1A",
+            "hp-a1b2c3.local",
+        ] {
+            assert!(is_factory_default_name(factory), "{factory:?}");
+            // Still a usable string; only its ranking changed.
+            assert!(tidy_name(factory).is_some(), "{factory:?}");
+        }
+        for real in [
+            "Office-Printer",
+            "Front Desk",
+            "Rack-Switch",
+            "AX-6000",
+            "Hub 6",
+        ] {
+            assert!(!is_factory_default_name(real), "{real:?}");
+        }
+    }
+
+    #[test]
+    fn a_run_together_factory_label_is_deliberately_left_alone() {
+        // `BRW90E2BA` really is a Brother printer's factory label, and
+        // recognising it would mean splitting a string with no separator in it
+        // into a prefix and a hex tail. The same rule reads `RT2600AC` — a
+        // Synology router model — as `RT` plus six hex digits, and demoting a
+        // real model number is a worse outcome than leaving a serial-looking
+        // one at the top. The separator is the evidence; without it there is
+        // none, so the rule declines to guess.
+        for ambiguous in ["BRW90E2BA", "RT2600AC", "DS1821", "AX6000"] {
+            assert!(!is_factory_default_name(ambiguous), "{ambiguous:?}");
+        }
+    }
+
+    #[test]
+    fn a_factory_default_advertisement_loses_to_the_reverse_dns_hostname() {
+        let mut device = DiscoveredDevice::new("192.0.2.10".parse().unwrap());
+        device.add(Evidence::new(
+            DiscoverySource::Mdns,
+            EvidenceKind::DisplayName,
+            "",
+            "HP-A1B2C3",
+            Confidence::High,
+        ));
+        device.sort();
+        let resolved = resolve(
+            &NameInputs {
+                hostname: Some("frontdesk-printer"),
+                ..Default::default()
+            },
+            Some(&device),
+        );
+        assert_eq!(resolved.name, "frontdesk-printer");
+        assert_eq!(resolved.source, DiscoverySource::ReverseDns);
+        // And it is still on file as something the device said.
+        assert!(resolved.alternates.iter().any(|a| a == "HP-A1B2C3"));
+    }
+
+    #[test]
+    fn a_factory_default_name_is_still_used_when_it_is_all_there_is() {
+        let mut device = DiscoveredDevice::new("192.0.2.10".parse().unwrap());
+        device.add(Evidence::new(
+            DiscoverySource::Mdns,
+            EvidenceKind::DisplayName,
+            "",
+            "HP-A1B2C3",
+            Confidence::High,
+        ));
+        device.sort();
+        let resolved = resolve(
+            &NameInputs {
+                ip: Some("192.0.2.10"),
+                ..Default::default()
+            },
+            Some(&device),
+        );
+        assert_eq!(resolved.name, "HP-A1B2C3");
+    }
+
+    #[test]
+    fn a_manufacturer_the_model_mentions_anywhere_is_not_repeated() {
+        assert_eq!(
+            manufacturer_and_model(Some("Acme"), Some("LaserFast 400 by Acme")).as_deref(),
+            Some("LaserFast 400 by Acme")
+        );
+        assert_eq!(
+            manufacturer_and_model(Some("Acme"), Some("LaserFast 400")).as_deref(),
+            Some("Acme LaserFast 400")
+        );
+        // A different company whose name merely starts the same way is not the
+        // same company, so its name is still prepended.
+        assert_eq!(
+            manufacturer_and_model(Some("Acme"), Some("Acmetronic 9")).as_deref(),
+            Some("Acme Acmetronic 9")
+        );
+    }
+
+    #[test]
+    fn every_permutation_of_the_same_evidence_yields_the_same_name() {
+        // The rule that matters most: a name may not depend on which multicast
+        // response happened to arrive first. Asserted over every ordering of a
+        // realistically messy set rather than over one swap.
+        let claims = [
+            Evidence::new(
+                DiscoverySource::Ssdp,
+                EvidenceKind::DisplayName,
+                "",
+                "uuid:550e8400-e29b-41d4-a716-446655440000",
+                Confidence::High,
+            ),
+            Evidence::new(
+                DiscoverySource::Mdns,
+                EvidenceKind::DisplayName,
+                "",
+                "Living Room TV._airplay._tcp.local",
+                Confidence::High,
+            ),
+            Evidence::new(
+                DiscoverySource::Mdns,
+                EvidenceKind::DisplayName,
+                "alt",
+                "LG-4F2E1A",
+                Confidence::High,
+            ),
+            Evidence::new(
+                DiscoverySource::Ssdp,
+                EvidenceKind::DisplayName,
+                "alt",
+                "UPnP Device",
+                Confidence::Medium,
+            ),
+            Evidence::new(
+                DiscoverySource::Mdns,
+                EvidenceKind::Hostname,
+                "",
+                "lg-4f2e1a.local",
+                Confidence::Medium,
+            ),
+        ];
+
+        let ip: std::net::Ipv4Addr = "192.0.2.10".parse().unwrap();
+        let inputs = NameInputs {
+            hostname: Some("tv"),
+            vendor: Some("LG"),
+            ip: Some("192.0.2.10"),
+            ..Default::default()
+        };
+
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for order in permutations(claims.len()) {
+            let mut device = DiscoveredDevice::new(ip);
+            for index in order {
+                device.add(claims[index].clone());
+            }
+            device.sort();
+            let resolved = resolve(&inputs, Some(&device));
+            seen.insert(format!("{}|{:?}", resolved.name, resolved.source));
+        }
+        assert_eq!(seen.len(), 1, "the name depends on packet order: {seen:?}");
+        assert!(seen.iter().next().unwrap().starts_with("Living Room TV|"));
+    }
+
+    /// Every ordering of `n` indices. `n` stays small on purpose: 120 orderings
+    /// is exhaustive proof, 3,628,800 is a slow test that proves the same thing.
+    fn permutations(n: usize) -> Vec<Vec<usize>> {
+        if n <= 1 {
+            return vec![(0..n).collect()];
+        }
+        let mut out = Vec::new();
+        for (index, _) in (0..n).enumerate() {
+            for mut rest in permutations(n - 1) {
+                for value in rest.iter_mut() {
+                    if *value >= index {
+                        *value += 1;
+                    }
+                }
+                let mut one = vec![index];
+                one.extend(rest);
+                out.push(one);
+            }
+        }
+        out
     }
 
     #[test]
