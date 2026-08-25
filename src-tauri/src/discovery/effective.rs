@@ -41,15 +41,6 @@ pub enum TypeSource {
     Automatic,
 }
 
-impl TypeSource {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TypeSource::User => "user",
-            TypeSource::Automatic => "automatic",
-        }
-    }
-}
-
 /// The answer to "what type is this device, and who decided?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveType {
