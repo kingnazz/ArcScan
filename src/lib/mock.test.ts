@@ -272,9 +272,55 @@ describe("demo discovery", () => {
     const typeOf = (ip: string) =>
       rows.find((r) => r.current_ip === ip)?.discovery?.device_type;
     expect(typeOf("192.168.1.1")).toBe("router");
-    expect(typeOf("192.168.1.44")).toBe("television");
     expect(typeOf("192.168.1.60")).toBe("camera");
     expect(typeOf("192.168.1.50")).toBe("nas");
+    // The television is the demo's user-override case: ArcScan reads it as a
+    // media device, and the *detected* value is what this asserts. What the
+    // interface shows for it is covered by the effective-type tests.
+    expect(typeOf("192.168.1.44")).toBe("media_device");
+  });
+
+  it("ships an Auto device, a corrected one and an explicit Unknown", () => {
+    const rows = mock.inventory().rows;
+    const rowFor = (ip: string) => rows.find((r) => r.current_ip === ip);
+    // Auto: no correction, so ArcScan's own answer stands.
+    expect(rowFor("192.168.1.1")?.user_device_type).toBeNull();
+    // Corrected: the operator overruled a medium-confidence media device.
+    expect(rowFor("192.168.1.44")?.user_device_type).toBe("television");
+    expect(rowFor("192.168.1.44")?.discovery?.device_type).toBe("media_device");
+    // Explicit Unknown, which is an answer and not the absence of one.
+    expect(rowFor("192.168.1.60")?.user_device_type).toBe("unknown");
+    expect(rowFor("192.168.1.60")?.discovery?.device_type).toBe("camera");
+  });
+
+  it("shows evidence that is current, getting old and stale", () => {
+    const rows = mock.inventory().rows;
+    const freshnessOf = (ip: string) =>
+      rows.find((r) => r.current_ip === ip)?.discovery?.evidence_freshness;
+    expect(freshnessOf("192.168.1.31")).toBe("current");
+    expect(freshnessOf("192.168.1.77")).toBe("aging");
+    expect(freshnessOf("192.168.1.81")).toBe("stale");
+  });
+
+  it("reduces a high-confidence type whose evidence has all gone stale", () => {
+    const row = mock.inventory().rows.find((r) => r.current_ip === "192.168.1.81");
+    // The classifier said high; nothing has confirmed it in three qualifying
+    // scans, so what is shown is medium. The type itself does not move.
+    expect(row?.discovery?.device_type).toBe("media_device");
+    expect(row?.discovery?.type_confidence).toBe("medium");
+    const detail = mock.deviceDetail(row!.device_id);
+    expect(detail.discovery?.raw_type_confidence).toBe("high");
+    expect(detail.discovery?.type_confidence).toBe("medium");
+  });
+
+  it("keeps stale evidence on file rather than deleting it", () => {
+    const row = mock.inventory().rows.find((r) => r.current_ip === "192.168.1.81");
+    const detail = mock.deviceDetail(row!.device_id);
+    const stale = detail.discovery?.evidence.filter((e) => e.freshness === "stale") ?? [];
+    expect(stale.length).toBeGreaterThan(0);
+    expect(stale.some((e) => e.value === "MediaServer")).toBe(true);
+    // Dated in scans, which is the only count ArcScan actually observed.
+    expect(stale.every((e) => e.misses >= 3)).toBe(true);
   });
 
   it("leaves a device that advertises nothing without a discovery record", () => {

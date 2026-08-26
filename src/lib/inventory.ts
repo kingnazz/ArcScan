@@ -7,6 +7,7 @@
 import type { InventoryRow, PresenceState } from "../types";
 import { ipToNum, serviceLabel } from "./format";
 import { deviceTypeLabel, discoveryHaystack, serviceName } from "./discovery";
+import { rowType } from "./effectiveType";
 
 export type InventoryColumn =
   | "device"
@@ -184,6 +185,10 @@ export function inventoryHaystack(row: InventoryRow): string {
     // Detected name, model, type and advertised services, each reachable by
     // both its protocol spelling and its friendly one.
     discoveryHaystack(row.discovery),
+    // And the operator's correction, by both its wire value and its word, so a
+    // search for "printer" finds a device they corrected to one.
+    row.user_device_type ?? "",
+    row.user_device_type ? deviceTypeLabel(row.user_device_type) : "",
   ]
     .join(" ")
     .toLowerCase();
@@ -227,17 +232,22 @@ export function filterInventory(rows: InventoryRow[], filter: InventoryFilter): 
   });
 }
 
-/** True when a row belongs under a device-type filter. */
+/**
+ * True when a row belongs under a device-type filter.
+ *
+ * The *effective* type, so a device the operator corrected to Printer appears
+ * under Printer. A filter that disagreed with the column beside it would make
+ * the correction feel like it had not been saved.
+ */
 export function matchesDeviceType(row: InventoryRow, deviceType: string): boolean {
-  const actual = row.discovery?.device_type ?? "unknown";
-  return actual === deviceType;
+  return rowType(row).effectiveType === deviceType;
 }
 
 /** The device types actually present in a set of rows, for the filter menu. */
 export function presentDeviceTypes(rows: InventoryRow[]): string[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    const type = row.discovery?.device_type ?? "unknown";
+    const type = rowType(row).effectiveType;
     counts.set(type, (counts.get(type) ?? 0) + 1);
   }
   // Alphabetical by the word a person reads, with Unknown last however it sorts.
@@ -306,8 +316,8 @@ function compareBy(a: InventoryRow, b: InventoryRow, key: InventorySortKey): num
     case "previous":
       return blankLast(a.previous_ips[0] ?? null, b.previous_ips[0] ?? null);
     case "type":
-      return deviceTypeLabel(a.discovery?.device_type).localeCompare(
-        deviceTypeLabel(b.discovery?.device_type),
+      return deviceTypeLabel(rowType(a).effectiveType).localeCompare(
+        deviceTypeLabel(rowType(b).effectiveType),
       );
     case "detected_name":
       return blankLast(a.discovery?.detected_name ?? null, b.discovery?.detected_name ?? null);

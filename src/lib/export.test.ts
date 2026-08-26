@@ -8,7 +8,7 @@ import {
   exportFilename,
 } from "./export";
 import { upsertHost, type DeviceRow } from "./live";
-import type { ChangeEvent, HostResult, InventoryRow } from "../types";
+import type { ChangeEvent, HostResult, InventoryDiscovery, InventoryRow } from "../types";
 
 function host(overrides: Partial<HostResult> = {}): HostResult {
   return {
@@ -196,7 +196,7 @@ describe("inventory export", () => {
     const csv = buildInventoryExport([inventoryRow()], "csv");
     const lines = csv.trimEnd().split("\n");
     expect(lines[0]).toBe(
-      "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type confidence,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes",
+      "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type source,Detected type,Detected confidence,Discovery freshness,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes",
     );
     expect(lines).toHaveLength(2);
   });
@@ -303,5 +303,74 @@ describe("dated filenames", () => {
     expect(datedFilename("inventory", "///", "csv")).toMatch(
       /^arcscan-inventory-\d{4}-\d{2}-\d{2}\.csv$/,
     );
+  });
+});
+
+describe("the export distinguishes a correction from a detection", () => {
+  const detected = (patch: Partial<InventoryDiscovery> = {}): InventoryDiscovery => ({
+    detected_name: "Living Room",
+    device_type: "media_device",
+    type_confidence: "medium",
+    manufacturer: "Example Corp",
+    model_name: "TV-123",
+    services: ["_airplay._tcp"],
+    sources: ["mdns"],
+    last_discovered_at: "2026-08-05T09:00:00Z",
+    evidence_freshness: "current",
+    ...patch,
+  });
+
+  it("writes four type columns rather than one", () => {
+    const csv = buildInventoryExport(
+      [inventoryRow({ discovery: detected(), user_device_type: "printer" })],
+      "csv",
+    );
+    const values = csv.split("\n")[1];
+    // "Printer" alone cannot say whether ArcScan worked it out or a person
+    // corrected it, and a spreadsheet full of unattributable types is worse
+    // than one that says.
+    expect(values).toContain("Printer");
+    expect(values).toContain("User");
+    expect(values).toContain("Media device");
+    expect(values).toContain("medium");
+  });
+
+  it("marks an automatic type as automatic", () => {
+    const values = buildInventoryExport(
+      [
+        inventoryRow({
+          discovery: detected({ device_type: "printer", type_confidence: "high" }),
+          user_device_type: null,
+        }),
+      ],
+      "csv",
+    ).split("\n")[1];
+    expect(values).toContain("Automatic");
+    expect(values).not.toContain("User");
+  });
+
+  it("leaves the detected columns blank where no discovery-capable scan reached the device", () => {
+    const json = JSON.parse(
+      buildInventoryExport([inventoryRow({ discovery: null, user_device_type: null })], "json"),
+    )[0];
+    expect(json.detected_type).toBe("");
+    expect(json.detected_confidence).toBe("");
+    expect(json.discovery_freshness).toBe("");
+    // A blank cell says "not established"; the word would read as an answer.
+    expect(json.device_type).toBe("Unknown");
+    expect(json.type_source).toBe("Automatic");
+  });
+
+  it("carries the freshness state and not the stale evidence itself", () => {
+    const json = JSON.parse(
+      buildInventoryExport(
+        [inventoryRow({ discovery: detected({ evidence_freshness: "stale" }) })],
+        "json",
+      ),
+    )[0];
+    expect(json.discovery_freshness).toBe("stale");
+    // The drawer shows the rows; a CSV full of them would let one long-lived
+    // device dominate the file.
+    expect(Object.keys(json)).not.toContain("stale_evidence");
   });
 });

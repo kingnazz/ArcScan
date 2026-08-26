@@ -15,6 +15,8 @@ import type {
   Confidence,
   DeviceDiscovery,
   DiscoveryMode,
+  DiscoveryQuality,
+  DiscoveryReport,
   InventoryDiscovery,
   InventoryRow,
 } from "../types";
@@ -198,6 +200,98 @@ export function discoveryModeLabel(mode: DiscoveryMode | string): string {
 }
 
 /**
+ * How well a scan's discovery pass went, in one word.
+ *
+ * Four states rather than three, because "it ran and heard nothing" and "it ran
+ * and could not finish" are different facts and a person reading History needs
+ * to know which they are looking at.
+ */
+export const DISCOVERY_QUALITY_LABEL: Record<string, string> = {
+  complete: "Complete",
+  limited: "Limited",
+  skipped: "Skipped",
+  interrupted: "Interrupted",
+};
+
+export const DISCOVERY_QUALITY_HINT: Record<string, string> = {
+  complete: "Both protocols ran and finished, and nothing was cut short.",
+  limited:
+    "Discovery ran but could not do all of it. What ArcScan observed is shown beside this.",
+  skipped: "Discovery did not run: a remote target, switched off, or no local interface to send from.",
+  interrupted: "The scan was stopped while discovery was still in progress.",
+};
+
+export function discoveryQualityLabel(quality: DiscoveryQuality | string | null | undefined): string {
+  if (!quality) return DISCOVERY_QUALITY_LABEL.skipped;
+  return DISCOVERY_QUALITY_LABEL[quality] ?? DISCOVERY_QUALITY_LABEL.skipped;
+}
+
+/**
+ * The one compact line History shows: what the pass managed, and either the
+ * counts it heard or the single thing that limited it.
+ *
+ *   `Complete · 12 mDNS · 8 SSDP`
+ *   `Skipped · Remote scan`
+ *
+ * Counts only when the pass was complete: a number of responses beside the word
+ * "Limited" invites a reader to treat the number as the whole story, and it is
+ * exactly the case where it is not.
+ */
+export function discoverySummaryLine(scan: {
+  discovery_quality?: DiscoveryQuality | string | null;
+  discovery_quality_reason?: string | null;
+  discovery_summary?: string | null;
+}): string {
+  const quality = scan.discovery_quality ?? "skipped";
+  const parts: string[] = [discoveryQualityLabel(quality)];
+  if (quality === "complete") {
+    const report = parseDiscoveryReport(scan.discovery_summary);
+    if (report) {
+      parts.push(`${report.mdns_responses} mDNS`);
+      parts.push(`${report.ssdp_responses} SSDP`);
+    }
+  } else if (scan.discovery_quality_reason) {
+    parts.push(scan.discovery_quality_reason);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * The stored discovery summary, parsed defensively.
+ *
+ * The column holds whatever the build that wrote the scan put there, so a row
+ * from a newer or a corrupted build must read as "no summary" rather than
+ * throwing inside a list render.
+ */
+export function parseDiscoveryReport(raw: string | null | undefined): DiscoveryReport | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<DiscoveryReport>;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      mdns_attempted: Boolean(parsed.mdns_attempted),
+      ssdp_attempted: Boolean(parsed.ssdp_attempted),
+      mdns_responses: Number(parsed.mdns_responses ?? 0),
+      ssdp_responses: Number(parsed.ssdp_responses ?? 0),
+      descriptions_fetched: Number(parsed.descriptions_fetched ?? 0),
+      descriptions_rejected: Number(parsed.descriptions_rejected ?? 0),
+      description_notes: Array.isArray(parsed.description_notes) ? parsed.description_notes : [],
+      devices_enriched: Number(parsed.devices_enriched ?? 0),
+      duration_ms: Number(parsed.duration_ms ?? 0),
+      skip_reason: parsed.skip_reason ?? null,
+      interrupted: Boolean(parsed.interrupted),
+      mdns_socket_failed: Boolean(parsed.mdns_socket_failed),
+      ssdp_socket_failed: Boolean(parsed.ssdp_socket_failed),
+      mdns_capped: Boolean(parsed.mdns_capped),
+      ssdp_capped: Boolean(parsed.ssdp_capped),
+      descriptions_capped: Boolean(parsed.descriptions_capped),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Everything about a row that a search term should be able to reach.
  *
  * Deliberately includes both the raw service type (`_ipp._tcp`) and its
@@ -208,6 +302,9 @@ export function discoveryHaystack(discovery: InventoryDiscovery | null | undefin
   if (!discovery) return "";
   return [
     discovery.detected_name ?? "",
+    // The *detected* type, which stays searchable under an override: a
+    // technician looking for "everything ArcScan called a media device" is
+    // asking a real question, and a correction should not hide the answer.
     discovery.device_type,
     deviceTypeLabel(discovery.device_type),
     discovery.type_confidence,
@@ -216,6 +313,8 @@ export function discoveryHaystack(discovery: InventoryDiscovery | null | undefin
     discovery.services.join(" "),
     discovery.services.map(serviceName).join(" "),
     discovery.sources.map(sourceLabel).join(" "),
+    // So a search for "stale" finds the devices whose evidence has gone quiet.
+    discovery.evidence_freshness ?? "",
   ].join(" ");
 }
 

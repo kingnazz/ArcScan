@@ -9,6 +9,7 @@ import type { DeviceRow } from "./live";
 import { rowName } from "./live";
 import { serviceWithPort } from "./format";
 import { deviceTypeLabel, serviceName, sourceLabel } from "./discovery";
+import { rowType } from "./effectiveType";
 
 function csvField(value: string): string {
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
@@ -191,7 +192,10 @@ const INVENTORY_HEADERS = [
   "Observations",
   "Detected name",
   "Device type",
-  "Type confidence",
+  "Type source",
+  "Detected type",
+  "Detected confidence",
+  "Discovery freshness",
   "Discovered by",
   "Detected manufacturer",
   "Model",
@@ -202,6 +206,7 @@ const INVENTORY_HEADERS = [
 
 /** Ordered so the CSV columns and the XML element names cannot drift apart. */
 function inventoryRecord(row: InventoryRow, notes: string): Record<string, string> {
+  const effective = rowType(row);
   return {
     network: row.network_name ?? "",
     // Not `device`: the XML item element is already <device>, and a field of the
@@ -224,8 +229,19 @@ function inventoryRecord(row: InventoryRow, notes: string): Record<string, strin
     // scan has reached the device: a blank cell says "not established", where
     // the word would read as an answer.
     detected_name: row.discovery?.detected_name ?? "",
-    device_type: row.discovery ? deviceTypeLabel(row.discovery.device_type) : "",
-    type_confidence: row.discovery?.type_confidence ?? "",
+    // Four columns rather than one, because "Printer" alone cannot say whether
+    // ArcScan worked it out or a person corrected it, and a spreadsheet full of
+    // types nobody can attribute is worse than one that says.
+    device_type: deviceTypeLabel(effective.effectiveType),
+    type_source: effective.isUserSet ? "User" : "Automatic",
+    // Blank rather than "Unknown" where no discovery-capable scan has reached
+    // the device: a blank cell says "not established", where the word would
+    // read as an answer.
+    detected_type: row.discovery ? deviceTypeLabel(row.discovery.device_type) : "",
+    detected_confidence: row.discovery?.type_confidence ?? "",
+    // The state, not the evidence. Dumping stale rows into a CSV would make one
+    // long-lived device dominate the file, and the drawer already shows them.
+    discovery_freshness: row.discovery?.evidence_freshness ?? "",
     discovered_by: (row.discovery?.sources ?? []).map(sourceLabel).join(" "),
     detected_manufacturer: row.discovery?.manufacturer ?? "",
     model: row.discovery?.model_name ?? "",

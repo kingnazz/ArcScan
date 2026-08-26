@@ -364,6 +364,15 @@ pub struct Device {
     /// How many scans have observed this device.
     #[serde(default)]
     pub observation_count: i64,
+    /// The operator's device-type correction, or `None` for Auto.
+    ///
+    /// A correction to what ArcScan *calls* the device, deliberately alongside
+    /// the name, the status and the notes: it is an operator label, and like
+    /// every other operator label it has no effect on `identity_key`,
+    /// `identity_source`, `mac`, the network scope or presence. Nothing in
+    /// this module's matching or comparison rules reads it.
+    #[serde(default)]
+    pub user_device_type: Option<String>,
 }
 
 /// The name to show for a device, in the order a person would expect.

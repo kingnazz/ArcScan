@@ -25,6 +25,7 @@ function discovery(patch: Partial<InventoryDiscovery> = {}): InventoryDiscovery 
     services: ["_ipp._tcp"],
     sources: ["mdns", "ssdp"],
     last_discovered_at: "2026-08-05T09:00:00Z",
+    evidence_freshness: "current",
     ...patch,
   };
 }
@@ -380,5 +381,72 @@ describe("discovery in the inventory", () => {
     expect(chosen).toContain("type");
     expect(chosen).toContain("model");
     expect(chosen).not.toContain("detected_name");
+  });
+});
+
+describe("the type filter and the type column agree", () => {
+  it("filters on the type shown, not on the one ArcScan detected", () => {
+    const corrected = row({
+      device_id: 90,
+      discovery: discovery({ device_type: "media_device", type_confidence: "medium" }),
+      user_device_type: "television",
+    });
+    const auto = row({ device_id: 91, discovery: discovery({ device_type: "printer" }) });
+    const rows = [corrected, auto];
+
+    expect(matchesDeviceType(corrected, "television")).toBe(true);
+    // A filter that still listed it under the detected type would make the
+    // correction feel as though it had not saved.
+    expect(matchesDeviceType(corrected, "media_device")).toBe(false);
+    expect(matchesDeviceType(auto, "printer")).toBe(true);
+
+    expect(
+      filterInventory(rows, { ...EMPTY_INVENTORY_FILTER, deviceType: "television" }),
+    ).toHaveLength(1);
+    expect(presentDeviceTypes(rows)).toContain("television");
+    expect(presentDeviceTypes(rows)).not.toContain("media_device");
+  });
+
+  it("treats an explicit Unknown as a chosen answer", () => {
+    const unknown = row({
+      device_id: 92,
+      discovery: discovery({ device_type: "camera" }),
+      user_device_type: "unknown",
+    });
+    expect(matchesDeviceType(unknown, "unknown")).toBe(true);
+    expect(matchesDeviceType(unknown, "camera")).toBe(false);
+  });
+
+  it("puts a device with no discovery record under Unknown, and moves it when corrected", () => {
+    const bare = row({ device_id: 93, discovery: null });
+    expect(matchesDeviceType(bare, "unknown")).toBe(true);
+    const corrected = { ...bare, user_device_type: "printer" };
+    expect(matchesDeviceType(corrected, "printer")).toBe(true);
+    expect(matchesDeviceType(corrected, "unknown")).toBe(false);
+  });
+
+  it("finds a device by the type ArcScan detected as well as by the correction", () => {
+    const corrected = row({
+      device_id: 94,
+      display_name: "Living Room",
+      discovery: discovery({ device_type: "media_device", detected_name: "Living Room" }),
+      user_device_type: "television",
+    });
+    const search = (query: string) =>
+      filterInventory([corrected], { ...EMPTY_INVENTORY_FILTER, query }).length;
+    // Both questions are real ones, and both have to be answerable.
+    expect(search("television")).toBe(1);
+    expect(search("media device")).toBe(1);
+  });
+
+  it("finds the devices whose evidence has gone stale", () => {
+    const stale = row({
+      device_id: 95,
+      discovery: discovery({ evidence_freshness: "stale" }),
+    });
+    const fresh = row({ device_id: 96, discovery: discovery() });
+    expect(
+      filterInventory([stale, fresh], { ...EMPTY_INVENTORY_FILTER, query: "stale" }),
+    ).toHaveLength(1);
   });
 });

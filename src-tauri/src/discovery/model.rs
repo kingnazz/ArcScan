@@ -254,6 +254,18 @@ impl DeviceType {
         }
     }
 
+    /// Parse a type, refusing anything that is not one of the words above.
+    ///
+    /// [`DeviceType::parse`] is deliberately forgiving: a value written by a
+    /// newer build has to render as *something*, and Unknown is the honest
+    /// answer. That is exactly the wrong behaviour at a trust boundary — an
+    /// operator's type override arrives from the interface and is stored, so a
+    /// typo or a tampered payload must be refused rather than quietly recorded
+    /// as an explicit choice of Unknown, which is itself a meaningful answer.
+    pub fn parse_strict(s: &str) -> Option<Self> {
+        DeviceType::ALL.into_iter().find(|t| t.as_str() == s)
+    }
+
     /// Every type, for exhaustive tests and for the interface's filter list.
     pub const ALL: [DeviceType; 14] = [
         DeviceType::Router,
@@ -522,6 +534,25 @@ pub struct DiscoveryReport {
     pub devices_enriched: usize,
     #[serde(default)]
     pub duration_ms: u64,
+    /// True when the mDNS socket could not be opened or bound.
+    ///
+    /// Distinct from `mdns_attempted`, which only says the protocol was
+    /// switched on. A firewall or a busy interface turns an intended pass into
+    /// one that heard nothing, and History has to be able to tell that apart
+    /// from a quiet network.
+    #[serde(default)]
+    pub mdns_socket_failed: bool,
+    #[serde(default)]
+    pub ssdp_socket_failed: bool,
+    /// True when a response cap was reached, so the pass stopped listening
+    /// while the link was still talking.
+    #[serde(default)]
+    pub mdns_capped: bool,
+    #[serde(default)]
+    pub ssdp_capped: bool,
+    /// True when the description budget ran out with documents still queued.
+    #[serde(default)]
+    pub descriptions_capped: bool,
     /// Why nothing ran, in plain words, when nothing ran.
     #[serde(default)]
     pub skip_reason: Option<String>,
@@ -552,6 +583,109 @@ impl DiscoveryReport {
             return DiscoveryMode::Partial;
         }
         DiscoveryMode::Full
+    }
+
+    /// How well the discovery pass went, in the four words History shows.
+    ///
+    /// Deliberately narrower than a guess: ArcScan never says a firewall
+    /// blocked anything, because it cannot observe that. It says the socket
+    /// failed, or a cap was reached, or a description was refused — each of
+    /// which it did observe — and leaves the diagnosis to the person, who can
+    /// see their own firewall and ArcScan cannot.
+    pub fn quality(&self) -> DiscoveryQuality {
+        if !self.mdns_attempted && !self.ssdp_attempted {
+            return DiscoveryQuality::Skipped;
+        }
+        if self.interrupted {
+            return DiscoveryQuality::Interrupted;
+        }
+        let limited = !self.mdns_attempted
+            || !self.ssdp_attempted
+            || self.mdns_socket_failed
+            || self.ssdp_socket_failed
+            || self.mdns_capped
+            || self.ssdp_capped
+            || self.descriptions_capped
+            || self.descriptions_rejected > 0;
+        if limited {
+            DiscoveryQuality::Limited
+        } else {
+            DiscoveryQuality::Complete
+        }
+    }
+
+    /// Why the pass was less than complete, in one short phrase, or `None`
+    /// when it was complete.
+    ///
+    /// One reason, not a list: History has a line, not a paragraph, and the
+    /// full detail is already in the scan's stored summary.
+    pub fn quality_reason(&self) -> Option<&'static str> {
+        match self.quality() {
+            DiscoveryQuality::Complete => None,
+            DiscoveryQuality::Skipped => Some("Not run"),
+            DiscoveryQuality::Interrupted => Some("Scan stopped"),
+            DiscoveryQuality::Limited => {
+                Some(if self.mdns_socket_failed && self.ssdp_socket_failed {
+                    "No discovery socket"
+                } else if self.mdns_socket_failed {
+                    "mDNS socket unavailable"
+                } else if self.ssdp_socket_failed {
+                    "SSDP socket unavailable"
+                } else if !self.mdns_attempted {
+                    "mDNS not run"
+                } else if !self.ssdp_attempted {
+                    "SSDP not run"
+                } else if self.mdns_capped || self.ssdp_capped {
+                    "Response limit reached"
+                } else if self.descriptions_capped {
+                    "Description limit reached"
+                } else {
+                    "Some descriptions refused"
+                })
+            }
+        }
+    }
+}
+
+/// How well one scan's discovery pass went.
+///
+/// Separate from [`DiscoveryMode`], which answers a different question.
+/// `DiscoveryMode` gates *comparison* — whether two scans may be reasoned about
+/// together — and its rules must not move, because changing them would change
+/// which change events a database produces. `DiscoveryQuality` is for a person
+/// reading History, and can be as descriptive as the evidence supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryQuality {
+    /// Both protocols ran, the pass finished, and nothing was cut short.
+    Complete,
+    /// Discovery ran but could not do all of it: a socket failed, a cap was
+    /// reached, or a description was refused.
+    Limited,
+    /// Discovery did not run at all: a remote target, switched off, or no
+    /// eligible interface.
+    Skipped,
+    /// Stop landed while discovery was in progress.
+    Interrupted,
+}
+
+impl DiscoveryQuality {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiscoveryQuality::Complete => "complete",
+            DiscoveryQuality::Limited => "limited",
+            DiscoveryQuality::Skipped => "skipped",
+            DiscoveryQuality::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DiscoveryQuality::Complete => "Complete",
+            DiscoveryQuality::Limited => "Limited",
+            DiscoveryQuality::Skipped => "Skipped",
+            DiscoveryQuality::Interrupted => "Interrupted",
+        }
     }
 }
 
@@ -719,5 +853,146 @@ mod tests {
             DiscoveryReport::skipped("Remote target").mode(),
             DiscoveryMode::None
         );
+    }
+
+    fn complete_report() -> DiscoveryReport {
+        DiscoveryReport {
+            mdns_attempted: true,
+            ssdp_attempted: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn quality_is_complete_only_when_nothing_was_cut_short() {
+        let report = complete_report();
+        assert_eq!(report.quality(), DiscoveryQuality::Complete);
+        assert_eq!(report.quality_reason(), None);
+    }
+
+    #[test]
+    fn a_stopped_scan_reads_as_interrupted_before_anything_else() {
+        let report = DiscoveryReport {
+            interrupted: true,
+            // Also limited, but Stop is the thing that actually happened.
+            mdns_socket_failed: true,
+            ..complete_report()
+        };
+        assert_eq!(report.quality(), DiscoveryQuality::Interrupted);
+        assert_eq!(report.quality_reason(), Some("Scan stopped"));
+    }
+
+    #[test]
+    fn a_pass_that_never_started_reads_as_skipped() {
+        let report = DiscoveryReport::skipped("Remote target");
+        assert_eq!(report.quality(), DiscoveryQuality::Skipped);
+        assert_eq!(report.quality_reason(), Some("Not run"));
+    }
+
+    #[test]
+    fn every_observed_limitation_reads_as_limited_with_its_own_reason() {
+        let cases: Vec<(DiscoveryReport, &str)> = vec![
+            (
+                DiscoveryReport {
+                    mdns_socket_failed: true,
+                    ..complete_report()
+                },
+                "mDNS socket unavailable",
+            ),
+            (
+                DiscoveryReport {
+                    ssdp_socket_failed: true,
+                    ..complete_report()
+                },
+                "SSDP socket unavailable",
+            ),
+            (
+                DiscoveryReport {
+                    mdns_socket_failed: true,
+                    ssdp_socket_failed: true,
+                    ..complete_report()
+                },
+                "No discovery socket",
+            ),
+            (
+                DiscoveryReport {
+                    ssdp_attempted: false,
+                    mdns_attempted: true,
+                    ..Default::default()
+                },
+                "SSDP not run",
+            ),
+            (
+                DiscoveryReport {
+                    mdns_capped: true,
+                    ..complete_report()
+                },
+                "Response limit reached",
+            ),
+            (
+                DiscoveryReport {
+                    descriptions_capped: true,
+                    ..complete_report()
+                },
+                "Description limit reached",
+            ),
+            (
+                DiscoveryReport {
+                    descriptions_rejected: 2,
+                    ..complete_report()
+                },
+                "Some descriptions refused",
+            ),
+        ];
+        for (report, reason) in cases {
+            assert_eq!(report.quality(), DiscoveryQuality::Limited, "{reason}");
+            assert_eq!(report.quality_reason(), Some(reason));
+        }
+    }
+
+    #[test]
+    fn every_quality_has_a_wire_name_and_a_word_and_never_claims_a_firewall() {
+        for quality in [
+            DiscoveryQuality::Complete,
+            DiscoveryQuality::Limited,
+            DiscoveryQuality::Skipped,
+            DiscoveryQuality::Interrupted,
+        ] {
+            assert!(!quality.as_str().is_empty());
+            assert!(!quality.label().is_empty());
+        }
+        // ArcScan cannot observe a firewall, so it must never name one.
+        let mut every_reason: Vec<&str> = Vec::new();
+        for report in [
+            complete_report(),
+            DiscoveryReport {
+                mdns_socket_failed: true,
+                ssdp_socket_failed: true,
+                ..complete_report()
+            },
+            DiscoveryReport {
+                interrupted: true,
+                ..complete_report()
+            },
+            DiscoveryReport::skipped("Remote target"),
+        ] {
+            every_reason.extend(report.quality_reason());
+        }
+        assert!(every_reason
+            .iter()
+            .all(|r| !r.to_lowercase().contains("firewall")));
+    }
+
+    #[test]
+    fn a_type_override_value_is_refused_unless_it_is_one_of_the_words() {
+        for kind in DeviceType::ALL {
+            assert_eq!(DeviceType::parse_strict(kind.as_str()), Some(kind));
+        }
+        for bogus in ["toaster", "", "Printer", "printer ", "media device"] {
+            assert_eq!(DeviceType::parse_strict(bogus), None, "{bogus:?}");
+        }
+        // The forgiving parser still exists for values read back out of the
+        // database, where refusing would make a row unrenderable.
+        assert_eq!(DeviceType::parse("toaster"), DeviceType::Unknown);
     }
 }

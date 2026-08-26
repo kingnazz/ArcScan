@@ -818,6 +818,59 @@ export default function App() {
     [refreshInventory, toast, reportError],
   );
 
+  /**
+   * Correct, change or clear the detected device type.
+   *
+   * Rolls back on failure and says so, rather than leaving the drawer showing a
+   * type the database does not hold. The Inventory is refreshed so the type
+   * column and the type filter move together; nothing else is touched, because
+   * a correction is a label and not an event.
+   */
+  const saveDeviceType = useCallback(
+    async (deviceId: number, deviceType: string | null) => {
+      try {
+        await api.setDeviceTypeOverride(deviceId, deviceType);
+        setDeviceDetail((current) =>
+          current && current.device.id === deviceId
+            ? { ...current, device: { ...current.device, user_device_type: deviceType } }
+            : current,
+        );
+        void refreshInventory();
+        toast.success(
+          deviceType ? "Device type saved." : "Back to ArcScan's own answer.",
+        );
+        return true;
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not save that device type. ${message}`, technical);
+        return false;
+      }
+    },
+    [refreshInventory, toast, reportError],
+  );
+
+  /**
+   * Put the redacted discovery report on the clipboard.
+   *
+   * Built where the data is — in Rust for the packaged app, in the demo backend
+   * for the browser — so the interface never assembles it out of fields it
+   * happens to have loaded, and so nothing it omits can be added back here by
+   * accident.
+   */
+  const copyDiscoveryReport = useCallback(
+    async (deviceId: number) => {
+      try {
+        const report = await api.deviceDiscoveryReport(deviceId);
+        await api.copyText(report);
+        toast.success("Discovery details copied. Nothing was sent anywhere.");
+      } catch (error) {
+        const { message, technical } = describeError(error);
+        reportError(`ArcScan could not copy those discovery details. ${message}`, technical);
+      }
+    },
+    [toast, reportError],
+  );
+
   const toggleSort = useCallback(
     (key: SortKey) => {
       const nextDir = key === sortKey && sortDir === "asc" ? "desc" : "asc";
@@ -1162,6 +1215,8 @@ export default function App() {
           onRename={(deviceId, name) => void renameDevice(deviceId, name)}
           onStatusChange={(deviceId, status) => void changeDeviceStatus(deviceId, status)}
           onNotesChange={(deviceId, notes) => void saveDeviceNotes(deviceId, notes)}
+          onTypeChange={(deviceId, deviceType) => saveDeviceType(deviceId, deviceType)}
+          onCopyDiscovery={(deviceId) => void copyDiscoveryReport(deviceId)}
           scanKey={
             drawerSource === "inventory"
               ? "inventory"
