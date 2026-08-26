@@ -381,7 +381,11 @@ impl DriveTypeProbe for SystemDriveType {
     #[cfg(windows)]
     fn is_remote(&self, path: &Path) -> bool {
         use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, DRIVE_REMOTE};
+        // GetDriveTypeW lives under Storage::FileSystem; its return constants
+        // live under System::WindowsProgramming. Two modules for one call, which
+        // is windows-sys following the Windows headers rather than tidying them.
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOTE;
 
         // GetDriveTypeW wants a root: "E:\". Anything else and it answers about
         // the current directory, which is not what is being asked.

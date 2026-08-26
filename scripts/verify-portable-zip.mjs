@@ -122,18 +122,18 @@ check(
  * everybody's portable copy.
  */
 const FORBIDDEN = [
-  [/\.msi$/i, "an MSI installer"],
-  [/-setup\.exe$/i, "an installer executable"],
-  [/\.dmg$/i, "a macOS disk image"],
-  [/\.app(\/|$)/i, "a macOS app bundle"],
-  [/latest\.json$/i, "the updater manifest"],
-  [/\.sig$/i, "an updater signature"],
+  [/\.msi$/i, "MSI installer"],
+  [/-setup\.exe$/i, "installer executable"],
+  [/\.dmg$/i, "macOS disk image"],
+  [/\.app(\/|$)/i, "macOS app bundle"],
+  [/latest\.json$/i, "updater manifest"],
+  [/\.sig$/i, "updater signature"],
   [/\.pdb$/i, "debug symbols"],
   [/\.(rs|ts|tsx)$/i, "source files"],
-  [/\.nsis\.zip$/i, "an NSIS updater archive"],
-  [/^arcscan\.db/i, "a pre-created user database"],
-  [/ArcScanData/i, "a pre-created ArcScanData folder"],
-  [/MicrosoftEdgeWebview2Setup|WebView2.*\.exe/i, "a WebView2 bootstrapper"],
+  [/\.nsis\.zip$/i, "NSIS updater archive"],
+  [/^arcscan\.db/i, "pre-created user database"],
+  [/ArcScanData/i, "pre-created ArcScanData folder"],
+  [/MicrosoftEdgeWebview2Setup|WebView2.*\.exe/i, "WebView2 bootstrapper"],
   [/\.test\./i, "test artifacts"],
 ];
 
@@ -166,10 +166,18 @@ if (existsSync(exe)) {
   }
 
   // The release's whole premise: this is the portable build, not the installed
-  // executable in a ZIP. The updater plugin's own strings are in the installed
-  // binary and absent from a build compiled without it.
+  // executable in a ZIP. Each of these strings is in the binary only because
+  // the updater plugin is linked, verified against both editions built from
+  // this tree. The updater *endpoint* is deliberately not among them:
+  // generate_context! embeds the whole of tauri.conf.json, so that URL is in
+  // the portable binary too.
   const text = buffer.toString("latin1");
-  for (const marker of ["tauri-plugin-updater", "releases/latest/download/latest.json"]) {
+  for (const marker of [
+    "tauri-plugin-updater",
+    "plugin:updater",
+    "download_and_install",
+    "minisign",
+  ]) {
     check(!text.includes(marker), `it is the portable build (no "${marker}")`);
   }
 
