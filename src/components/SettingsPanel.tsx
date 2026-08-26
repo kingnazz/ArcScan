@@ -5,7 +5,7 @@
 // with the privacy-relevant switches stated plainly rather than buried.
 
 import { useState } from "react";
-import { ExternalLink, RotateCcw } from "lucide-react";
+import { Check, Copy, ExternalLink, FolderOpen, RotateCcw } from "lucide-react";
 import { Button, Field, FieldRow, SectionHeading, Select } from "../ui/primitives";
 import { Drawer } from "../ui/Drawer";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -14,6 +14,7 @@ import { COLUMNS, type SortKey } from "../lib/table";
 import { OPTIONAL_INVENTORY_COLUMNS, type InventoryColumn } from "../lib/inventory";
 import { formatCount, parsePorts } from "../lib/format";
 import type { Settings } from "../lib/prefs";
+import { editionLabel, type RuntimeInfo } from "../lib/runtime";
 import type { PublicIpState } from "../hooks/usePublicIp";
 import type { NetworkScope } from "../types";
 
@@ -28,6 +29,9 @@ export interface SettingsPanelProps {
   onReset: () => void;
   version: string;
   native: boolean;
+  /** Which edition this is, or null until the backend has answered. */
+  runtime: RuntimeInfo | null;
+  onOpenDataFolder: () => void;
   publicIp: PublicIpState;
   onClearPublicIp: () => void;
   onOpenPrivacy: () => void;
@@ -392,6 +396,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
           <div className="divider" />
 
+          {props.runtime ? <AboutSection runtime={props.runtime} onOpenDataFolder={props.onOpenDataFolder} native={props.native} /> : null}
+
           <section>
             <SectionHeading>Getting started</SectionHeading>
             <Toggle
@@ -418,6 +424,121 @@ export function SettingsPanel(props: SettingsPanelProps) {
       />
     </>
   );
+}
+
+/**
+ * Which edition this is, and where it keeps its data.
+ *
+ * Deliberately understated. An installed ArcScan has always kept its data
+ * somewhere the operator never had to think about, and it still does -- so this
+ * says so once and gets out of the way. A portable copy is the case where the
+ * answer matters: it is a folder somebody chose, they may have several, and if
+ * they are about to move one they need to know what to take with it.
+ *
+ * The path is the one Rust resolved at startup, printed verbatim. Copy data path
+ * puts it on the clipboard, and Open data folder asks the backend to reveal that
+ * same root -- neither takes a path from here, so neither is a way to reach
+ * anywhere else.
+ */
+function AboutSection({
+  runtime,
+  native,
+  onOpenDataFolder,
+}: {
+  runtime: RuntimeInfo;
+  native: boolean;
+  onOpenDataFolder: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const portable = runtime.edition === "portable";
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(runtime.data_root);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // A clipboard the browser or the platform refuses is not worth an error
+      // dialog: the path is on screen and selectable.
+    }
+  };
+
+  return (
+    <>
+      <section>
+        <SectionHeading>About</SectionHeading>
+        <p className="text-[13px] text-text">ArcScan {version(runtime.version)}</p>
+        <p className="mt-0.5 text-[12px] text-text-secondary" data-testid="edition-label">
+          {editionLabel(runtime, platformName())}
+        </p>
+
+        <div className="mt-3">
+          <p className="text-[11px] uppercase tracking-wide text-text-muted">Data location</p>
+          <p
+            className="mono mt-1 break-all rounded-md border border-border bg-surface-sunken px-2.5 py-2 text-[12px] text-text"
+            data-testid="data-root"
+          >
+            {runtime.data_root}
+          </p>
+          {portable ? (
+            <p className="mt-1.5 text-[12px] text-text-secondary">
+              ArcScan-owned persistent data stays in this folder. Keep it beside ArcScan.exe to keep
+              this copy&apos;s history, names, notes and settings.
+            </p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={
+                copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />
+              }
+              onClick={() => void copy()}
+            >
+              {copied ? "Copied" : "Copy data path"}
+            </Button>
+            {native ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<FolderOpen className="h-3.5 w-3.5" />}
+                onClick={onOpenDataFolder}
+              >
+                Open data folder
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        {portable ? (
+          <p className="mt-3 text-[12px] text-text-secondary">
+            Portable ArcScan does not install updates. When a newer version is released, download
+            the Portable ZIP, close ArcScan, replace the application files, and keep the
+            ArcScanData folder.
+          </p>
+        ) : null}
+      </section>
+
+      <div className="divider" />
+    </>
+  );
+}
+
+/**
+ * The platform word in the edition line.
+ *
+ * Only the operating system, never the architecture -- that comes from the
+ * build, through `runtime.architecture`, because a user agent cannot tell an
+ * x64 build running on an ARM64 machine from a native one and this line exists
+ * precisely to answer which build is running.
+ */
+function platformName(): string {
+  if (typeof navigator === "undefined") return "Desktop";
+  const ua = navigator.userAgent;
+  if (/Windows|Win32|Win64/i.test(ua)) return "Windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
+  if (/Linux/i.test(ua)) return "Linux";
+  return "Desktop";
 }
 
 function version(v: string): string {

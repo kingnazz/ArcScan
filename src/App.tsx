@@ -28,6 +28,7 @@ import { useLiveScan } from "./hooks/useLiveScan";
 import { usePublicIp } from "./hooks/usePublicIp";
 import { useSettings } from "./hooks/useSettings";
 import { useTheme } from "./hooks/useTheme";
+import { useRuntime } from "./hooks/useRuntime";
 import { useUpdater } from "./hooks/useUpdater";
 import { api } from "./lib/api";
 import { setServiceCatalog } from "./lib/format";
@@ -57,6 +58,7 @@ import {
 } from "./lib/changes";
 import type { ActionId } from "./lib/actions";
 import { type ChangeEvent, type ChangeFeed, type DeviceDetail, type DeviceStatus, type ExportFormat, type InventorySummary, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
+import { PORTABLE_UPDATE_STEPS } from "./lib/runtime";
 import { APP_VERSION } from "./version";
 
 /** Below this the drawer becomes an overlay rather than a second pane. */
@@ -66,7 +68,8 @@ export default function App() {
   const toast = useToast();
   const { settings, update: updateSettings, reset: resetSettings, loaded } = useSettings();
   const theme = useTheme(settings.theme);
-  const updater = useUpdater(settings.checkForUpdates);
+  const runtime = useRuntime();
+  const updater = useUpdater(settings.checkForUpdates, runtime?.updater_mode ?? "installer");
   const publicIp = usePublicIp();
 
   const [view, setView] = useState<View>("results");
@@ -1240,6 +1243,13 @@ export default function App() {
           }}
           version={APP_VERSION}
           native={api.native}
+          runtime={runtime}
+          onOpenDataFolder={() => {
+            void api.openDataFolder().catch((e) => {
+              const { message, technical } = describeError(e);
+              reportError(message, technical);
+            });
+          }}
           publicIp={publicIp.state}
           onClearPublicIp={publicIp.clear}
           onOpenPrivacy={() => void api.openPrivacy()}
@@ -1353,11 +1363,45 @@ function Notice({
 }
 
 function UpdateNotice({ updater }: { updater: ReturnType<typeof useUpdater> }) {
-  const { status, version, progress, error, install, dismiss } = updater;
+  const { status, version, progress, error, install, dismiss, mode } = updater;
   // Silence is the right response to "already up to date" on a background check.
   if (status === "idle" || status === "checking") return null;
 
   const busy = status === "downloading" || status === "installing";
+
+  // Portable mode never offers to install. Replacing the application files in a
+  // folder somebody chose, while keeping the ArcScanData beside them, is their
+  // deliberate act -- so this says what to do and what to keep, and offers the
+  // downloads page rather than an Update now button that would have nothing to
+  // run: a portable build does not contain the installer updater at all.
+  if (mode === "manual" && status === "available") {
+    return (
+      <div
+        role="status"
+        data-testid="portable-update-notice"
+        className="animate-fade-in flex shrink-0 items-start gap-3 border-b border-border bg-accent-subtle px-3 py-2 text-[13px]"
+      >
+        <DownloadCloud className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-text" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-text">
+            <span className="font-semibold">ArcScan {version}</span> is available.
+          </p>
+          <p className="mt-0.5 text-text-secondary">{PORTABLE_UPDATE_STEPS}</p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => void api.openPortableDownloads()}>
+          View portable downloads
+        </Button>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={dismiss}
+          className="mt-0.5 shrink-0 rounded p-0.5 text-text-secondary hover:text-text"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -48,6 +48,7 @@ import { DEVICE_TYPE_LABEL } from "./discovery";
 import { reportFromDetail } from "./diagnostics";
 import { resolveType } from "./effectiveType";
 import { parsePorts, serviceWithPort } from "./format";
+import type { RuntimeInfo } from "./runtime";
 import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
 import { APP_VERSION } from "../version";
 
@@ -1645,7 +1646,56 @@ function scriptedProviderFetch(scenario: PublicIpScenario, attempt: number): typ
   };
 }
 
+/**
+ * What the demo reports about the running edition.
+ *
+ * Installed, unless `?edition=portable` asks otherwise. That parameter exists so
+ * the browser suite can screenshot and check the portable About panel, the
+ * portable update wording and the storage-error presentation without a Windows
+ * machine -- and it reaches nothing but this object. The native app never loads
+ * this module, and the Rust build's edition is a compile-time constant, so no
+ * query string, in the demo or anywhere else, can move where a real ArcScan
+ * stores its data.
+ */
+function demoRuntimeInfo(): RuntimeInfo {
+  const portable = demoFlag("edition") === "portable";
+  const architecture = demoFlag("arch") === "arm64" ? "ARM64" : "x64";
+  return portable
+    ? {
+        edition: "portable",
+        version: APP_VERSION,
+        architecture,
+        // A fictional path, on a drive letter no real machine's user profile is
+        // on, so no screenshot of this ever carries somebody's name.
+        data_root: "E:\\Tools\\ArcScan\\ArcScanData",
+        writable: true,
+        updater_mode: "manual",
+      }
+    : {
+        edition: "installed",
+        version: APP_VERSION,
+        architecture,
+        data_root: "C:\\Users\\Operator\\AppData\\Roaming\\com.arcscan.app",
+        writable: true,
+        updater_mode: "installer",
+      };
+}
+
+/** One query parameter, read defensively. Browser demo only. */
+function demoFlag(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+}
+
 export const mock = {
+  runtimeInfo(): RuntimeInfo {
+    return demoRuntimeInfo();
+  },
+
   async scan(opts: ScanOptions, listeners: ScanListeners): Promise<ScanResult> {
     cancelRequested = false;
     const scanId = nextEventScanId++;
