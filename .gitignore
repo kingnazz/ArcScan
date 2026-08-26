@@ -28,3 +28,7 @@ yarn-error.log*
 .env
 .env.local
 *.local
+
+# Portable builds go in their own target directory, so an installed binary and
+# a portable one can exist side by side for the runtime verification.
+src-tauri/target-portable/
