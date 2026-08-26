@@ -108,6 +108,24 @@ impl UpdaterMode {
     }
 }
 
+/// The platform label shown in Settings, from the compile target.
+///
+/// Not from the user agent. A WebView's user agent describes the machine, and
+/// the point of the edition line is to say which *build* is running -- which is
+/// the one thing a machine description cannot tell you when an x64 build is
+/// running on an ARM64 Windows box under emulation.
+pub const fn platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        "Desktop"
+    }
+}
+
 /// The architecture label shown in Settings. Taken from the compile target, so
 /// an ARM64 build says ARM64 even when it is running beside an x64 installer.
 pub const fn architecture() -> &'static str {
@@ -180,6 +198,7 @@ impl PortableLayout {
 pub struct RuntimeInfo {
     pub edition: Edition,
     pub version: String,
+    pub platform: &'static str,
     pub architecture: &'static str,
     /// The data root, formatted for display and for `Copy data path`.
     pub data_root: String,
@@ -196,6 +215,7 @@ impl RuntimeInfo {
         RuntimeInfo {
             edition: Edition::current(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: platform(),
             architecture: architecture(),
             data_root: data_root.display().to_string(),
             writable,
@@ -498,6 +518,17 @@ mod tests {
     }
 
     #[test]
+    fn the_platform_label_is_the_compile_targets() {
+        assert!(["Windows", "macOS", "Linux", "Desktop"].contains(&platform()));
+        if cfg!(target_os = "windows") {
+            assert_eq!(platform(), "Windows");
+        }
+        if cfg!(target_os = "linux") {
+            assert_eq!(platform(), "Linux");
+        }
+    }
+
+    #[test]
     fn the_architecture_label_is_one_of_the_ones_settings_can_show() {
         assert!(["x64", "ARM64", "x86", "unknown"].contains(&architecture()));
         // And it is the compile target's, not the host's.
@@ -756,6 +787,7 @@ mod tests {
         for key in [
             "edition",
             "version",
+            "platform",
             "architecture",
             "data_root",
             "writable",

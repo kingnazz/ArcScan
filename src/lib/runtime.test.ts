@@ -4,6 +4,7 @@ import { PORTABLE_UPDATE_STEPS, editionLabel, isPortable, type RuntimeInfo } fro
 const installed: RuntimeInfo = {
   edition: "installed",
   version: "1.8.4",
+  platform: "Windows",
   architecture: "x64",
   data_root: "C:\\Users\\Operator\\AppData\\Roaming\\com.arcscan.app",
   writable: true,
@@ -13,6 +14,7 @@ const installed: RuntimeInfo = {
 const portable: RuntimeInfo = {
   edition: "portable",
   version: "1.8.4",
+  platform: "Windows",
   architecture: "ARM64",
   data_root: "E:\\Tools\\ArcScan\\ArcScanData",
   writable: true,
@@ -35,15 +37,15 @@ describe("isPortable", () => {
 
 describe("editionLabel", () => {
   it("names the edition and the build's own architecture", () => {
-    expect(editionLabel(portable, "Windows")).toBe("Portable edition · Windows ARM64");
-    expect(editionLabel(installed, "Windows")).toBe("Installed edition · Windows x64");
+    expect(editionLabel(portable)).toBe("Portable edition · Windows ARM64");
+    expect(editionLabel(installed)).toBe("Installed edition · Windows x64");
   });
 
   it("says ARM64 for an ARM64 build whatever it is running on", () => {
     // The whole reason the architecture comes from the build rather than the
     // user agent: an x64 build on an ARM64 machine must not claim to be native.
-    expect(editionLabel({ ...portable, architecture: "x64" }, "Windows")).toContain("x64");
-    expect(editionLabel({ ...portable, architecture: "ARM64" }, "Windows")).toContain("ARM64");
+    expect(editionLabel({ ...portable, architecture: "x64" })).toContain("x64");
+    expect(editionLabel({ ...portable, architecture: "ARM64" })).toContain("ARM64");
   });
 });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Capture the product screenshots the website uses.
 //
-// Every shot comes from the real v1.8.3 interface driven in a browser against the
+// Every shot comes from the real interface driven in a browser against the
 // built-in demo network, so the images can never show an older UI. The networks
 // are entirely fictional, so no real client, hostname, MAC address or public
 // address is ever in a published image.
@@ -15,8 +15,13 @@
 //
 // PNGs land in site/assets/shots/ and are converted to WebP when sharp is
 // available. Set PLAYWRIGHT_CHROMIUM_PATH to reuse a Chromium already installed.
+//
+// A release that changes one panel does not need thirty new images, so
+// ARCSCAN_SHOTS_ONLY takes a comma-separated list of shot names and writes only
+// those. The navigation still runs in full, so a shot captured this way is the
+// same image the whole run would have produced.
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
 
@@ -41,9 +46,14 @@ const context = await browser.newContext({
 const page = await context.newPage();
 
 const shots = [];
-async function shot(name) {
+const only = process.env.ARCSCAN_SHOTS_ONLY
+  ? new Set(process.env.ARCSCAN_SHOTS_ONLY.split(",").map((s) => s.trim()))
+  : null;
+
+async function shot(name, target = page) {
+  if (only && !only.has(name)) return;
   const file = join(OUT, `${name}.png`);
-  await page.screenshot({ path: file });
+  await target.screenshot({ path: file });
   shots.push(file);
   console.log(`  ${file}`);
 }
@@ -72,7 +82,9 @@ async function waitForScanEnd() {
   await page.waitForTimeout(900);
 }
 
-console.log("Capturing ArcScan v1.8.2 screenshots");
+console.log(
+  `Capturing ArcScan v${JSON.parse(readFileSync("package.json", "utf8")).version} screenshots`,
+);
 
 // --- Dark theme -----------------------------------------------------------
 await page.goto(URL, { waitUntil: "networkidle" });
@@ -297,6 +309,32 @@ await page.keyboard.press("Escape");
 await nav("History").click();
 await page.waitForTimeout(400);
 await shot("history-light");
+
+// --- The portable edition -------------------------------------------------
+//
+// A second page, because the demo reports its edition from a query parameter
+// and that has to be set at load time. The parameter reaches the mock backend
+// and nothing else: the native app's edition is a compile-time constant.
+//
+// The path shown is the mock's fictional E:\Tools\ArcScan\ArcScanData, on a
+// drive letter no real user profile is on, so no published image of this panel
+// carries anybody's name.
+const portablePage = await context.newPage();
+await portablePage.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+await portablePage.evaluate(() => {
+  const raw = localStorage.getItem("arcscan-settings");
+  const settings = raw ? JSON.parse(raw) : {};
+  settings.theme = "dark";
+  localStorage.setItem("arcscan-settings", JSON.stringify(settings));
+  localStorage.setItem("arcscan-theme", "dark");
+});
+await portablePage.reload({ waitUntil: "networkidle" });
+await portablePage.getByRole("button", { name: "Settings" }).click();
+await portablePage.getByTestId("data-root").waitFor({ timeout: 10_000 });
+await portablePage.getByTestId("data-root").scrollIntoViewIfNeeded();
+await portablePage.waitForTimeout(400);
+await shot("settings-portable-dark", portablePage);
+await portablePage.close();
 
 await browser.close();
 

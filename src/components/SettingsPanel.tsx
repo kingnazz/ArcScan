@@ -469,7 +469,7 @@ function AboutSection({
         <SectionHeading>About</SectionHeading>
         <p className="text-[13px] text-text">ArcScan {version(runtime.version)}</p>
         <p className="mt-0.5 text-[12px] text-text-secondary" data-testid="edition-label">
-          {editionLabel(runtime, platformName())}
+          {editionLabel(runtime)}
         </p>
 
         <div className="mt-3">
@@ -522,23 +522,6 @@ function AboutSection({
       <div className="divider" />
     </>
   );
-}
-
-/**
- * The platform word in the edition line.
- *
- * Only the operating system, never the architecture -- that comes from the
- * build, through `runtime.architecture`, because a user agent cannot tell an
- * x64 build running on an ARM64 machine from a native one and this line exists
- * precisely to answer which build is running.
- */
-function platformName(): string {
-  if (typeof navigator === "undefined") return "Desktop";
-  const ua = navigator.userAgent;
-  if (/Windows|Win32|Win64/i.test(ua)) return "Windows";
-  if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
-  if (/Linux/i.test(ua)) return "Linux";
-  return "Desktop";
 }
 
 function version(v: string): string {
