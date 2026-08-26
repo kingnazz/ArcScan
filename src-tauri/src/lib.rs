@@ -5,21 +5,53 @@ mod inventory;
 mod ipparse;
 mod netinfo;
 mod oui;
+mod portable;
 mod ports;
+mod runtime;
 mod scanner;
 mod signature;
+mod startup;
 
 use tauri::Manager;
 
+use runtime::RuntimePaths;
+
+// The portable edition exists partly to *not* contain the installer updater.
+// Enabling both features would produce a binary that reports "portable" while
+// carrying an install-and-relaunch path, which is exactly the thing the release
+// promises cannot happen -- so it is a build error rather than a runtime check.
+#[cfg(all(feature = "portable", feature = "installed-updater"))]
+compile_error!(
+    "the `portable` and `installed-updater` features are mutually exclusive: build the \
+     portable edition with --no-default-features --features portable"
+);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Portable startup happens before Tauri does.
+    //
+    // Everything the portable preflight needs comes from `current_exe()`, so
+    // none of it requires an app handle -- and doing it first means a folder
+    // that cannot hold ArcScan's data never gets a window, a WebView profile or
+    // a database created in it. On failure this reports the problem natively
+    // and exits; there is no path from here to the application-data directory.
+    let portable = match startup::portable_startup() {
+        Ok(portable) => portable,
+        Err(error) => {
+            startup::report_fatal(&error);
+            std::process::exit(1);
+        }
+    };
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
 
-    // Desktop auto-updater (+ process plugin for relaunch after install).
-    #[cfg(desktop)]
+    // Desktop auto-updater (+ process plugin for relaunch after install). Not
+    // compiled into a portable build at all: see the feature documentation in
+    // Cargo.toml and Phase 15 of docs/PORTABLE-ARCHITECTURE.md.
+    #[cfg(all(desktop, feature = "installed-updater"))]
     {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
@@ -27,18 +59,56 @@ pub fn run() {
     }
 
     builder
-        .setup(|app| {
-            // Open the scan-history database under the app data directory.
-            let dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("no app data dir: {e}"))?;
-            let db_path = dir.join("arcscan.db");
-            let database = db::Db::open(&db_path).map_err(|e| format!("db open failed: {e}"))?;
+        .setup(move |app| {
+            // Where this edition keeps its data. The installed edition resolves
+            // the same application-data directory it always has; the portable
+            // edition uses the layout its preflight already proved works.
+            let paths = match &portable {
+                Some(portable) => RuntimePaths::portable(&portable.layout),
+                None => RuntimePaths::installed(
+                    app.path()
+                        .app_data_dir()
+                        .map_err(|e| format!("no app data dir: {e}"))?,
+                ),
+            };
+
+            let database = db::Db::open(&paths.database_path).map_err(|e| {
+                // In portable mode a database that will not open is a portable
+                // failure with portable wording, not a generic panic -- and
+                // still not a reason to try somewhere else.
+                if let Some(portable) = &portable {
+                    let error = runtime::PortableError::DatabaseUnavailable {
+                        path: portable.layout.database_path.display().to_string(),
+                        detail: e.clone(),
+                    };
+                    startup::report_fatal(&error);
+                    std::process::exit(1);
+                }
+                format!("db open failed: {e}")
+            })?;
             app.manage(database);
+            app.manage(paths.clone());
+
+            // The window is built here rather than by Tauri's own config pass
+            // (`app.windows[0].create` is false) for one reason: the portable
+            // edition has to name its WebView profile directory, and that has
+            // to be set before the WebView is created. `from_config` is the
+            // exact builder Tauri would have used, given the exact same config,
+            // so the installed window is byte-for-byte the window it was.
+            startup::build_main_window(app.handle(), &paths)?;
+
+            // The portable lock is held for as long as ArcScan runs, so the
+            // guard lives in application state and is dropped when the process
+            // ends -- and released by the kernel if it ends abruptly.
+            if let Some(portable) = portable {
+                app.manage(portable);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::runtime_info,
+            commands::open_data_folder,
+            commands::open_portable_downloads,
             commands::scan_network,
             commands::cancel_scan,
             commands::preview_scan,
