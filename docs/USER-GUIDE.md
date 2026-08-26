@@ -237,12 +237,79 @@ speaker, or unknown.
 rather than taking it on trust. Where the evidence supports two readings, both
 are shown.
 
+### Correcting the device type
+
+From v1.8.3, the device panel offers a **Device type** you can set yourself.
+Pick one and that is what ArcScan calls the device, everywhere: in the Type
+column, in the type filter, in search and in every export. `Automatic` is the
+default and means "use whatever ArcScan works out".
+
+**Your correction changes what ArcScan calls the device and nothing else.** The
+device keeps the same identity, the same MAC address, the same network, the same
+dates, the same presence, the same trust status, the same name, the same notes
+and the same history. Nothing is merged or split, and no duplicate appears.
+Correcting a type is an edit you made, so it never appears in the Changes list.
+
+What ArcScan detected is kept underneath rather than replaced, so you can see
+what you overruled. Choosing `Automatic` again reveals whatever ArcScan
+*currently* thinks, which may have improved since you corrected it.
+
+**Choosing `Unknown` is a real answer**, and it is not the same as leaving the
+type on `Automatic`. It records that you looked, disagreed, and could not say
+either, and the next scan will not talk you out of it.
+
+There are no bulk type corrections.
+
+### When evidence gets old
+
+ArcScan is not a monitor: it learns only when you run a scan. From v1.8.3 it
+tracks what it has stopped hearing, and each piece of discovery evidence is
+`Current`, `Getting old` or `Stale`.
+
+Evidence goes stale after **three scans in a row that could have heard it and
+did not**. A scan only counts if it completed, ran both discovery protocols, and
+found the device. A scan you stopped, a scan of a remote network, a scan with
+discovery switched off, and a scan where the device simply was not there all
+count for nothing — a device that was unplugged has not stopped advertising.
+Fields that only a device description carries (the manufacturer, the model, the
+serial) only age when a description was actually read.
+
+**It is counted in scans, not in days**, so the panel says
+`last seen 4 discovery scans ago` rather than a date. A wall-clock age would say
+more about when you last ran ArcScan than about the device.
+
+Stale evidence is **kept, shown and dated, and never deleted**. What it loses is
+the ability to carry High confidence on its own: a device type resting entirely
+on stale evidence is shown at Medium instead, and the panel says why. It does
+not drop further, the device does not become something else, and one scan that
+hears it again puts it straight back. Stale evidence has no effect at all on a
+type you set yourself.
+
+The threshold is fixed at three and is not a setting: the number only means
+anything alongside the definition of a qualifying scan above.
+
+### Copy discovery details
+
+The device panel offers **Copy discovery details**, which puts a short summary
+on your clipboard: what ArcScan decided, how sure it was, and the evidence
+behind it. It is meant for a bug report about a wrong detection.
+
+It never contains your notes, the MAC address, the serial number, the device's
+own identifiers, any address it advertises, its IPv6 addresses, the network
+name, or any database id. The local address appears masked, as `192.168.x.x`.
+
+Nothing is uploaded, no file is written and no request is made. It goes on your
+clipboard, and it is yours to paste wherever you choose, or not.
+
 ### In the Inventory
 
 Five optional columns — Type, Detected name, Model, Discovered by, Last
-discovered — and a device-type filter, all off by default. Search reaches
-detected names, models, types and advertised services, and finds a service by
-either name: `_ipp._tcp` and `IPP printing` both reach the printer.
+discovered — and a device-type filter, all off by default. The Type column and
+the filter both show the type you set, where you set one, marked `You`; a type
+resting entirely on stale evidence is marked `stale`. Search reaches detected
+names, models, types (both the one you set and the one ArcScan detected) and
+advertised services, and finds a service by either name: `_ipp._tcp` and
+`IPP printing` both reach the printer.
 
 ### What it never does
 
@@ -269,6 +336,10 @@ only reported as gone after **two consecutive** discovery-complete scans miss
 it, because one missed multicast response is ordinary on Wi-Fi.
 
 A scan you stopped records no discovery changes at all.
+
+**Evidence simply getting older is never a change**, and neither is correcting a
+device type: both are things you or the calendar did, not things that happened
+on your network.
 
 ## The Inventory
 
@@ -483,6 +554,19 @@ Comparing is disabled when there is nothing safe to compare against — for a
 partial scan, or when no earlier completed scan checked the same target with the
 same ports — and the button says which it is.
 
+From v1.8.3, each entry also says how much of its discovery pass actually ran:
+
+| State | What it means |
+|---|---|
+| `Complete` | Both protocols ran and finished. The line shows the counts it heard |
+| `Limited` | Discovery ran but could not do all of it, with the one thing ArcScan observed |
+| `Skipped` | It did not run: a remote target, switched off, or no local interface |
+| `Interrupted` | You pressed Stop while discovery was still going |
+
+ArcScan never says a firewall blocked anything, because it cannot see your
+firewall. It reports a socket that would not open, a response limit reached, or
+a device page it refused to read, and leaves the diagnosis to you.
+
 History retention defaults to the newest 100 scans and is set in Settings. Pruning
 removes scans only: device names, notes and first-seen dates are always kept.
 
@@ -494,6 +578,7 @@ enabled, and a disabled one says why.
 | Action | Needs | Notes |
 | --- | --- | --- |
 | **Copy IP** | Nothing | Always available |
+| **Copy discovery details** | Nothing | A redacted local summary, sent nowhere |
 | **Open web interface** | 443, 8443, 80, 8080, 8000 or 8081 | HTTPS is preferred |
 | **Open shared folders** | 445 or 139 | Explorer on Windows, `smb://` elsewhere |
 | **Open Remote Desktop** | 3389 | `mstsc` on Windows, the `rdp://` handler on macOS |
@@ -616,7 +701,7 @@ separately by the application window and are not in this file.
 
 ## Upgrading
 
-Install v1.8.2 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
+Install v1.8.3 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
 launch ArcScan migrates the database in place.
 
 From v1.8.x the upgrade adds two tables for what devices announce about
@@ -714,7 +799,9 @@ is a broadcast, so it does not cross a router.
   machine. A device that ignores that and answers only to the multicast group is
   not heard.
 - **A firewall that blocks outbound multicast** means discovery finds nothing.
-  ArcScan reports that as no discovery rather than as no devices.
+  ArcScan reports that as no discovery rather than as no devices. It does not
+  name the firewall as the cause, because it cannot observe one: History says
+  what ArcScan actually saw, such as a socket that would not open.
 - **`https` device description pages are never read.** A local device serves one
   under a self-signed certificate for an address, which nothing can verify;
   reading it would mean accepting a certificate ArcScan cannot check. The SSDP

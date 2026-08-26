@@ -280,6 +280,37 @@ pub fn set_device_notes(db: State<'_, Db>, id: i64, notes: Option<String>) -> Re
     db.set_device_notes(id, notes)
 }
 
+/// Correct, change or clear ArcScan's detected device type for one device.
+///
+/// `device_type` is `None` for Auto and one of the shipped type words
+/// otherwise. Anything else is refused with a message rather than stored: the
+/// value crosses the boundary from the webview into the database, and an
+/// explicit choice of Unknown is a real answer that a typo must not be able to
+/// impersonate.
+///
+/// This changes what ArcScan *calls* the device and nothing else. Identity,
+/// network scope, presence, trust status, name and notes are all untouched, and
+/// no change event is recorded, because an operator correcting a label is not
+/// something that happened on the network.
+#[tauri::command]
+pub fn set_device_type_override(
+    db: State<'_, Db>,
+    id: i64,
+    device_type: Option<String>,
+) -> Result<(), String> {
+    db.set_device_type_override(id, device_type)
+}
+
+/// Build the redacted discovery report for one device, for the clipboard.
+///
+/// Returns a string. It contacts nothing, writes no file and records no
+/// telemetry; the caller copies it. What it deliberately omits is documented on
+/// [`crate::discovery::diagnostics`] and enforced there.
+#[tauri::command]
+pub fn device_discovery_report(db: State<'_, Db>, id: i64) -> Result<String, String> {
+    db.device_discovery_report(id, env!("CARGO_PKG_VERSION"))
+}
+
 /// Note bodies for the devices an export covers.
 #[tauri::command]
 pub fn device_notes(db: State<'_, Db>, ids: Vec<i64>) -> Result<Vec<(i64, String)>, String> {

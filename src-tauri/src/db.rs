@@ -68,7 +68,23 @@ use crate::scanner::{HostResult, ScanResult};
 use crate::signature;
 
 /// Current schema version. Bump when a migration is added below.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
+
+/// Which generation of the naming rules wrote a device's stored detected name.
+///
+/// v1.8.3 tidies names that v1.8.2 kept as they arrived: a UDN masquerading as
+/// a friendly name, a service-instance suffix, a manufacturer the model already
+/// contains. Every one of those is an improvement, and every one of them would
+/// have looked like the device renaming itself on the first scan after the
+/// upgrade — one "detected name changed" event per device, all at once, for
+/// nothing that happened on the network.
+///
+/// So the generation is recorded beside the name. When a device's stored record
+/// predates the current rules, the first comparison against it is silent for
+/// the name and the model; everything else about that scan is compared
+/// normally, and every scan afterwards compares the name normally too, because
+/// by then both sides were written by the same rules.
+pub const NAMING_RULES_VERSION: i64 = 2;
 
 /// How many consecutive full-discovery scans must miss an advertised service
 /// before ArcScan believes it has gone.
@@ -149,6 +165,22 @@ pub struct ScanSummary {
     /// database; the interface renders it.
     #[serde(default)]
     pub discovery_summary: Option<String>,
+    /// How well the discovery pass went, in one of four words: `complete`,
+    /// `limited`, `skipped` or `interrupted`.
+    ///
+    /// Derived here rather than in the interface so the rule lives with the
+    /// report that defines it, and so History does not parse a JSON blob per
+    /// row to draw one line. Distinct from `discovery_mode`, which gates
+    /// comparison and whose meaning may not move; this one is for a person.
+    #[serde(default)]
+    pub discovery_quality: String,
+    /// Why the pass was less than complete, in one short phrase, or `None`.
+    ///
+    /// Only ever something ArcScan observed — a socket that would not open, a
+    /// cap that was reached, a description that was refused. Never a diagnosis:
+    /// ArcScan cannot see a firewall and so never blames one.
+    #[serde(default)]
+    pub discovery_quality_reason: Option<String>,
 }
 
 /// One persistent network scope: a physical network as ArcScan understands it.
@@ -260,6 +292,13 @@ pub struct InventoryRow {
     /// device on an install that has just upgraded.
     #[serde(default)]
     pub discovery: Option<InventoryDiscovery>,
+    /// The operator's device-type correction, or `None` for Auto.
+    ///
+    /// Carried on the row rather than inside `discovery`, because a device
+    /// discovery has never reached still has a type the operator may have set,
+    /// and burying it inside an absent record would make it unreachable.
+    #[serde(default)]
+    pub user_device_type: Option<String>,
 }
 
 /// The discovery facts the Inventory table, its search and its export use.
@@ -269,13 +308,24 @@ pub struct InventoryRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventoryDiscovery {
     pub detected_name: Option<String>,
+    /// What ArcScan detected. The type shown on screen is
+    /// [`InventoryRow::user_device_type`] when there is one, and this
+    /// otherwise; the interface settles that in one place rather than in each
+    /// component.
     pub device_type: String,
+    /// The detected confidence, already reduced where the evidence behind it
+    /// has gone stale. See [`InventoryDiscovery::evidence_freshness`].
     pub type_confidence: String,
     pub manufacturer: Option<String>,
     pub model_name: Option<String>,
     pub services: Vec<String>,
     pub sources: Vec<String>,
     pub last_discovered_at: Option<String>,
+    /// How current the freshest piece of mDNS or SSDP evidence behind this
+    /// record is: `current`, `aging` or `stale`. `current` when there is no
+    /// evidence at all, because nothing has gone stale.
+    #[serde(default)]
+    pub evidence_freshness: String,
 }
 
 /// A network as the Inventory and Changes filters offer it.
@@ -417,6 +467,14 @@ pub struct DeviceDiscovery {
     /// record, kept clearly apart from the per-scan observation history the
     /// drawer lists separately.
     pub evidence: Vec<DiscoveryEvidenceRow>,
+    /// How current the freshest mDNS or SSDP claim behind this record is.
+    #[serde(default)]
+    pub evidence_freshness: String,
+    /// The confidence the classifier reached, before any reduction for stale
+    /// evidence. Kept so the drawer can explain a reduction rather than only
+    /// show its result.
+    #[serde(default)]
+    pub raw_type_confidence: String,
 }
 
 /// One stored claim about a device.
@@ -429,6 +487,14 @@ pub struct DiscoveryEvidenceRow {
     pub confidence: String,
     pub first_seen: String,
     pub last_seen: String,
+    /// `current`, `aging` or `stale`.
+    #[serde(default)]
+    pub freshness: String,
+    /// Consecutive qualifying discovery scans that did not re-observe this
+    /// claim. Shown as "last seen N discovery scans ago" — a count of scans,
+    /// never a number of days, because ArcScan only learns when it runs.
+    #[serde(default)]
+    pub misses: i64,
 }
 
 impl Db {
@@ -539,7 +605,10 @@ impl Db {
 
         // Hosts found before a Stop are genuine observations, so they fold into
         // the inventory either way.
-        let full_discovery = discovery_mode == crate::discovery::model::DiscoveryMode::Full;
+        let pass = DiscoveryPass {
+            full: discovery_mode == crate::discovery::model::DiscoveryMode::Full,
+            descriptions: discovery_report.descriptions_fetched > 0,
+        };
         let mut current: Vec<IdentifiedHost> = Vec::with_capacity(result.hosts.len());
         // Device id -> (before, after) discovery, for the change pass below.
         let mut discovery_changes: HashMap<i64, (Option<DiscoverySnapshot>, DiscoverySnapshot)> =
@@ -556,7 +625,7 @@ impl Db {
                     scan_id,
                     discovery,
                     &created_at,
-                    full_discovery,
+                    pass,
                 )?;
                 discovery_changes.insert(record.id, (before, after));
             }
@@ -620,7 +689,7 @@ impl Db {
             // sides. Comparing a scan that listened against one that could not
             // would report every advertisement as newly appeared, which is the
             // definition of a noisy inbox.
-            if full_discovery && b.discovery_mode == "full" {
+            if pass.full && b.discovery_mode == "full" {
                 let ignored: std::collections::HashSet<i64> = {
                     let mut stmt = tx
                         .prepare(
@@ -925,7 +994,7 @@ impl Db {
             .prepare(
                 "SELECT d.id, d.network_scope_id, d.identity_key, d.identity_source, d.mac,
                         d.custom_name, d.hostname, d.vendor, d.last_ip, d.first_seen,
-                        d.last_seen, d.status, d.notes, COUNT(h.id)
+                        d.last_seen, d.status, d.notes, COUNT(h.id), d.user_device_type
                  FROM devices d LEFT JOIN hosts h ON h.device_id = d.id
                  GROUP BY d.id
                  ORDER BY d.last_seen DESC",
@@ -989,14 +1058,32 @@ impl Db {
                 let comparable: bool = row.get(23)?;
                 let detected_name: Option<String> = row.get(26)?;
                 let device_type: Option<String> = row.get(27)?;
+                // NULL means Auto. A value is checked against the type
+                // vocabulary on the way out as well as on the way in, so a row
+                // written by a newer build cannot make this one unrenderable.
+                let user_device_type: Option<String> =
+                    row.get::<_, Option<String>>(34)?.and_then(|raw| {
+                        crate::discovery::DeviceType::parse_strict(&raw)
+                            .map(|t| t.as_str().to_string())
+                    });
+                let evidence_state =
+                    crate::discovery::freshness(row.get::<_, Option<i64>>(35)?.unwrap_or(0));
                 let discovery = device_type.map(|device_type| InventoryDiscovery {
                     detected_name: detected_name.clone(),
                     device_type,
-                    type_confidence: row
-                        .get::<_, Option<String>>(28)
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| "unknown".into()),
+                    // Reduced where every claim behind it is stale, by the same
+                    // rule the drawer uses. See `discovery::cap_for_freshness`.
+                    type_confidence: crate::discovery::cap_for_freshness(
+                        crate::discovery::Confidence::parse(
+                            &row.get::<_, Option<String>>(28)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| "unknown".into()),
+                        ),
+                        evidence_state,
+                    )
+                    .as_str()
+                    .to_string(),
                     manufacturer: row.get(29).ok().flatten(),
                     model_name: row.get(30).ok().flatten(),
                     services: list_from_json(
@@ -1006,6 +1093,7 @@ impl Db {
                         row.get::<_, Option<String>>(32).ok().flatten().as_deref(),
                     ),
                     last_discovered_at: row.get(33).ok().flatten(),
+                    evidence_freshness: evidence_state.as_str().to_string(),
                 });
                 Ok(InventoryRow {
                     device_id,
@@ -1050,6 +1138,7 @@ impl Db {
                     latest_tcp_ms: row.get(18)?,
                     current_ip,
                     discovery,
+                    user_device_type,
                 })
             })
             .map_err(sql_err)?;
@@ -1251,12 +1340,13 @@ impl Db {
                         d.custom_name, d.hostname, d.vendor, d.last_ip, d.first_seen,
                         d.last_seen, d.status, d.notes,
                         (SELECT COUNT(*) FROM hosts h WHERE h.device_id = d.id),
+                        d.user_device_type,
                         ns.display_name
                  FROM devices d
                  LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
                  WHERE d.id = ?1",
                 params![id],
-                |row| Ok((read_device(row)?, row.get::<_, Option<String>>(14)?)),
+                |row| Ok((read_device(row)?, row.get::<_, Option<String>>(15)?)),
             )
             .optional()
             .map_err(sql_err)?
@@ -1365,6 +1455,173 @@ impl Db {
             return Err(format!("Device {id} is no longer in the inventory."));
         }
         Ok(())
+    }
+
+    /// Set, change or clear the operator's device-type correction.
+    ///
+    /// `None` clears it, which restores Auto and reveals whatever ArcScan
+    /// currently detects — not what it detected when the override was set, so a
+    /// device that has since started advertising properly shows its new answer
+    /// immediately.
+    ///
+    /// `Some("unknown")` is an explicit choice and is stored as one. It is not
+    /// the same as clearing: a person who has looked at a device and concluded
+    /// that neither they nor ArcScan can say what it is has recorded something
+    /// real, and the next scan must not talk them out of it.
+    ///
+    /// # What this deliberately does not touch
+    ///
+    /// One column on one row. Not `identity_key`, `identity_source`, `mac`,
+    /// `network_scope_id`, `first_seen`, `last_seen`, `status`, `custom_name`
+    /// or `notes`; not `device_discovery`; not `discovery_evidence`; not
+    /// `hosts`; and not `change_events`. A correction to what ArcScan calls a
+    /// device is not an event on the network, and writing one must not create
+    /// one.
+    pub fn set_device_type_override(
+        &self,
+        id: i64,
+        device_type: Option<String>,
+    ) -> Result<(), String> {
+        // Validated against the shipped vocabulary before it reaches SQL. The
+        // strict parser is used rather than the forgiving one on purpose: a
+        // value that is not a type must be an error, because the forgiving
+        // parser would turn a typo into an explicit choice of Unknown, which is
+        // itself a meaningful answer nobody made.
+        let stored = match device_type {
+            None => None,
+            Some(raw) => Some(
+                crate::discovery::DeviceType::parse_strict(raw.trim())
+                    .ok_or_else(|| format!("{raw:?} is not a device type ArcScan recognises."))?
+                    .as_str()
+                    .to_string(),
+            ),
+        };
+        let conn = self.lock()?;
+        let updated = conn
+            .execute(
+                "UPDATE devices SET user_device_type = ?1 WHERE id = ?2",
+                params![stored, id],
+            )
+            .map_err(sql_err)?;
+        if updated == 0 {
+            return Err(format!("Device {id} is no longer in the inventory."));
+        }
+        Ok(())
+    }
+
+    /// Build the redacted discovery report for one device.
+    ///
+    /// The query below is the privacy guarantee, and it is worth reading as
+    /// one: it selects the device's vendor, its address and its type override,
+    /// and nothing else from `devices`. `notes`, `mac`, `identity_key` and
+    /// `custom_name` are not in it. The evidence query selects no serial, and
+    /// [`crate::discovery::diagnostics`] drops identifier-bearing kinds a
+    /// second time regardless.
+    ///
+    /// Nothing is written, nothing is sent, and no file is created. The caller
+    /// puts the returned string on the clipboard.
+    pub fn device_discovery_report(&self, id: i64, app_version: &str) -> Result<String, String> {
+        use crate::discovery::diagnostics::{DeviceDiagnostic, DiagnosticEvidence};
+
+        let conn = self.lock()?;
+        let (vendor, last_ip, user_override) = conn
+            .query_row(
+                "SELECT vendor, last_ip, user_device_type FROM devices WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql_err)?
+            .ok_or_else(|| format!("Device {id} is no longer in the inventory."))?;
+
+        let record = read_device_discovery(&conn, id)?;
+
+        let detected_type = crate::discovery::DeviceType::parse(
+            record
+                .as_ref()
+                .map(|r| r.device_type.as_str())
+                .unwrap_or("unknown"),
+        );
+        let detected_confidence = crate::discovery::Confidence::parse(
+            record
+                .as_ref()
+                .map(|r| r.type_confidence.as_str())
+                .unwrap_or("unknown"),
+        );
+        let user_type = user_override
+            .as_deref()
+            .and_then(crate::discovery::DeviceType::parse_strict);
+        let resolved =
+            crate::discovery::effective_type(detected_type, detected_confidence, user_type);
+
+        // The most recent scan that reached this device, and how its discovery
+        // pass went. A count of scans and four words; no target, no address.
+        let quality: Option<crate::discovery::DiscoveryQuality> = conn
+            .query_row(
+                "SELECT s.discovery_summary FROM hosts h
+                 JOIN scans s ON s.id = h.scan_id
+                 WHERE h.device_id = ?1
+                 ORDER BY h.scan_id DESC LIMIT 1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(sql_err)?
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<crate::discovery::DiscoveryReport>(&raw).ok())
+            .map(|report| report.quality());
+
+        let evidence: Vec<DiagnosticEvidence> = record
+            .as_ref()
+            .map(|r| {
+                r.evidence
+                    .iter()
+                    .map(|e| DiagnosticEvidence {
+                        source: e.source.clone(),
+                        kind: e.kind.clone(),
+                        value: e.value.clone(),
+                        freshness: crate::discovery::Freshness::parse(&e.freshness),
+                        misses: e.misses,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let empty: Vec<String> = Vec::new();
+        Ok(crate::discovery::diagnostics::build_report(
+            &DeviceDiagnostic {
+                app_version,
+                effective_type: resolved.effective_type,
+                type_source: Some(resolved.type_source),
+                detected_type: resolved.detected_type,
+                detected_confidence: resolved.detected_confidence,
+                detected_name: record.as_ref().and_then(|r| r.detected_name.as_deref()),
+                manufacturer: record.as_ref().and_then(|r| r.manufacturer.as_deref()),
+                model: record.as_ref().and_then(|r| r.model_name.as_deref()),
+                oui_vendor: vendor.as_deref(),
+                sources: record
+                    .as_ref()
+                    .map(|r| r.sources.as_slice())
+                    .unwrap_or(&empty),
+                services: record
+                    .as_ref()
+                    .map(|r| r.services.as_slice())
+                    .unwrap_or(&empty),
+                evidence: &evidence,
+                discovery_quality: quality,
+                ip: last_ip.as_deref(),
+                // Not derivable from stored state without re-reading the
+                // interface, and reporting a stale answer would be worse than
+                // reporting none.
+                is_gateway: false,
+            },
+        ))
     }
 
     pub fn set_device_status(&self, id: i64, status: DeviceStatus) -> Result<(), String> {
@@ -1624,6 +1881,25 @@ latest AS (
 counts AS (
     SELECT h.device_id AS device_id, COUNT(*) AS n
     FROM hosts h WHERE h.device_id IS NOT NULL GROUP BY h.device_id
+),
+-- How current each device's freshest discovery claim is, as one grouped pass
+-- over the evidence table rather than a query per row.
+--
+-- The filter is the same one `write_discovery` uses to decide what may age, and
+-- it has to be: a claim that is exempt from aging sits at zero misses forever,
+-- and including it in a MIN would pin every device at "current" whatever else
+-- went quiet. So the aggregate covers exactly the claims an ordinary mDNS and
+-- SSDP pass re-hears without fetching a description — services, declared device
+-- types, advertised names, host names, addresses.
+--
+-- A device with no such claim has no row here and reads as current, which is
+-- right: nothing has been observed to go quiet.
+freshness AS (
+    SELECT device_id, MIN(misses) AS best_misses
+    FROM discovery_evidence
+    WHERE source IN ('mdns', 'ssdp')
+      AND kind NOT IN ('manufacturer', 'model', 'model_number', 'serial_number', 'url')
+    GROUP BY device_id
 )
 SELECT d.id, d.network_scope_id, ns.display_name, d.identity_source, d.custom_name, d.hostname,
        d.vendor, d.mac, d.last_ip, d.first_seen, d.last_seen, d.status,
@@ -1636,7 +1912,8 @@ SELECT d.id, d.network_scope_id, ns.display_name, d.identity_source, d.custom_na
        r.created_at,
        SUBSTR(d.notes, 1, 160) AS notes_excerpt,
        dd.detected_name, dd.device_type, dd.type_confidence, dd.manufacturer, dd.model_name,
-       dd.services, dd.sources, dd.last_discovered_at
+       dd.services, dd.sources, dd.last_discovered_at,
+       d.user_device_type, f.best_misses
 FROM devices d
 LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
 LEFT JOIN reference r ON r.scope_id IS d.network_scope_id
@@ -1648,6 +1925,8 @@ LEFT JOIN comparable cmp ON cmp.device_id = d.id
 -- join cannot multiply the result set the way a join onto the evidence table
 -- would.
 LEFT JOIN device_discovery dd ON dd.device_id = d.id
+-- Grouped above, so this is one row per device too.
+LEFT JOIN freshness f ON f.device_id = d.id
 ORDER BY d.last_seen DESC, d.id DESC
 "#;
 
@@ -1873,6 +2152,10 @@ struct DiscoverySnapshot {
     model_name: Option<String>,
     /// Currently-advertised services, sorted.
     services: Vec<String>,
+    /// Which generation of the naming rules produced the name and model above.
+    /// A snapshot older than [`NAMING_RULES_VERSION`] has its name and model
+    /// compared silently exactly once. See that constant.
+    naming_rules_version: i64,
 }
 
 fn json_list(values: &[String]) -> String {
@@ -1884,6 +2167,23 @@ fn list_from_json(raw: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What one scan's discovery pass managed, as the two questions the aging rules
+/// actually ask.
+///
+/// A pair rather than two booleans in a signature, because the two are always
+/// read together and the wrong order would be silently wrong.
+#[derive(Debug, Clone, Copy)]
+struct DiscoveryPass {
+    /// Both protocols ran to completion and the scan was not stopped. False for
+    /// a partial scan, a stopped scan, a remote scan, a scan with discovery
+    /// switched off, and a scan with no eligible local interface. Nothing ages
+    /// unless this is true.
+    full: bool,
+    /// At least one description document was read, so the fields only a
+    /// description carries had a fair chance to be re-observed.
+    descriptions: bool,
+}
+
 /// Read what a device's discovery record said before this scan touched it.
 fn read_discovery_snapshot(
     tx: &Transaction<'_>,
@@ -1892,7 +2192,7 @@ fn read_discovery_snapshot(
     let row = tx
         .query_row(
             "SELECT detected_name, name_source, device_type, type_confidence, manufacturer,
-                    model_name, services
+                    model_name, services, naming_rules_version
              FROM device_discovery WHERE device_id = ?1",
             params![device_id],
             |r| {
@@ -1904,6 +2204,7 @@ fn read_discovery_snapshot(
                     r.get::<_, Option<String>>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<String>>(6)?,
+                    r.get::<_, i64>(7)?,
                 ))
             },
         )
@@ -1918,6 +2219,7 @@ fn read_discovery_snapshot(
             manufacturer,
             model_name,
             services,
+            naming_rules_version,
         )| {
             DiscoverySnapshot {
                 name_is_strong: detected_name.is_some()
@@ -1928,6 +2230,7 @@ fn read_discovery_snapshot(
                 manufacturer,
                 model_name,
                 services: list_from_json(services.as_deref()),
+                naming_rules_version,
             }
         },
     ))
@@ -1935,10 +2238,8 @@ fn read_discovery_snapshot(
 
 /// Record one device's discovery evidence and rebuild its resolved record.
 ///
-/// `full_discovery` says whether this scan ran both protocols to completion. It
-/// gates the absence bookkeeping: only a scan that genuinely listened may count
-/// a service as missed, so a stopped scan or a single-protocol pass can never
-/// start a device down the road to a "service disappeared" event.
+/// `pass` says what this scan's discovery actually managed, which is what
+/// decides whether a claim it did not re-hear counts as missed.
 fn write_discovery(
     tx: &Transaction<'_>,
     device_id: i64,
@@ -1946,7 +2247,7 @@ fn write_discovery(
     scan_id: i64,
     discovery: &crate::scanner::HostDiscovery,
     now: &str,
-    full_discovery: bool,
+    pass: DiscoveryPass,
 ) -> Result<DiscoverySnapshot, String> {
     let previous = read_discovery_snapshot(tx, device_id)?;
 
@@ -2008,14 +2309,42 @@ fn write_discovery(
     }
     drop(upsert);
 
-    // Absence bookkeeping. A service this scan did not hear gets one miss; a
-    // service it did hear had its counter reset to zero by the upsert above.
-    if full_discovery {
+    // Absence bookkeeping. A claim this scan did not re-hear gets one miss; a
+    // claim it did hear had its counter reset to zero by the upsert above.
+    //
+    // v1.8.2 counted misses for advertised services only, to decide when a
+    // service had gone. v1.8.3 counts them for every claim mDNS or SSDP made,
+    // because the same question — "has anything confirmed this lately?" —
+    // decides whether a manufacturer, a model or a type declaration is still
+    // worth leaning on. The counter is the same column and the same increment;
+    // only the set of rows it applies to grew.
+    //
+    // What is *not* aged, and why:
+    //
+    // * anything from a source that is not mDNS or SSDP. A reverse-DNS name or
+    //   an OUI manufacturer is not something a discovery pass listens for, so a
+    //   discovery pass hearing nothing says nothing about it.
+    // * every claim, on a scan that was not a completed, uninterrupted,
+    //   both-protocols pass. `full_discovery` is the caller's answer to that,
+    //   and it is already false for a partial scan, a stopped scan, a remote
+    //   scan, a scan with discovery switched off and a scan with no eligible
+    //   interface.
+    // * a device the scan did not find. The caller only reaches this function
+    //   for a device this scan observed, so a missing device's evidence is
+    //   never touched — a device that was switched off has not stopped
+    //   advertising.
+    // * description-derived claims, when descriptions were not fetched. Reading
+    //   a description document is a separate setting and a separate budget, and
+    //   a pass that never asked for one has not observed its absence.
+    if pass.full {
         tx.execute(
             "UPDATE discovery_evidence SET misses = misses + 1
-             WHERE device_id = ?1 AND kind = 'service'
-               AND (last_scan_id IS NULL OR last_scan_id <> ?2)",
-            params![device_id, scan_id],
+             WHERE device_id = ?1
+               AND (last_scan_id IS NULL OR last_scan_id <> ?2)
+               AND source IN ('mdns', 'ssdp')
+               AND (?3 = 1 OR kind NOT IN
+                    ('manufacturer', 'model', 'model_number', 'serial_number', 'url'))",
+            params![device_id, scan_id, pass.descriptions as i64],
         )
         .map_err(sql_err)?;
     }
@@ -2063,6 +2392,7 @@ fn write_discovery(
         manufacturer: discovery.manufacturer.clone(),
         model_name: discovery.model_name.clone(),
         services: services.clone(),
+        naming_rules_version: NAMING_RULES_VERSION,
     };
 
     tx.execute(
@@ -2071,9 +2401,9 @@ fn write_discovery(
              type_confidence, type_evidence, type_conflicts, manufacturer, model_name,
              model_number, serial_number, mdns_hostname, ssdp_friendly_name, services,
              sources, alternate_names, ipv6_addresses, presentation_url,
-             first_discovered_at, last_discovered_at)
+             first_discovered_at, last_discovered_at, naming_rules_version)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?20)
+                 ?18, ?19, ?20, ?20, ?21)
          ON CONFLICT(device_id) DO UPDATE SET
              network_scope_id   = excluded.network_scope_id,
              detected_name      = COALESCE(excluded.detected_name, device_discovery.detected_name),
@@ -2095,7 +2425,8 @@ fn write_discovery(
              ipv6_addresses     = excluded.ipv6_addresses,
              presentation_url   = COALESCE(excluded.presentation_url,
                                            device_discovery.presentation_url),
-             last_discovered_at = excluded.last_discovered_at",
+             last_discovered_at = excluded.last_discovered_at,
+             naming_rules_version = excluded.naming_rules_version",
         params![
             device_id,
             scope_id,
@@ -2117,6 +2448,7 @@ fn write_discovery(
             json_list(&discovery.ipv6_addresses),
             discovery.presentation_url,
             now,
+            NAMING_RULES_VERSION,
         ],
     )
     .map_err(sql_err)?;
@@ -2163,6 +2495,9 @@ fn read_device_discovery(
                     first_discovered_at: r.get(17)?,
                     last_discovered_at: r.get(18)?,
                     evidence: Vec::new(),
+                    // Both filled in below, once the evidence has been read.
+                    evidence_freshness: String::new(),
+                    raw_type_confidence: String::new(),
                 })
             },
         )
@@ -2173,12 +2508,16 @@ fn read_device_discovery(
         return Ok(None);
     };
 
+    // Ordered so the drawer's first screenful is the evidence that still counts:
+    // current claims before aging ones before stale ones, and inside each group
+    // the most recently seen first. A device that has been on the network for
+    // years still opens instantly, because the list is capped either way.
     let mut stmt = conn
         .prepare(
-            "SELECT source, kind, key, value, confidence, first_seen, last_seen
+            "SELECT source, kind, key, value, confidence, first_seen, last_seen, misses
              FROM discovery_evidence
              WHERE device_id = ?1
-             ORDER BY last_seen DESC, kind ASC, source ASC, value ASC
+             ORDER BY misses ASC, last_seen DESC, kind ASC, source ASC, value ASC
              LIMIT 60",
         )
         .map_err(sql_err)?;
@@ -2191,6 +2530,7 @@ fn read_device_discovery(
             let source: String = r.get(0)?;
             let kind: String = r.get(1)?;
             let confidence: String = r.get(4)?;
+            let misses: i64 = r.get(7)?;
             Ok(DiscoveryEvidenceRow {
                 source: crate::discovery::DiscoverySource::parse(&source)
                     .map(|s| s.as_str().to_string())
@@ -2205,11 +2545,45 @@ fn read_device_discovery(
                     .to_string(),
                 first_seen: r.get(5)?,
                 last_seen: r.get(6)?,
+                freshness: crate::discovery::freshness(misses).as_str().to_string(),
+                misses,
             })
         })
         .map_err(sql_err)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_err)?;
+
+    // How current the freshest discovery claim on file is. The filter matches
+    // the one in `write_discovery` and in INVENTORY_SQL: exactly the claims an
+    // ordinary mDNS and SSDP pass re-hears, because a claim that cannot age
+    // would otherwise hold the answer at "current" for ever.
+    let best_misses: Option<i64> = conn
+        .query_row(
+            "SELECT MIN(misses) FROM discovery_evidence
+             WHERE device_id = ?1 AND source IN ('mdns', 'ssdp')
+               AND kind NOT IN ('manufacturer', 'model', 'model_number', 'serial_number', 'url')",
+            params![device_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql_err)?
+        .flatten();
+    let state = crate::discovery::freshness(best_misses.unwrap_or(0));
+    record.evidence_freshness = state.as_str().to_string();
+
+    // The classifier's own answer is kept, and the displayed one is reduced
+    // where every claim behind it has gone stale. Reducing at read time rather
+    // than at write time is deliberate: nothing is rewritten, no scan is
+    // needed to undo it, and a device that starts answering again is back at
+    // full confidence the moment its evidence is confirmed.
+    record.raw_type_confidence = record.type_confidence.clone();
+    record.type_confidence = crate::discovery::cap_for_freshness(
+        crate::discovery::Confidence::parse(&record.type_confidence),
+        state,
+    )
+    .as_str()
+    .to_string();
+
     Ok(Some(record))
 }
 
@@ -2256,6 +2630,18 @@ struct DiscoverySubject<'a> {
 /// * anything below high confidence, on either side of the comparison
 /// * a service that went missing from fewer than [`SERVICE_ABSENCE_MISSES`]
 ///   consecutive full-discovery scans
+/// * **evidence simply getting older.** Aging changes a miss counter and
+///   nothing else. The type and confidence compared here are the classifier's
+///   own answer from the stored record, which no miss counter touches, so a
+///   device whose evidence went stale between two scans produces no event at
+///   all. The reduction that stale evidence causes happens at *read* time, for
+///   display, and is deliberately not part of what is compared.
+/// * **an operator setting or clearing a device-type override.** That is an
+///   edit to ArcScan, not an event on the network, and it is written by
+///   [`Db::set_device_type_override`], which touches one column on `devices`
+///   and never reaches this function.
+/// * a name or model difference that is this release's tidier naming rules
+///   rather than the device — see [`NAMING_RULES_VERSION`]
 /// * every protocol housekeeping value there is: TTL, `CACHE-CONTROL`,
 ///   `BOOTID.UPNP.ORG`, `CONFIGID`, `SEARCHPORT`, the `SERVER` banner, TXT key
 ///   ordering, and repeated advertisements of something already known
@@ -2297,9 +2683,21 @@ fn record_discovery_events(
         norm(a) != norm(b)
     };
 
+    // The stored record predates this build's naming rules, so any difference
+    // between the two sides is this release tidying a name rather than the
+    // device changing one. Silent exactly once: the record written by this scan
+    // carries the current generation, so the next scan compares normally.
+    //
+    // Without this, the first scan after upgrading to v1.8.3 would report a
+    // renamed device for every device whose advertised name contained a
+    // service-instance suffix, a repeated manufacturer or a UDN — a whole
+    // inbox of events for nothing that happened on the network.
+    let naming_rules_changed = before.naming_rules_version < NAMING_RULES_VERSION;
+
     // A detected name is only news when both readings were strong. A device
     // that fell back to its address this scan has not been renamed.
-    if before.name_is_strong
+    if !naming_rules_changed
+        && before.name_is_strong
         && after.name_is_strong
         && changed(&before.detected_name, &after.detected_name)
     {
@@ -2325,8 +2723,12 @@ fn record_discovery_events(
         ));
     }
 
-    if changed(&before.manufacturer, &after.manufacturer)
-        || changed(&before.model_name, &after.model_name)
+    // The model line is built by `names::manufacturer_and_model`, which v1.8.3
+    // also changed, so it is suppressed under the same rule and for the same
+    // reason.
+    if !naming_rules_changed
+        && (changed(&before.manufacturer, &after.manufacturer)
+            || changed(&before.model_name, &after.model_name))
     {
         let describe = |snapshot: &DiscoverySnapshot| {
             crate::discovery::names::manufacturer_and_model(
@@ -2860,6 +3262,19 @@ fn read_host(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostResult> {
 }
 
 fn read_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScanSummary> {
+    // Parsed once here rather than per field below, and rendered into the two
+    // words History shows. A scan recorded before discovery existed has no
+    // summary at all, and "skipped" is the honest reading of that.
+    let discovery_summary: Option<String> = row.get(18)?;
+    let report = discovery_summary
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<crate::discovery::DiscoveryReport>(raw).ok());
+    let quality = report
+        .as_ref()
+        .map(|r| r.quality())
+        .unwrap_or(crate::discovery::DiscoveryQuality::Skipped);
+    let quality_reason = report.as_ref().and_then(|r| r.quality_reason());
+
     Ok(ScanSummary {
         id: row.get(0)?,
         target: row.get(1)?,
@@ -2883,7 +3298,9 @@ fn read_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScanSummary> {
         discovery_mode: crate::discovery::model::DiscoveryMode::parse(&row.get::<_, String>(17)?)
             .as_str()
             .to_string(),
-        discovery_summary: row.get(18)?,
+        discovery_summary,
+        discovery_quality: quality.as_str().to_string(),
+        discovery_quality_reason: quality_reason.map(str::to_string),
     })
 }
 
@@ -2903,6 +3320,13 @@ fn read_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         status: DeviceStatus::parse(&row.get::<_, String>(11)?),
         notes: row.get(12)?,
         observation_count: row.get(13)?,
+        // Normalized through the type vocabulary, so a value from a newer build
+        // reads as absent rather than as an unknown word the interface has no
+        // label for. An unrecognised override is not a silent Unknown: Unknown
+        // is itself a deliberate answer, and inventing one would be worse.
+        user_device_type: row.get::<_, Option<String>>(14)?.and_then(|raw| {
+            crate::discovery::DeviceType::parse_strict(&raw).map(|t| t.as_str().to_string())
+        }),
     })
 }
 
@@ -3028,6 +3452,9 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
             last_seen        TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'unclassified',
             notes            TEXT,
+            -- v1.8.3: the operator's device-type correction. NULL is Auto;
+            -- 'unknown' is an explicit answer and not the absence of one.
+            user_device_type TEXT,
             UNIQUE(network_scope_id, identity_key),
             UNIQUE(network_scope_id, mac)
         );
@@ -3136,7 +3563,10 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
             ipv6_addresses     TEXT,
             presentation_url   TEXT,
             first_discovered_at TEXT,
-            last_discovered_at TEXT
+            last_discovered_at TEXT,
+            -- v1.8.3: which generation of the naming rules wrote the values
+            -- above. See NAMING_RULES_VERSION.
+            naming_rules_version INTEGER NOT NULL DEFAULT 0
         );
         "#,
     )
@@ -3153,6 +3583,38 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
     }
     if version < 5 {
         migrate_v5(conn)?;
+    }
+
+    // v1.8.3 (schema 6). Two nullable columns and nothing else: no table is
+    // rebuilt, no row is re-keyed, no device is reclassified and nothing is
+    // backfilled. An interrupted upgrade leaves a database that is either
+    // before or after, and running it twice changes nothing the second time.
+    //
+    // Deliberately *after* migrate_v3, which rebuilds the devices table to give
+    // it network scopes: a column added before that rebuild would be dropped by
+    // it, and a pre-v1.8.2 database has no `device_discovery` table to alter at
+    // all until the statements above have created it.
+    //
+    // `devices.user_device_type` is the operator's correction. NULL means Auto;
+    // the string `unknown` means the operator looked and said so, which is a
+    // different and equally valid answer. It lives on `devices` rather than on
+    // `device_discovery` on purpose: a device no discovery-capable scan has
+    // ever reached has no `device_discovery` row, and must still be
+    // correctable.
+    //
+    // `device_discovery.naming_rules_version` defaults to 0, which is exactly
+    // right for every row v1.8.2 wrote: older than the current rules, so the
+    // first comparison against it is silent. See [`NAMING_RULES_VERSION`].
+    //
+    // Both are `ALTER TABLE ... ADD COLUMN`, which SQLite has no
+    // `IF NOT EXISTS` form of, so a duplicate-column error means this migration
+    // has already run and is ignored — the same idempotence rule every earlier
+    // migration here uses.
+    for stmt in [
+        "ALTER TABLE devices ADD COLUMN user_device_type TEXT",
+        "ALTER TABLE device_discovery ADD COLUMN naming_rules_version INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = conn.execute(stmt, []);
     }
 
     // Indexes last: the scope-aware ones only exist once the v3 shape does.
@@ -6148,6 +6610,1192 @@ mod tests {
         assert_eq!(record.model_name.as_deref(), Some("LaserFast 400"));
         assert!(record.evidence.iter().any(|e| e.kind == "service"));
         assert!(record.evidence.iter().all(|e| !e.first_seen.is_empty()));
+    }
+
+    // --- v1.8.3: the shape of the work at scale ----------------------------
+
+    /// Build a database at the scale the release notes claim to have measured:
+    /// 5,000 devices, 100,000 observations, 50,000 evidence rows, 1,000 type
+    /// corrections and 1,000 devices whose evidence has gone stale.
+    ///
+    /// Written with raw inserts rather than through `save_scan`, because the
+    /// point is to measure the *read* paths against a large database, not to
+    /// measure how long it takes to create one.
+    fn seed_at_scale(path: &std::path::Path) {
+        const DEVICES: i64 = 5_000;
+        const SCANS: i64 = 20;
+        const EVIDENCE_PER_DEVICE: i64 = 10;
+
+        {
+            // Create the current schema through the real migration, so the
+            // fixture cannot drift from the shape the app actually uses.
+            let _ = Db::open(path).unwrap();
+        }
+        let mut conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let tx = conn.transaction().unwrap();
+
+        tx.execute(
+            "INSERT INTO network_scopes (id, stable_key, display_name, canonical_target,
+                                         created_at, updated_at)
+             VALUES (1, 'scale', 'Scale', '10.0.0.0/16',
+                     '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+
+        for scan in 1..=SCANS {
+            tx.execute(
+                "INSERT INTO scans (id, target, created_at, duration_ms, scanned, target_key,
+                                    profile, probed, status, network_scope_id, coverage_key,
+                                    discovery_mode)
+                 VALUES (?1, '10.0.0.0/16', ?2, 4000, 65536, 'cidr:10.0.0.0/16',
+                         'quick-lan', 65536, 'completed', 1, 'v1|ports:22,80,443', 'full')",
+                params![scan, format!("2026-02-{:02}T09:00:00+00:00", scan)],
+            )
+            .unwrap();
+        }
+
+        {
+            let mut device = tx
+                .prepare(
+                    "INSERT INTO devices (id, network_scope_id, identity_key, identity_source, mac,
+                                          custom_name, hostname, vendor, last_ip, first_seen,
+                                          last_seen, status, user_device_type)
+                     VALUES (?1, 1, ?2, 'mac', ?3, NULL, ?4, 'Example Corp', ?5,
+                             '2026-02-01T09:00:00+00:00', '2026-02-20T09:00:00+00:00',
+                             'unclassified', ?6)",
+                )
+                .unwrap();
+            let mut discovery = tx
+                .prepare(
+                    "INSERT INTO device_discovery (device_id, network_scope_id, detected_name,
+                                                   name_source, device_type, type_confidence,
+                                                   services, sources, first_discovered_at,
+                                                   last_discovered_at, naming_rules_version)
+                     VALUES (?1, 1, ?2, 'mdns', 'printer', 'high', '[\"_ipp._tcp\"]',
+                             '[\"mdns\"]', '2026-02-01T09:00:00+00:00',
+                             '2026-02-20T09:00:00+00:00', ?3)",
+                )
+                .unwrap();
+            let mut evidence = tx
+                .prepare(
+                    "INSERT INTO discovery_evidence (device_id, network_scope_id, source, kind, key,
+                                                     value, normalized_value, confidence,
+                                                     first_seen, last_seen, last_scan_id, misses)
+                     VALUES (?1, 1, 'mdns', ?2, ?3, ?4, ?4, 'high',
+                             '2026-02-01T09:00:00+00:00', '2026-02-20T09:00:00+00:00', 20, ?5)",
+                )
+                .unwrap();
+            let mut host = tx
+                .prepare(
+                    "INSERT INTO hosts (scan_id, ip, hostname, mac, vendor, open_ports,
+                                        response_ms, last_seen, device_id, ttl, os_guess)
+                     VALUES (?1, ?2, ?3, ?4, 'Example Corp', '22,80,443', 3, ?5, ?6, 64, 'Linux')",
+                )
+                .unwrap();
+
+            for id in 1..=DEVICES {
+                let mac = format!(
+                    "AA:BB:{:02X}:{:02X}:{:02X}:{:02X}",
+                    id >> 24,
+                    (id >> 16) & 0xFF,
+                    (id >> 8) & 0xFF,
+                    id & 0xFF
+                );
+                let ip = format!("10.0.{}.{}", id / 254, id % 254 + 1);
+                let hostname = format!("device-{id}");
+                // 1,000 devices carry an operator correction, and a different
+                // 1,000 have evidence that has gone stale.
+                let override_type = (id % 5 == 0).then_some("television");
+                let misses = if id % 5 == 1 { 4 } else { 0 };
+
+                device
+                    .execute(params![
+                        id,
+                        format!("mac:{mac}"),
+                        mac,
+                        hostname,
+                        ip,
+                        override_type
+                    ])
+                    .unwrap();
+                discovery
+                    .execute(params![id, format!("Device {id}"), NAMING_RULES_VERSION])
+                    .unwrap();
+                for n in 0..EVIDENCE_PER_DEVICE {
+                    evidence
+                        .execute(params![
+                            id,
+                            "service",
+                            format!("_svc{n}._tcp"),
+                            format!("_svc{n}._tcp"),
+                            misses
+                        ])
+                        .unwrap();
+                }
+                for scan in 1..=SCANS {
+                    host.execute(params![
+                        scan,
+                        ip,
+                        hostname,
+                        mac,
+                        format!("2026-02-{:02}T09:00:00+00:00", scan),
+                        id
+                    ])
+                    .unwrap();
+                }
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn the_inventory_and_the_drawer_stay_fast_on_a_large_database() {
+        // 5,000 devices, 100,000 observations and 50,000 evidence rows, with
+        // 1,000 type corrections and 1,000 devices whose evidence is stale.
+        //
+        // The bounds below are deliberately loose: this runs on shared CI
+        // hardware and the point is to catch a *change of shape* — a query per
+        // device, or a scan of all evidence per row — not to police tens of
+        // milliseconds. A per-device query at this size costs seconds, not
+        // hundreds of milliseconds, so the gap between the real numbers and
+        // these limits is what makes the test meaningful rather than flaky.
+        let dir = std::env::temp_dir().join(format!("arcscan-scale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scale.db");
+        let _ = std::fs::remove_file(&path);
+        seed_at_scale(&path);
+
+        let db = Db::open(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let inventory = db.inventory().unwrap();
+        let inventory_ms = started.elapsed().as_millis();
+        assert_eq!(inventory.rows.len(), 5_000);
+        assert!(
+            inventory_ms < 6_000,
+            "the inventory took {inventory_ms} ms, which suggests per-device work"
+        );
+
+        // Every state is actually present, or the measurement is of the wrong
+        // thing.
+        let corrected = inventory
+            .rows
+            .iter()
+            .filter(|r| r.user_device_type.is_some())
+            .count();
+        assert_eq!(corrected, 1_000);
+        let stale = inventory
+            .rows
+            .iter()
+            .filter(|r| {
+                r.discovery
+                    .as_ref()
+                    .is_some_and(|d| d.evidence_freshness == "stale")
+            })
+            .count();
+        assert_eq!(stale, 1_000);
+        // And the freshness reduction reached them: a high-confidence type on
+        // wholly stale evidence reads as medium.
+        assert!(inventory.rows.iter().any(|r| {
+            r.discovery
+                .as_ref()
+                .is_some_and(|d| d.evidence_freshness == "stale" && d.type_confidence == "medium")
+        }));
+
+        // Opening a device panel: the full record, its evidence and its history.
+        let device_id = inventory.rows[0].device_id;
+        let started = std::time::Instant::now();
+        let detail = db.device_detail(device_id).unwrap();
+        let drawer_ms = started.elapsed().as_millis();
+        assert!(detail.discovery.is_some());
+        assert!(
+            drawer_ms < 1_500,
+            "opening a device took {drawer_ms} ms on a 50,000-row evidence table"
+        );
+
+        // Building a diagnostic report reads one device, not the whole table.
+        let started = std::time::Instant::now();
+        let report = db.device_discovery_report(device_id, "1.8.3").unwrap();
+        let report_ms = started.elapsed().as_millis();
+        assert!(report.contains("ArcScan discovery report"));
+        assert!(
+            report_ms < 1_500,
+            "building a diagnostic report took {report_ms} ms"
+        );
+
+        // Setting a correction is one row, whatever the size of the database.
+        let started = std::time::Instant::now();
+        db.set_device_type_override(device_id, Some("printer".into()))
+            .unwrap();
+        let write_ms = started.elapsed().as_millis();
+        assert!(
+            write_ms < 1_000,
+            "one correction took {write_ms} ms, which suggests it is not one row"
+        );
+
+        // And it recorded nothing in the inbox, at any size.
+        assert!(db.change_events().unwrap().events.is_empty());
+
+        println!(
+            "scale: inventory {inventory_ms} ms, drawer {drawer_ms} ms, \
+             report {report_ms} ms, correction {write_ms} ms"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- v1.8.3: user type overrides ---------------------------------------
+
+    /// One saved device with a detected type, ready to be corrected.
+    fn device_with_detected_type(db: &Db, detected: &str, confidence: &str) -> i64 {
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[80]);
+        host.discovery = Some(discovery_for(
+            "Living Room TV",
+            detected,
+            confidence,
+            &["_airplay._tcp"],
+        ));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![host],
+        )))
+        .unwrap();
+        db.inventory().unwrap().rows[0].device_id
+    }
+
+    #[test]
+    fn a_device_with_no_override_reads_as_auto() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "media_device", "medium");
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.user_device_type, None);
+        assert_eq!(row.discovery.as_ref().unwrap().device_type, "media_device");
+        assert_eq!(db.device_detail(id).unwrap().device.user_device_type, None);
+    }
+
+    #[test]
+    fn every_shipped_type_can_be_chosen_as_an_override() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "media_device", "medium");
+        for kind in crate::discovery::DeviceType::ALL {
+            db.set_device_type_override(id, Some(kind.as_str().into()))
+                .unwrap();
+            let row = &db.inventory().unwrap().rows[0];
+            assert_eq!(row.user_device_type.as_deref(), Some(kind.as_str()));
+            // The detected answer is kept underneath, every time.
+            assert_eq!(row.discovery.as_ref().unwrap().device_type, "media_device");
+        }
+    }
+
+    #[test]
+    fn an_explicit_unknown_override_is_stored_and_is_not_the_same_as_clearing() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "camera", "medium");
+
+        db.set_device_type_override(id, Some("unknown".into()))
+            .unwrap();
+        assert_eq!(
+            db.inventory().unwrap().rows[0].user_device_type.as_deref(),
+            Some("unknown")
+        );
+
+        db.set_device_type_override(id, None).unwrap();
+        assert_eq!(db.inventory().unwrap().rows[0].user_device_type, None);
+        // And clearing revealed the automatic answer rather than erasing it.
+        assert_eq!(
+            db.inventory().unwrap().rows[0]
+                .discovery
+                .as_ref()
+                .unwrap()
+                .device_type,
+            "camera"
+        );
+    }
+
+    #[test]
+    fn an_override_that_is_not_a_device_type_is_refused_rather_than_stored() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "printer", "high");
+        for bogus in [
+            "toaster",
+            "",
+            "Printer",
+            "media device",
+            "'; DROP TABLE devices; --",
+        ] {
+            let error = db
+                .set_device_type_override(id, Some(bogus.into()))
+                .expect_err("a value that is not a type must be refused");
+            assert!(error.contains("not a device type"), "{error}");
+        }
+        // Nothing was stored, and in particular nothing became an explicit
+        // Unknown, which is a real answer nobody gave.
+        assert_eq!(db.inventory().unwrap().rows[0].user_device_type, None);
+    }
+
+    #[test]
+    fn an_override_changes_nothing_about_the_device_but_its_type() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "media_device", "medium");
+        db.set_device_name(id, Some("The Big TV".into())).unwrap();
+        db.set_device_notes(id, Some("Behind the sofa".into()))
+            .unwrap();
+        db.set_device_status(id, DeviceStatus::Trusted).unwrap();
+
+        let before = db.device_detail(id).unwrap();
+        let before_evidence = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let before_events = db.change_events().unwrap().events.len();
+
+        db.set_device_type_override(id, Some("television".into()))
+            .unwrap();
+
+        let after = db.device_detail(id).unwrap();
+        // Identity, scope, presence, trust, name, notes and dates: untouched.
+        assert_eq!(after.device.id, before.device.id);
+        assert_eq!(after.device.identity_key, before.device.identity_key);
+        assert_eq!(after.device.identity_source, before.device.identity_source);
+        assert_eq!(after.device.mac, before.device.mac);
+        assert_eq!(
+            after.device.network_scope_id,
+            before.device.network_scope_id
+        );
+        assert_eq!(after.device.custom_name, before.device.custom_name);
+        assert_eq!(after.device.notes, before.device.notes);
+        assert_eq!(after.device.status, before.device.status);
+        assert_eq!(after.device.first_seen, before.device.first_seen);
+        assert_eq!(after.device.last_seen, before.device.last_seen);
+        assert_eq!(after.presence, before.presence);
+        assert_eq!(
+            after.device.observation_count,
+            before.device.observation_count
+        );
+        // Exactly one device: an override never creates a second one.
+        assert_eq!(db.inventory().unwrap().rows.len(), 1);
+        // Discovery evidence and the detected answer are untouched.
+        let after_evidence = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(after_evidence, before_evidence);
+        assert_eq!(
+            after.discovery.as_ref().unwrap().device_type,
+            before.discovery.as_ref().unwrap().device_type
+        );
+        // And no change event was recorded: an operator edit is not a network
+        // event, and putting one in the inbox would be noise.
+        assert_eq!(db.change_events().unwrap().events.len(), before_events);
+    }
+
+    #[test]
+    fn an_override_survives_a_later_scan_that_detects_something_else() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "media_device", "medium");
+        db.set_device_type_override(id, Some("television".into()))
+            .unwrap();
+
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[80]);
+        host.discovery = Some(discovery_for(
+            "Living Room TV",
+            "speaker",
+            "high",
+            &["_raop._tcp"],
+        ));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![host],
+        )))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.user_device_type.as_deref(), Some("television"));
+        // The automatic answer moved on underneath, which is what clearing the
+        // override has to be able to reveal.
+        assert_eq!(row.discovery.as_ref().unwrap().device_type, "speaker");
+    }
+
+    // --- v1.8.3: evidence aging -------------------------------------------
+
+    /// The miss count on one device's service claims, lowest first.
+    fn evidence_misses(db: &Db, device_id: i64) -> Vec<i64> {
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT misses FROM discovery_evidence
+                 WHERE device_id = ?1 AND kind = 'service' ORDER BY value",
+            )
+            .unwrap();
+        let rows = stmt.query_map([device_id], |r| r.get::<_, i64>(0)).unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    /// A host advertising `services`, with the same identity every time.
+    fn advertising(services: &[&str]) -> HostResult {
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[80]);
+        host.discovery = Some(discovery_for(
+            "Living Room TV",
+            "media_device",
+            "medium",
+            services,
+        ));
+        host
+    }
+
+    #[test]
+    fn three_qualifying_misses_make_a_claim_stale_and_fresh_evidence_resets_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+        )))
+        .unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+
+        let freshness_of = |db: &Db, value: &str| -> String {
+            db.device_detail(id)
+                .unwrap()
+                .discovery
+                .unwrap()
+                .evidence
+                .into_iter()
+                .find(|e| e.value == value)
+                .map(|e| e.freshness)
+                .unwrap_or_default()
+        };
+
+        assert_eq!(freshness_of(&db, "_raop._tcp"), "current");
+
+        // Three completed, both-protocol scans in which the device answered but
+        // stopped advertising `_raop._tcp`.
+        for expected in ["aging", "aging", "stale"] {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![advertising(&["_airplay._tcp"])],
+            )))
+            .unwrap();
+            assert_eq!(freshness_of(&db, "_raop._tcp"), expected);
+            // The claim it *did* re-hear stayed current throughout.
+            assert_eq!(freshness_of(&db, "_airplay._tcp"), "current");
+        }
+
+        // Stale evidence is kept, not deleted, and keeps its dates.
+        let stale = db
+            .device_detail(id)
+            .unwrap()
+            .discovery
+            .unwrap()
+            .evidence
+            .into_iter()
+            .find(|e| e.value == "_raop._tcp")
+            .expect("stale evidence is still on file");
+        assert!(!stale.first_seen.is_empty());
+        assert!(!stale.last_seen.is_empty());
+        assert_eq!(stale.misses, 3);
+
+        // One sighting puts it straight back to current.
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+        )))
+        .unwrap();
+        assert_eq!(freshness_of(&db, "_raop._tcp"), "current");
+    }
+
+    #[test]
+    fn nothing_ages_on_a_scan_that_did_not_qualify() {
+        // Each case is one reason a scan must not count as a miss, applied to a
+        // device that answered it and stopped advertising one of its services.
+        /// One reason a scan must not count as a qualifying miss, as a name
+        /// and the change that makes an otherwise-qualifying scan into it.
+        type NonQualifying = (&'static str, Box<dyn Fn(ScanResult) -> ScanResult>);
+
+        let cases: Vec<NonQualifying> = vec![
+            (
+                "a stopped scan",
+                Box::new(|mut r: ScanResult| {
+                    r.cancelled = true;
+                    r
+                }),
+            ),
+            (
+                "a scan interrupted during discovery",
+                Box::new(|mut r: ScanResult| {
+                    r.discovery = Some(crate::discovery::DiscoveryReport {
+                        mdns_attempted: true,
+                        ssdp_attempted: true,
+                        interrupted: true,
+                        ..Default::default()
+                    });
+                    r
+                }),
+            ),
+            (
+                "a scan with only one protocol",
+                Box::new(|mut r: ScanResult| {
+                    r.discovery = Some(crate::discovery::DiscoveryReport {
+                        mdns_attempted: true,
+                        ssdp_attempted: false,
+                        ..Default::default()
+                    });
+                    r
+                }),
+            ),
+            (
+                "a scan with discovery switched off or skipped",
+                Box::new(|mut r: ScanResult| {
+                    r.discovery = Some(crate::discovery::DiscoveryReport::skipped(
+                        "Local discovery is switched off",
+                    ));
+                    r
+                }),
+            ),
+            (
+                "a scan that recorded no discovery at all",
+                Box::new(|mut r: ScanResult| {
+                    r.discovery = None;
+                    r
+                }),
+            ),
+        ];
+
+        for (what, degrade) in cases {
+            let db = Db::open_in_memory().unwrap();
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+            )))
+            .unwrap();
+            let id = db.inventory().unwrap().rows[0].device_id;
+            assert_eq!(evidence_misses(&db, id), vec![0, 0], "{what}: setup");
+
+            for _ in 0..4 {
+                db.save_scan(&degrade(result(
+                    "10.0.0.0/24",
+                    None,
+                    vec![advertising(&["_airplay._tcp"])],
+                )))
+                .unwrap();
+            }
+            assert_eq!(
+                evidence_misses(&db, id),
+                vec![0, 0],
+                "{what} aged evidence and must not have"
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_the_scan_never_found_does_not_age() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+        )))
+        .unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+
+        // Four completed, both-protocol scans of the same network in which the
+        // device was simply not there. A device that was switched off has not
+        // stopped advertising.
+        for _ in 0..4 {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![host("10.0.0.9", Some("aa:bb:cc:00:00:09"), None, &[80])],
+            )))
+            .unwrap();
+        }
+        assert_eq!(evidence_misses(&db, id), vec![0, 0]);
+        assert_eq!(
+            db.inventory()
+                .unwrap()
+                .rows
+                .iter()
+                .find(|r| r.device_id == id)
+                .unwrap()
+                .discovery
+                .as_ref()
+                .unwrap()
+                .evidence_freshness,
+            "current"
+        );
+    }
+
+    #[test]
+    fn description_fields_do_not_age_when_no_description_was_read() {
+        let db = Db::open_in_memory().unwrap();
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[80]);
+        host.discovery = Some(discovery_for(
+            "Living Room TV",
+            "media_device",
+            "medium",
+            &["_airplay._tcp"],
+        ));
+        // The first scan read a description, so the manufacturer and model are
+        // on file as SSDP claims.
+        let mut first = with_full_discovery(result("10.0.0.0/24", None, vec![host.clone()]));
+        first.discovery.as_mut().unwrap().descriptions_fetched = 1;
+        db.save_scan(&first).unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+
+        // Four later scans ran both protocols but read no description — the
+        // setting is off, or no device offered one. That is not evidence the
+        // manufacturer changed.
+        let mut quiet = host.clone();
+        quiet.discovery.as_mut().unwrap().manufacturer = None;
+        quiet.discovery.as_mut().unwrap().model_name = None;
+        for _ in 0..4 {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![quiet.clone()],
+            )))
+            .unwrap();
+        }
+
+        let misses: Vec<i64> = {
+            let conn = db.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT misses FROM discovery_evidence
+                     WHERE device_id = ?1 AND kind IN ('manufacturer', 'model')",
+                )
+                .unwrap();
+            let rows = stmt.query_map([id], |r| r.get::<_, i64>(0)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert!(!misses.is_empty(), "the description claims are on file");
+        assert!(
+            misses.iter().all(|m| *m == 0),
+            "description fields aged with no description read: {misses:?}"
+        );
+    }
+
+    #[test]
+    fn stale_evidence_can_no_longer_carry_high_confidence_on_its_own() {
+        let db = Db::open_in_memory().unwrap();
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[631]);
+        host.discovery = Some(discovery_for(
+            "Studio Printer",
+            "printer",
+            "high",
+            &["_ipp._tcp"],
+        ));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![host],
+        )))
+        .unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+        assert_eq!(
+            db.inventory().unwrap().rows[0]
+                .discovery
+                .as_ref()
+                .unwrap()
+                .type_confidence,
+            "high"
+        );
+
+        // Three qualifying scans in which the device answered and advertised
+        // nothing at all.
+        let mut silent =
+            super::tests::host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[631]);
+        silent.discovery = Some(crate::scanner::HostDiscovery::default());
+        for _ in 0..3 {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![silent.clone()],
+            )))
+            .unwrap();
+        }
+
+        let row = &db.inventory().unwrap().rows[0];
+        let discovery = row.discovery.as_ref().unwrap();
+        assert_eq!(discovery.evidence_freshness, "stale");
+        assert_eq!(discovery.type_confidence, "medium");
+        // Still a printer: it stopped answering, it did not become something
+        // else, and there is no decay past Medium.
+        assert_eq!(discovery.device_type, "printer");
+
+        let detail = db.device_detail(id).unwrap().discovery.unwrap();
+        assert_eq!(detail.type_confidence, "medium");
+        // The classifier's own answer is kept so the drawer can explain the
+        // reduction rather than only show it.
+        assert_eq!(detail.raw_type_confidence, "high");
+        assert_eq!(detail.evidence_freshness, "stale");
+    }
+
+    #[test]
+    fn evidence_aging_records_no_change_event() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+        )))
+        .unwrap();
+        // Two scans that still hear everything, to establish a baseline and let
+        // any first-scan suppression fall away.
+        for _ in 0..2 {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![advertising(&["_airplay._tcp", "_raop._tcp"])],
+            )))
+            .unwrap();
+        }
+        let baseline: Vec<String> = db
+            .change_events()
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.change_type.as_str().to_string())
+            .collect();
+
+        // Now let one claim age all the way to stale. The *service* going away
+        // is a real v1.8.2 event and is expected once; nothing further may be
+        // recorded as the counter keeps climbing.
+        for _ in 0..4 {
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![advertising(&["_airplay._tcp"])],
+            )))
+            .unwrap();
+        }
+
+        let after: Vec<String> = db
+            .change_events()
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.change_type.as_str().to_string())
+            .collect();
+        let added: Vec<&str> = after
+            .iter()
+            .skip(baseline.len().min(after.len()))
+            .map(String::as_str)
+            .collect();
+        assert!(
+            added.iter().all(|kind| *kind == "service_disappeared"),
+            "aging produced events other than the one service going away: {added:?}"
+        );
+        // And in particular no type change: the stored classification never
+        // moved, only the miss counter did.
+        assert!(
+            !after.iter().any(|k| k == "device_type_changed"),
+            "aging changed the device type: {after:?}"
+        );
+    }
+
+    // --- v1.8.3: the upgrade is quiet --------------------------------------
+
+    #[test]
+    fn the_first_scan_after_the_naming_rules_changed_records_no_rename() {
+        let db = Db::open_in_memory().unwrap();
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[80]);
+        host.discovery = Some(discovery_for(
+            "Old Name",
+            "media_device",
+            "high",
+            &["_airplay._tcp"],
+        ));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![host.clone()],
+        )))
+        .unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+
+        // Stand the stored record back down to the generation v1.8.2 wrote,
+        // which is exactly what an upgraded database looks like.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE device_discovery SET naming_rules_version = 0 WHERE device_id = ?1",
+                [id],
+            )
+            .unwrap();
+        }
+        let before = db.change_events().unwrap().events.len();
+
+        // The first scan under the new rules reads the name differently.
+        let mut renamed = host.clone();
+        renamed.discovery.as_mut().unwrap().detected_name = Some("Tidied Name".into());
+        renamed.discovery.as_mut().unwrap().model_name = Some("Acme LaserFast 400".into());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![renamed.clone()],
+        )))
+        .unwrap();
+
+        let events = db.change_events().unwrap().events;
+        assert_eq!(
+            events.len(),
+            before,
+            "the upgrade produced a rename backlog: {:?}",
+            events
+                .iter()
+                .map(|e| (e.change_type.as_str(), e.new_value.clone()))
+                .collect::<Vec<_>>()
+        );
+        // The tidied name was still adopted; it was only the *event* that was
+        // suppressed.
+        assert_eq!(
+            db.inventory().unwrap().rows[0]
+                .discovery
+                .as_ref()
+                .unwrap()
+                .detected_name
+                .as_deref(),
+            Some("Tidied Name")
+        );
+
+        // And suppression is once only: a genuine rename on the next scan is
+        // reported normally.
+        let mut again = renamed;
+        again.discovery.as_mut().unwrap().detected_name = Some("Genuinely Renamed".into());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![again],
+        )))
+        .unwrap();
+        assert!(
+            db.change_events()
+                .unwrap()
+                .events
+                .iter()
+                .any(|e| e.change_type.as_str() == "detected_name_changed"),
+            "the second scan should report a real rename"
+        );
+    }
+
+    #[test]
+    fn a_v182_database_upgrades_without_losing_anything_and_reopens_clean() {
+        let dir = std::env::temp_dir().join(format!("arcscan-mig183-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("upgrade-183.db");
+        let _ = std::fs::remove_file(&path);
+
+        // Build a v1.8.2-shaped database: current tables, then the two v1.8.3
+        // columns removed and the version stood back down.
+        {
+            let db = Db::open(&path).unwrap();
+            let mut host = host(
+                "10.0.0.5",
+                Some("aa:bb:cc:00:00:05"),
+                Some("printer-01"),
+                &[631],
+            );
+            host.discovery = Some(discovery_for(
+                "Studio Printer",
+                "printer",
+                "high",
+                &["_ipp._tcp"],
+            ));
+            db.save_scan(&with_full_discovery(result(
+                "10.0.0.0/24",
+                None,
+                vec![host],
+            )))
+            .unwrap();
+            let id = db.inventory().unwrap().rows[0].device_id;
+            db.set_device_name(id, Some("Front Office Printer".into()))
+                .unwrap();
+            db.set_device_notes(id, Some("Third floor".into())).unwrap();
+            db.set_device_status(id, DeviceStatus::Trusted).unwrap();
+        }
+        let (before_rows, before_evidence, before_events, before_identity) = {
+            let db = Db::open(&path).unwrap();
+            let rows = db.inventory().unwrap().rows;
+            let conn = db.conn.lock().unwrap();
+            let evidence: i64 = conn
+                .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
+                .unwrap();
+            drop(conn);
+            let events = db.change_events().unwrap().events.len();
+            let identity: Vec<(i64, String)> = rows
+                .iter()
+                .map(|r| {
+                    (
+                        r.device_id,
+                        db.device_detail(r.device_id).unwrap().device.identity_key,
+                    )
+                })
+                .collect();
+            (rows.len(), evidence, events, identity)
+        };
+
+        // Stand the schema back down to 5, the way a real v1.8.2 file is.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE devices DROP COLUMN user_device_type;
+                 ALTER TABLE device_discovery DROP COLUMN naming_rules_version;
+                 UPDATE schema_meta SET value = '5' WHERE key = 'version';",
+            )
+            .unwrap();
+        }
+
+        // Upgrade.
+        let db = Db::open(&path).unwrap();
+        let rows = db.inventory().unwrap().rows;
+        assert_eq!(rows.len(), before_rows);
+        assert_eq!(rows[0].custom_name.as_deref(), Some("Front Office Printer"));
+        assert_eq!(rows[0].status, DeviceStatus::Trusted);
+        assert!(rows[0].notes_present);
+        // Nothing was reclassified, nothing was re-keyed, and no upgrade
+        // backlog appeared in the inbox.
+        assert_eq!(rows[0].discovery.as_ref().unwrap().device_type, "printer");
+        assert_eq!(db.change_events().unwrap().events.len(), before_events);
+        for (id, key) in &before_identity {
+            assert_eq!(&db.device_detail(*id).unwrap().device.identity_key, key);
+        }
+        {
+            let conn = db.conn.lock().unwrap();
+            let evidence: i64 = conn
+                .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(evidence, before_evidence);
+        }
+        // Existing evidence starts safely: nothing arrives already stale.
+        assert_eq!(
+            rows[0].discovery.as_ref().unwrap().evidence_freshness,
+            "current"
+        );
+        // Auto, not an explicit Unknown: an upgrade makes no choices for the
+        // operator.
+        assert_eq!(rows[0].user_device_type, None);
+
+        // Reopening changes nothing further.
+        drop(db);
+        let reopened = Db::open(&path).unwrap();
+        let again = reopened.inventory().unwrap().rows;
+        assert_eq!(again.len(), before_rows);
+        assert_eq!(
+            again[0].custom_name.as_deref(),
+            Some("Front Office Printer")
+        );
+        assert_eq!(
+            reopened.change_events().unwrap().events.len(),
+            before_events
+        );
+        let version: String = {
+            let conn = reopened.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT value FROM schema_meta WHERE key = 'version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn an_override_survives_the_upgrade_path_and_a_reopen() {
+        let dir = std::env::temp_dir().join(format!("arcscan-ovr183-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("override-183.db");
+        let _ = std::fs::remove_file(&path);
+        let id = {
+            let db = Db::open(&path).unwrap();
+            let id = device_with_detected_type(&db, "media_device", "medium");
+            db.set_device_type_override(id, Some("unknown".into()))
+                .unwrap();
+            id
+        };
+        let db = Db::open(&path).unwrap();
+        assert_eq!(
+            db.device_detail(id)
+                .unwrap()
+                .device
+                .user_device_type
+                .as_deref(),
+            Some("unknown")
+        );
+        assert_eq!(
+            db.inventory().unwrap().rows[0].user_device_type.as_deref(),
+            Some("unknown")
+        );
+    }
+
+    // --- v1.8.3: the diagnostic report -------------------------------------
+
+    #[test]
+    fn the_discovery_report_is_useful_and_carries_nothing_identifying() {
+        let db = Db::open_in_memory().unwrap();
+        let mut host = host(
+            "192.168.1.42",
+            Some("aa:bb:cc:00:00:05"),
+            Some("printer-01"),
+            &[631],
+        );
+        let mut discovery = discovery_for("Studio Printer", "printer", "high", &["_ipp._tcp"]);
+        discovery.serial_number = Some("SN-DEADBEEF".into());
+        discovery.presentation_url = Some("http://192.168.1.42:8080/index.html".into());
+        host.discovery = Some(discovery);
+        db.save_scan(&with_full_discovery(result(
+            "192.168.1.0/24",
+            None,
+            vec![host],
+        )))
+        .unwrap();
+        let id = db.inventory().unwrap().rows[0].device_id;
+        db.set_device_notes(id, Some("The finance printer, do not move".into()))
+            .unwrap();
+        db.set_device_name(id, Some("Finance Printer".into()))
+            .unwrap();
+
+        let report = db.device_discovery_report(id, "1.8.3").unwrap();
+
+        // Useful.
+        for expected in [
+            "ArcScan discovery report",
+            "Version: 1.8.3",
+            "Device type: Printer",
+            "Type source: Automatic",
+            "Studio Printer",
+            "_ipp._tcp",
+        ] {
+            assert!(report.contains(expected), "missing {expected:?}:\n{report}");
+        }
+
+        // And carrying nothing that identifies the unit or its owner.
+        for forbidden in [
+            "SN-DEADBEEF",
+            "aa:bb:cc:00:00:05",
+            "AA:BB:CC:00:00:05",
+            "192.168.1.42",
+            "index.html",
+            "do not move",
+            "Finance Printer",
+        ] {
+            assert!(
+                !report.contains(forbidden),
+                "the report leaked {forbidden:?}:\n{report}"
+            );
+        }
+        assert!(report.contains("192.168.x.x"));
+
+        // Deterministic and bounded.
+        assert_eq!(report, db.device_discovery_report(id, "1.8.3").unwrap());
+        assert!(report.chars().count() <= crate::discovery::diagnostics::MAX_REPORT_CHARS + 32);
+    }
+
+    #[test]
+    fn the_discovery_report_names_an_override_and_keeps_the_detected_answer() {
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "media_device", "medium");
+        db.set_device_type_override(id, Some("television".into()))
+            .unwrap();
+        let report = db.device_discovery_report(id, "1.8.3").unwrap();
+        assert!(report.contains("Device type: Television"));
+        assert!(report.contains("Type source: Set by you"));
+        assert!(report.contains("ArcScan detected: Media device"));
+    }
+
+    // --- v1.8.3: discovery quality in History ------------------------------
+
+    #[test]
+    fn every_discovery_quality_state_reaches_the_history_row() {
+        let cases: Vec<(&str, Option<crate::discovery::DiscoveryReport>, &str)> = vec![
+            (
+                "complete",
+                Some(crate::discovery::DiscoveryReport {
+                    mdns_attempted: true,
+                    ssdp_attempted: true,
+                    mdns_responses: 12,
+                    ssdp_responses: 8,
+                    ..Default::default()
+                }),
+                "complete",
+            ),
+            (
+                "a socket that would not open",
+                Some(crate::discovery::DiscoveryReport {
+                    mdns_attempted: true,
+                    ssdp_attempted: true,
+                    mdns_socket_failed: true,
+                    ..Default::default()
+                }),
+                "limited",
+            ),
+            (
+                "a remote or switched-off scan",
+                Some(crate::discovery::DiscoveryReport::skipped("Remote subnet")),
+                "skipped",
+            ),
+            ("a scan with no discovery record at all", None, "skipped"),
+        ];
+        for (what, report, expected) in cases {
+            let db = Db::open_in_memory().unwrap();
+            let mut scan = result(
+                "10.0.0.0/24",
+                None,
+                vec![host("10.0.0.5", None, None, &[80])],
+            );
+            scan.discovery = report;
+            db.save_scan(&scan).unwrap();
+            let summary = &db.list_scans().unwrap()[0];
+            assert_eq!(summary.discovery_quality, expected, "{what}");
+            if expected == "complete" {
+                assert_eq!(summary.discovery_quality_reason, None, "{what}");
+            } else {
+                assert!(summary.discovery_quality_reason.is_some(), "{what}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stopped_scan_reads_as_interrupted_in_history() {
+        let db = Db::open_in_memory().unwrap();
+        let mut scan = result(
+            "10.0.0.0/24",
+            None,
+            vec![host("10.0.0.5", None, None, &[80])],
+        );
+        scan.discovery = Some(crate::discovery::DiscoveryReport {
+            mdns_attempted: true,
+            ssdp_attempted: true,
+            interrupted: true,
+            ..Default::default()
+        });
+        db.save_scan(&scan).unwrap();
+        let summary = &db.list_scans().unwrap()[0];
+        assert_eq!(summary.discovery_quality, "interrupted");
+        assert_eq!(
+            summary.discovery_quality_reason.as_deref(),
+            Some("Scan stopped")
+        );
+        // ArcScan never claims a firewall, because it cannot observe one.
+        assert!(!summary
+            .discovery_quality_reason
+            .as_deref()
+            .unwrap()
+            .to_lowercase()
+            .contains("firewall"));
     }
 
     #[test]

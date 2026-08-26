@@ -153,7 +153,13 @@ const COMPUTER_MAKERS: &[&str] = &[
     "raspberry",
 ];
 const CONSOLE_MAKERS: &[&str] = &["nintendo", "sony interactive", "microsoft"];
-const SPEAKER_MAKERS: &[&str] = &["sonos", "bose", "denon", "yamaha", "marantz", "harman"];
+/// Makers of casting sticks, streaming boxes and set-top players. Distinct from
+/// [`TV_MAKERS`], because a Chromecast is not a television and calling it one
+/// would put it in the wrong filter.
+const STREAMER_MAKERS: &[&str] = &["roku", "google", "amazon", "nvidia", "apple"];
+const SPEAKER_MAKERS: &[&str] = &[
+    "sonos", "bose", "denon", "yamaha", "marantz", "harman", "sonance", "klipsch",
+];
 const PHONE_MAKERS: &[&str] = &[
     "apple", "samsung", "google", "oneplus", "xiaomi", "motorola",
 ];
@@ -219,13 +225,22 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     };
 
     // ---- Router -----------------------------------------------------------
-    if has_upnp("internetgatewaydevice") {
+    //
+    // v1.8.3: `WANDevice` and `WANConnectionDevice` are the embedded devices a
+    // gateway description advertises alongside `InternetGatewayDevice`, and a
+    // response that carried one without the other used to type as nothing.
+    let gateway_declared = has_upnp("internetgatewaydevice")
+        || has_upnp("wandevice")
+        || has_upnp("wanconnectiondevice")
+        || has_service("wanipconnection")
+        || has_service("layer3forwarding");
+    if gateway_declared {
         if facts.is_gateway {
             claim(
                 DeviceType::Router,
                 Confidence::High,
                 vec![
-                    "SSDP InternetGatewayDevice".into(),
+                    gateway_evidence_label(&upnp_types, &services),
                     "This network's default gateway".into(),
                 ],
             );
@@ -233,7 +248,7 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             claim(
                 DeviceType::Router,
                 Confidence::Medium,
-                vec!["SSDP InternetGatewayDevice".into()],
+                vec![gateway_evidence_label(&upnp_types, &services)],
             );
         }
     } else if facts.is_gateway && made_by(facts.vendor, NETWORK_MAKERS) {
@@ -278,6 +293,15 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             Confidence::Medium,
             vec![printer_service_label(&services)],
         );
+    } else if ports.contains(&9100) && ports.contains(&631) {
+        // Two printing ports and nothing else is still only two ports, but a
+        // device listening on both raw JetDirect *and* IPP is doing so on
+        // purpose. Medium, never High: no protocol declared anything.
+        claim(
+            DeviceType::Printer,
+            Confidence::Medium,
+            vec!["TCP 631 and 9100 (IPP and raw printing) open".into()],
+        );
     } else if ports.contains(&9100) {
         claim(
             DeviceType::Printer,
@@ -314,8 +338,34 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         );
     }
 
+    // A television names itself in its model far more reliably than it declares
+    // itself over a protocol, so a display-bearing model alongside a casting or
+    // AirPlay service is worth more than either alone. Still not High without a
+    // protocol-level declaration: a model string is a string.
+    let display_model = model_says("tv")
+        || model_says("bravia")
+        || model_says("aquos")
+        || model_says("oled")
+        || model_says("qled")
+        || model_says("smart tv")
+        || model_says("webos")
+        || model_says("tizen");
+
     let cast_service = has_service("_googlecast._tcp");
     let cast_model = model_says("chromecast") || model_says("android tv") || model_says("shield");
+    if cast_service && display_model && !cast_model {
+        // A television with Cast built in, rather than a stick plugged into
+        // one. `cast_model` excluded because a Chromecast advertising
+        // "Chromecast Ultra" is the stick, whatever it is plugged into.
+        claim(
+            DeviceType::Television,
+            Confidence::Medium,
+            vec![
+                "mDNS _googlecast._tcp".into(),
+                "The model describes a television".into(),
+            ],
+        );
+    }
     if cast_service && cast_model {
         claim(
             DeviceType::MediaDevice,
@@ -332,15 +382,83 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             vec!["mDNS _googlecast._tcp".into()],
         );
     }
-    if has_service("_airplay._tcp") && !has_service("_workstation._tcp") {
+
+    // AirPlay. A receiver that also serves AirPlay *audio* and names an Apple
+    // TV is one of the most common devices on a home network and used to type
+    // as a bare medium-confidence media device.
+    let airplay = has_service("_airplay._tcp");
+    let airplay_audio = has_service("_raop._tcp");
+    let appletv_model = model_says("appletv") || model_says("apple tv");
+    if airplay && !has_service("_workstation._tcp") {
+        if appletv_model {
+            claim(
+                DeviceType::MediaDevice,
+                Confidence::High,
+                vec![
+                    "mDNS _airplay._tcp".into(),
+                    "The model names an Apple TV".into(),
+                ],
+            );
+        } else if display_model {
+            claim(
+                DeviceType::Television,
+                Confidence::Medium,
+                vec![
+                    "mDNS _airplay._tcp".into(),
+                    "The model describes a television".into(),
+                ],
+            );
+        } else if airplay_audio && made_by(facts.vendor, SPEAKER_MAKERS) {
+            // Handled by the speaker rules below; nothing to claim here, and
+            // claiming a media device would put a speaker in the wrong filter.
+        } else {
+            claim(
+                DeviceType::MediaDevice,
+                Confidence::Medium,
+                vec!["mDNS _airplay._tcp".into()],
+            );
+        }
+    }
+
+    // Roku speaks its own ECP service over SSDP rather than a standard device
+    // type, so the model and the maker are what there is to go on.
+    let roku = model_says("roku") || has_service("roku:ecp") || has_upnp("roku");
+    if roku && display_model {
+        claim(
+            DeviceType::Television,
+            Confidence::Medium,
+            vec![
+                "The model names a Roku".into(),
+                "The model describes a television".into(),
+            ],
+        );
+    } else if roku {
         claim(
             DeviceType::MediaDevice,
             Confidence::Medium,
-            vec!["mDNS _airplay._tcp".into()],
+            vec!["The model names a Roku streaming device".into()],
+        );
+    } else if made_by(facts.vendor, STREAMER_MAKERS)
+        && (has_upnp("mediarenderer") || cast_service || airplay)
+        && !display_model
+    {
+        claim(
+            DeviceType::MediaDevice,
+            Confidence::Low,
+            vec![
+                format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+                "A media-playback service, with no display evidence".into(),
+            ],
         );
     }
 
     // ---- Speaker ----------------------------------------------------------
+    let speaker_model = model_says("speaker")
+        || model_says("soundbar")
+        || model_says("homepod")
+        || model_says("sonos")
+        || model_says("play:")
+        || model_says("echo");
     if has_service("_sonos._tcp")
         || (made_by(facts.vendor, SPEAKER_MAKERS) && has_service("_raop._tcp"))
     {
@@ -352,7 +470,22 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
                 format!("{} manufacturer", facts.vendor.unwrap_or("Known speaker")),
             ],
         );
-    } else if has_service("_raop._tcp") || has_service("_spotify-connect._tcp") {
+    } else if speaker_model && (has_service("_raop._tcp") || has_service("_spotify-connect._tcp")) {
+        // v1.8.3: the model names a speaker and the services are audio-only.
+        claim(
+            DeviceType::Speaker,
+            Confidence::High,
+            vec![
+                "An audio-streaming service".into(),
+                "The model names a speaker".into(),
+            ],
+        );
+    } else if (has_service("_raop._tcp") || has_service("_spotify-connect._tcp"))
+        && !display_model
+        && !appletv_model
+    {
+        // Audio without a display: a television that also accepts AirPlay audio
+        // is not a speaker, and used to be claimed as one.
         claim(
             DeviceType::Speaker,
             Confidence::Medium,
@@ -361,6 +494,11 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Camera -----------------------------------------------------------
+    let camera_model = model_says("camera")
+        || model_says("ipcam")
+        || model_says("doorbell")
+        || model_says("nvr")
+        || model_says("cam ");
     let camera_declared = has_upnp("camera") || has_upnp("digitalsecuritycamera");
     if camera_declared && made_by(facts.vendor, CAMERA_MAKERS) {
         claim(
@@ -386,23 +524,75 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
                 "TCP 554 (RTSP) open".into(),
             ],
         );
-    } else if ports.contains(&554) {
+    } else if camera_model && (ports.contains(&554) || has_service("_rtsp._tcp")) {
+        // v1.8.3: the model names a camera and it is serving video. Medium and
+        // not High, deliberately: no protocol declared a camera, and RTSP alone
+        // must never reach High whatever else agrees with it.
+        claim(
+            DeviceType::Camera,
+            Confidence::Medium,
+            vec![
+                "The model names a camera".into(),
+                "An RTSP video stream".into(),
+            ],
+        );
+    } else if ports.contains(&554) || has_service("_rtsp._tcp") {
         claim(
             DeviceType::Camera,
             Confidence::Low,
-            vec!["TCP 554 (RTSP) open, with nothing else to confirm it".into()],
+            vec!["An RTSP video stream, with nothing else to confirm it".into()],
         );
     }
 
     // ---- Storage ----------------------------------------------------------
     let smb = has_service("_smb._tcp") || ports.contains(&445);
-    if smb && made_by(facts.vendor, NAS_MAKERS) {
+    // The web administration interface every NAS ships: Synology on 5000/5001,
+    // QNAP on 8080/443, most others on 80 alongside one of them.
+    let nas_admin = ports.contains(&5000)
+        || ports.contains(&5001)
+        || ports.contains(&8080)
+        || has_service("_http._tcp")
+        || has_service("_https._tcp");
+    let nas_model = model_says("diskstation")
+        || model_says("synology")
+        || model_says("qnap")
+        || model_says("nas")
+        || model_says("terramaster")
+        || model_says("asustor");
+    let nas_maker = made_by(facts.vendor, NAS_MAKERS);
+
+    if smb && nas_maker && (nas_admin || has_upnp("mediaserver") || nas_model) {
+        // v1.8.3: three independent facts — file sharing, a storage maker, and
+        // either the box's own web interface or its media server — is as close
+        // to a declaration as a NAS ever gets, so it earns High.
+        let mut evidence = vec![
+            "File sharing over SMB".into(),
+            format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+        ];
+        if has_upnp("mediaserver") {
+            evidence.push("SSDP MediaServer".into());
+        } else if nas_model {
+            evidence.push("The model names a storage appliance".into());
+        } else {
+            evidence.push("A web administration interface".into());
+        }
+        claim(DeviceType::Nas, Confidence::High, evidence);
+    } else if smb && nas_maker {
         claim(
             DeviceType::Nas,
             Confidence::Medium,
             vec![
                 "File sharing over SMB".into(),
                 format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+            ],
+        );
+    } else if smb && nas_model {
+        claim(
+            DeviceType::Nas,
+            Confidence::Medium,
+            vec![
+                "File sharing over SMB".into(),
+                "The model names a storage appliance".into(),
             ],
         );
     } else if has_upnp("mediaserver") && smb {
@@ -420,13 +610,27 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Smart home -------------------------------------------------------
-    if has_service("_hap._tcp") || has_service("_homekit._tcp") {
+    let homekit = has_service("_hap._tcp") || has_service("_homekit._tcp");
+    let matter =
+        has_service("_matter._tcp") || has_service("_matterc._udp") || has_service("_matterd._udp");
+    if homekit && matter {
+        // v1.8.3: two independent smart-home protocols, each of which exists
+        // for the sole purpose of saying "I am a smart-home accessory".
+        claim(
+            DeviceType::SmartHome,
+            Confidence::High,
+            vec![
+                "mDNS HomeKit accessory protocol".into(),
+                "mDNS Matter commissioning service".into(),
+            ],
+        );
+    } else if homekit {
         claim(
             DeviceType::SmartHome,
             Confidence::Medium,
             vec!["mDNS HomeKit accessory protocol".into()],
         );
-    } else if has_service("_matter._tcp") || has_service("_matterc._udp") {
+    } else if matter {
         claim(
             DeviceType::SmartHome,
             Confidence::Medium,
@@ -466,6 +670,23 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         } else {
             claim(DeviceType::Computer, Confidence::Medium, evidence);
         }
+    } else if has_service("_smbdirect._tcp") || has_service("_rdp._tcp") {
+        claim(
+            DeviceType::Computer,
+            Confidence::Medium,
+            vec!["An mDNS service only a computer advertises".into()],
+        );
+    } else if has_service("_rfb._tcp") && (has_service("_ssh._tcp") || ports.contains(&22)) {
+        // Screen sharing alongside a shell: a desktop operating system, not an
+        // appliance with a web interface.
+        claim(
+            DeviceType::Computer,
+            Confidence::Medium,
+            vec![
+                "mDNS screen sharing".into(),
+                "An interactive service (SSH)".into(),
+            ],
+        );
     } else if ports.contains(&3389) {
         claim(
             DeviceType::Computer,
@@ -510,7 +731,34 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     // ---- Network equipment ------------------------------------------------
-    if !facts.is_gateway
+    //
+    // Router wins wherever router evidence exists: the gateway rule above
+    // already claimed it at High or Medium, and `finish` prefers the stronger
+    // claim, so an access point that is also this network's gateway reads as a
+    // router rather than as an access point. That is the right way round — the
+    // thing a person needs to know about their gateway is that it is their
+    // gateway.
+    let ap_model = model_says("unifi")
+        || model_says("access point")
+        || model_says("nanostation")
+        || model_says("switch")
+        || model_says("poe")
+        || model_says("uap")
+        || model_says("usw")
+        || model_says("cloud key")
+        || model_says("controller");
+    if !facts.is_gateway && made_by(facts.vendor, NETWORK_MAKERS) && ap_model {
+        // v1.8.3: a network maker *and* a model naming an access point, switch
+        // or controller. Two independent facts, neither a declaration.
+        claim(
+            DeviceType::NetworkEquipment,
+            Confidence::Medium,
+            vec![
+                format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+                "The model names network equipment".into(),
+            ],
+        );
+    } else if !facts.is_gateway
         && made_by(facts.vendor, NETWORK_MAKERS)
         && facts.os_guess == Some("Network device")
     {
@@ -525,6 +773,32 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     }
 
     finish(claims)
+}
+
+/// The gateway declaration that made the router call, named exactly.
+///
+/// Named rather than summarised because "SSDP InternetGatewayDevice" and "SSDP
+/// WANDevice" are different observations, and the drawer's whole job is to say
+/// which one ArcScan actually saw.
+fn gateway_evidence_label(upnp_types: &BTreeSet<String>, services: &BTreeSet<String>) -> String {
+    for (needle, label) in [
+        ("internetgatewaydevice", "SSDP InternetGatewayDevice"),
+        ("wanconnectiondevice", "SSDP WANConnectionDevice"),
+        ("wandevice", "SSDP WANDevice"),
+    ] {
+        if upnp_types.iter().any(|t| t.contains(needle)) {
+            return label.to_string();
+        }
+    }
+    for (needle, label) in [
+        ("wanipconnection", "SSDP WANIPConnection"),
+        ("layer3forwarding", "SSDP Layer3Forwarding"),
+    ] {
+        if services.iter().any(|s| s.contains(needle)) {
+            return label.to_string();
+        }
+    }
+    "An advertised internet-gateway service".into()
 }
 
 /// The mDNS or SSDP service that made the printer call, named exactly.
@@ -999,6 +1273,205 @@ mod tests {
         types.push(c.device_type);
         let unique: BTreeSet<DeviceType> = types.iter().copied().collect();
         assert_eq!(unique.len(), types.len());
+    }
+
+    // --- v1.8.3 classification tuning ------------------------------------
+    //
+    // Every rule below rests on evidence v1.8.2 already collected. Nothing here
+    // needed a new protocol, a new probe or an external lookup.
+
+    #[test]
+    fn a_gateway_that_only_advertised_a_wan_device_is_still_a_router() {
+        let result = Fixture::new().upnp("WANDevice").gateway().run();
+        assert_eq!(result.device_type, DeviceType::Router);
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.evidence.iter().any(|e| e.contains("WANDevice")));
+
+        let connection = Fixture::new().upnp("WANConnectionDevice").run();
+        assert_eq!(connection.device_type, DeviceType::Router);
+        assert_eq!(connection.confidence, Confidence::Medium);
+        assert!(connection
+            .evidence
+            .iter()
+            .any(|e| e.contains("WANConnectionDevice")));
+    }
+
+    #[test]
+    fn an_apple_tv_advertising_airplay_is_a_media_device_at_high() {
+        let result = Fixture::new()
+            .service("_airplay._tcp")
+            .service("_raop._tcp")
+            .model("AppleTV6,2")
+            .run();
+        assert_eq!(result.device_type, DeviceType::MediaDevice);
+        assert_eq!(result.confidence, Confidence::High);
+        // And it is not filed as a speaker just because it accepts AirPlay
+        // audio, which is what v1.8.2 would have done.
+        assert!(result
+            .conflicts
+            .iter()
+            .all(|c| c.device_type != DeviceType::Speaker));
+    }
+
+    #[test]
+    fn a_television_that_accepts_airplay_is_a_television_not_a_speaker() {
+        let result = Fixture::new()
+            .service("_airplay._tcp")
+            .service("_raop._tcp")
+            .model("OLED65C1 Smart TV")
+            .vendor("LG Electronics")
+            .run();
+        assert_eq!(result.device_type, DeviceType::Television);
+        assert!(result
+            .conflicts
+            .iter()
+            .all(|c| c.device_type != DeviceType::Speaker));
+    }
+
+    #[test]
+    fn a_television_with_cast_built_in_is_a_television_and_a_stick_is_not() {
+        let television = Fixture::new()
+            .service("_googlecast._tcp")
+            .model("Bravia 4K TV")
+            .vendor("Sony")
+            .run();
+        assert_eq!(television.device_type, DeviceType::Television);
+
+        let stick = Fixture::new()
+            .service("_googlecast._tcp")
+            .model("Chromecast Ultra")
+            .run();
+        assert_eq!(stick.device_type, DeviceType::MediaDevice);
+        assert_eq!(stick.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn a_roku_is_a_media_device_and_a_roku_television_is_a_television() {
+        let stick = Fixture::new().model("Roku Express").run();
+        assert_eq!(stick.device_type, DeviceType::MediaDevice);
+
+        let set = Fixture::new().model("TCL Roku TV").vendor("TCL").run();
+        assert_eq!(set.device_type, DeviceType::Television);
+    }
+
+    #[test]
+    fn a_named_speaker_streaming_audio_is_a_speaker_at_high() {
+        let result = Fixture::new()
+            .service("_raop._tcp")
+            .model("HomePod mini")
+            .run();
+        assert_eq!(result.device_type, DeviceType::Speaker);
+        assert_eq!(result.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn a_storage_appliance_with_its_own_web_interface_is_a_nas_at_high() {
+        let result = Fixture::new()
+            .service("_smb._tcp")
+            .model("DiskStation DS923+")
+            .vendor("Synology")
+            .ports(&[445, 5000, 5001])
+            .run();
+        assert_eq!(result.device_type, DeviceType::Nas);
+        assert_eq!(result.confidence, Confidence::High);
+
+        // A storage maker and SMB alone is still only Medium, exactly as in
+        // v1.8.2: two facts, not three.
+        let plain = Fixture::new().service("_smb._tcp").vendor("Synology").run();
+        assert_eq!(plain.device_type, DeviceType::Nas);
+        assert_eq!(plain.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn a_camera_model_serving_rtsp_is_medium_and_rtsp_alone_is_never_high() {
+        let named = Fixture::new().model("IPCam Pro 4MP").ports(&[554]).run();
+        assert_eq!(named.device_type, DeviceType::Camera);
+        assert_eq!(named.confidence, Confidence::Medium);
+
+        // The rule that must not move: RTSP on its own is Low, whatever else
+        // the release changed.
+        let bare = Fixture::new().ports(&[554]).run();
+        assert_eq!(bare.device_type, DeviceType::Camera);
+        assert_eq!(bare.confidence, Confidence::Low);
+
+        let service_only = Fixture::new().service("_rtsp._tcp").run();
+        assert_eq!(service_only.device_type, DeviceType::Camera);
+        assert_eq!(service_only.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn an_access_point_is_network_equipment_and_a_gateway_is_still_a_router() {
+        let access_point = Fixture::new()
+            .model("UniFi U6 Access Point")
+            .vendor("Ubiquiti Inc")
+            .run();
+        assert_eq!(access_point.device_type, DeviceType::NetworkEquipment);
+        assert_eq!(access_point.confidence, Confidence::Medium);
+
+        // The same device, when it is this network's gateway, reads as a
+        // router: router evidence is stronger and more useful.
+        let gateway = Fixture::new()
+            .model("UniFi Dream Machine")
+            .vendor("Ubiquiti Inc")
+            .upnp("InternetGatewayDevice")
+            .gateway()
+            .run();
+        assert_eq!(gateway.device_type, DeviceType::Router);
+        assert_eq!(gateway.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn two_smart_home_protocols_together_reach_high() {
+        let both = Fixture::new()
+            .service("_hap._tcp")
+            .service("_matter._tcp")
+            .run();
+        assert_eq!(both.device_type, DeviceType::SmartHome);
+        assert_eq!(both.confidence, Confidence::High);
+
+        let one = Fixture::new().service("_hap._tcp").run();
+        assert_eq!(one.device_type, DeviceType::SmartHome);
+        assert_eq!(one.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn a_desktop_sharing_its_screen_and_a_shell_is_a_computer() {
+        let result = Fixture::new()
+            .service("_rfb._tcp")
+            .service("_ssh._tcp")
+            .run();
+        assert_eq!(result.device_type, DeviceType::Computer);
+        assert_eq!(result.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn both_printing_ports_together_are_medium_and_one_alone_is_low() {
+        let both = Fixture::new().ports(&[631, 9100]).run();
+        assert_eq!(both.device_type, DeviceType::Printer);
+        assert_eq!(both.confidence, Confidence::Medium);
+
+        let one = Fixture::new().ports(&[9100]).run();
+        assert_eq!(one.device_type, DeviceType::Printer);
+        assert_eq!(one.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn the_new_rules_still_prefer_unknown_to_a_guess() {
+        // Each of these is one weak fact that no v1.8.3 rule may promote.
+        for fixture in [
+            Fixture::new().service("_http._tcp"),
+            Fixture::new().model("Model 3000"),
+            Fixture::new().vendor("Example Corp"),
+            Fixture::new().ports(&[80, 443]),
+        ] {
+            let result = fixture.run();
+            assert_eq!(
+                result.device_type,
+                DeviceType::Unknown,
+                "one weak fact produced {:?}",
+                result.device_type
+            );
+        }
     }
 
     #[test]

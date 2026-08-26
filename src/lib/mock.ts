@@ -44,8 +44,18 @@ import type {
 } from "../types";
 import type { ScanListeners } from "./api";
 import { DEFAULT_PORTS } from "./profiles";
+import { DEVICE_TYPE_LABEL } from "./discovery";
+import { reportFromDetail } from "./diagnostics";
+import { resolveType } from "./effectiveType";
 import { parsePorts, serviceWithPort } from "./format";
 import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
+import { APP_VERSION } from "../version";
+
+/**
+ * The type vocabulary, taken from the label table so the demo cannot accept a
+ * type the real backend would refuse.
+ */
+const DEVICE_TYPE_IDS = Object.keys(DEVICE_TYPE_LABEL);
 
 /** The network the demo's live scans run against. */
 const DEMO_CIDR = "192.168.1.0/24";
@@ -106,6 +116,12 @@ interface DemoDevice {
   status?: DeviceStatus;
   notes?: string;
   /**
+   * A device-type correction the demo ships already made, so the Auto and the
+   * user-set states are both visible without anybody having to click. `null`
+   * and absent both mean Auto.
+   */
+  user_device_type?: string;
+  /**
    * What local discovery would have heard from this device.
    *
    * Absent means the device advertises nothing — which is the honest case for
@@ -133,6 +149,20 @@ interface DemoDiscovery {
   alternate_names?: string[];
   ipv6_addresses?: string[];
   presentation_url?: string;
+  /**
+   * Services this device advertised once and has since stopped advertising,
+   * with how many qualifying discovery scans have missed each.
+   *
+   * Kept apart from `services`, which is what it advertises *now*: the whole
+   * point of the aging rules is that the two are different questions, and a
+   * demo that could not show them apart would not be showing the feature.
+   */
+  past_services?: Array<{ service: string; misses: number }>;
+  /**
+   * Misses against the claims that are still current, for the aging case: 0 is
+   * current, 1 or 2 is getting old, 3 or more is stale.
+   */
+  evidence_misses?: number;
 }
 
 /**
@@ -359,17 +389,17 @@ const HOME_DEVICES: DemoDevice[] = [
     ttl: 64,
     icmp: 9.8,
     name: "Living Room TV",
+    // Shipped already corrected, so the user-set state is on screen without
+    // anyone having to click: ArcScan reads this one as a media device, and the
+    // operator has said it is a television.
+    user_device_type: "television",
     discovery: {
       detected_name: "Living Room",
       name_source: "mdns",
-      device_type: "television",
-      type_confidence: "high",
-      type_evidence: [
-        "SSDP MediaRenderer",
-        "Samsung Electronics manufacturer",
-        "The model describes a television",
-      ],
-      type_conflicts: ["Media device · medium"],
+      device_type: "media_device",
+      type_confidence: "medium",
+      type_evidence: ["SSDP MediaRenderer"],
+      type_conflicts: ["Television · medium"],
       manufacturer: "Samsung Electronics",
       model_name: "QE55 Smart TV",
       mdns_hostname: "livingroom-tv",
@@ -414,6 +444,9 @@ const HOME_DEVICES: DemoDevice[] = [
     icmp: 7.1,
     name: "Driveway Camera",
     status: "ignored",
+    // An explicit Unknown, which is a different answer from Auto: the operator
+    // looked, disagreed with "Camera", and could not say what it is either.
+    user_device_type: "unknown",
     notes: "Firmware reshuffles its ports on every reboot, so its changes are not worth reviewing.",
     discovery: {
       detected_name: "Driveway",
@@ -450,6 +483,62 @@ const HOME_DEVICES: DemoDevice[] = [
       ssdp_friendly_name: "PlayStation 5",
       services: ["MediaRenderer"],
       sources: ["ssdp"],
+    },
+  },
+  {
+    // Auto, medium confidence, and evidence that has started to go quiet: one
+    // qualifying scan has missed it, so the drawer says "getting old" without
+    // yet disbelieving anything.
+    ip: "192.168.1.77",
+    mac: "44:07:0B:9E:51:C2",
+    vendor: "Roku, Inc.",
+    hostname: null,
+    ports: [8060],
+    ttl: 64,
+    icmp: 11.3,
+    discovery: {
+      detected_name: "Bedroom Player",
+      name_source: "mdns",
+      device_type: "media_device",
+      type_confidence: "medium",
+      type_evidence: ["The model names a Roku streaming device"],
+      manufacturer: "Roku, Inc.",
+      model_name: "Roku Express",
+      services: ["_airplay._tcp"],
+      sources: ["mdns"],
+      evidence_misses: 1,
+      past_services: [{ service: "_googlecast._tcp", misses: 1 }],
+    },
+  },
+  {
+    // Stale: three qualifying scans in a row have missed everything this
+    // device once advertised. It keeps its type and its dates, and its
+    // confidence is reduced from High to Medium because nothing has confirmed
+    // it in three scans that could have.
+    ip: "192.168.1.81",
+    mac: "B8:27:EB:44:1F:0A",
+    vendor: "Raspberry Pi Foundation",
+    hostname: "media-shelf",
+    ports: [80, 8096],
+    ttl: 64,
+    icmp: 3.4,
+    name: "Shelf Media Box",
+    discovery: {
+      detected_name: "Shelf Media",
+      name_source: "mdns",
+      device_type: "media_device",
+      type_confidence: "high",
+      type_evidence: ["SSDP MediaServer", "mDNS AirPlay"],
+      manufacturer: "Raspberry Pi Foundation",
+      model_name: "Media Shelf",
+      mdns_hostname: "media-shelf",
+      services: [],
+      sources: ["mdns", "ssdp"],
+      evidence_misses: 4,
+      past_services: [
+        { service: "MediaServer", misses: 4 },
+        { service: "_airplay._tcp", misses: 3 },
+      ],
     },
   },
   {
@@ -692,6 +781,9 @@ function upsertDevice(
     status: seed?.status ?? "unclassified",
     notes: seed?.notes ?? null,
     observation_count: 1,
+    // Two of the demo devices ship already corrected, so the Auto and the
+    // user-set cases are both on screen without anybody having to click.
+    user_device_type: seed?.user_device_type ?? null,
   });
   if (macKey) deviceByMac.set(macKey, id);
   return { id, existed: false };
@@ -984,7 +1076,38 @@ function recordScan(options: {
     // cancelled one, exactly as the backend's rule would.
     discovery_mode:
       cancelled || discoveryScenario() === "none" ? "none" : "full",
-    discovery_summary: null,
+    // The quality states History shows, derived here the way the backend
+    // derives them: stopped beats limited, and a pass that never ran is
+    // skipped. The malformed scenario is the Limited case, because a
+    // description ArcScan refused is exactly what "ran but could not do all of
+    // it" means.
+    discovery_quality: cancelled
+      ? "interrupted"
+      : discoveryScenario() === "none"
+        ? "skipped"
+        : discoveryScenario() === "malformed"
+          ? "limited"
+          : "complete",
+    discovery_quality_reason: cancelled
+      ? "Scan stopped"
+      : discoveryScenario() === "none"
+        ? "Local discovery is switched off"
+        : discoveryScenario() === "malformed"
+          ? "Some descriptions refused"
+          : null,
+    discovery_summary: JSON.stringify({
+      mdns_attempted: !cancelled && discoveryScenario() !== "none",
+      ssdp_attempted: !cancelled && discoveryScenario() !== "none",
+      mdns_responses: hosts.filter((h) => h.discovery).length * 3,
+      ssdp_responses: hosts.filter((h) => h.discovery).length * 2,
+      descriptions_fetched: hosts.filter((h) => h.discovery?.sources.includes("ssdp")).length,
+      descriptions_rejected: discoveryScenario() === "malformed" ? 2 : 0,
+      description_notes: [],
+      devices_enriched: hosts.filter((h) => h.discovery).length,
+      duration_ms: 2_400,
+      skip_reason: null,
+      interrupted: cancelled,
+    }),
     hosts,
   };
   scans.push(scan);
@@ -1196,16 +1319,47 @@ function discoveryOf(deviceId: number): HostDiscovery | null {
 function inventoryDiscoveryOf(deviceId: number): InventoryDiscovery | null {
   const d = discoveryOf(deviceId);
   if (!d) return null;
+  const state = freshnessFor(deviceId);
   return {
     detected_name: d.detected_name,
     device_type: d.device_type ?? "unknown",
-    type_confidence: d.type_confidence ?? "unknown",
+    // Reduced where every claim behind it has gone stale, by the same rule the
+    // backend applies. See `cap_for_freshness` in Rust.
+    type_confidence: capForFreshness(d.type_confidence ?? "unknown", state),
     manufacturer: d.manufacturer,
     model_name: d.model_name,
     services: d.services,
     sources: d.sources,
     last_discovered_at: d.last_discovered_at,
+    evidence_freshness: state,
   };
+}
+
+/** Mirrors `discovery::effective::freshness`. */
+function freshnessOf(misses: number): "current" | "aging" | "stale" {
+  if (misses <= 0) return "current";
+  return misses < 3 ? "aging" : "stale";
+}
+
+/** Mirrors `discovery::effective::cap_for_freshness`. */
+function capForFreshness(confidence: string, state: string): string {
+  return state === "stale" && confidence === "high" ? "medium" : confidence;
+}
+
+/** How current the freshest claim behind a device's record is. */
+function freshnessFor(deviceId: number): "current" | "aging" | "stale" {
+  const seed = seedFor(deviceId);
+  return freshnessOf(seed?.evidence_misses ?? 0);
+}
+
+/** The demo seed a device came from, for the fixture-only freshness fields. */
+function seedFor(deviceId: number): DemoDiscovery | undefined {
+  const device = devices.get(deviceId);
+  if (!device) return undefined;
+  const seed = [...HOME_DEVICES, ...OFFICE_DEVICES].find(
+    (d) => (d.mac && d.mac === device.mac) || d.ip === device.last_ip,
+  );
+  return seed ? scenarioDiscovery(seed) : undefined;
 }
 
 /**
@@ -1218,15 +1372,47 @@ function deviceDiscoveryOf(deviceId: number): DeviceDiscovery | null {
   if (!d) return null;
   const seen = observationsFor(deviceId);
   const firstSeen = seen[seen.length - 1]?.host.last_seen ?? d.last_discovered_at;
+  const seed = seedFor(deviceId);
+  // Claims the device still makes carry the record's own miss count; claims it
+  // has stopped making carry their own, which is how the drawer can show one
+  // device with both current and stale evidence.
+  const currentMisses = seed?.evidence_misses ?? 0;
   const evidence = [
     ...(d.detected_name
-      ? [{ kind: "display_name", value: d.detected_name, confidence: "high" }]
+      ? [
+          {
+            kind: "display_name",
+            value: d.detected_name,
+            confidence: "high",
+            misses: currentMisses,
+          },
+        ]
       : []),
     ...(d.manufacturer
-      ? [{ kind: "manufacturer", value: d.manufacturer, confidence: "high" }]
+      ? [
+          {
+            kind: "manufacturer",
+            value: d.manufacturer,
+            confidence: "high",
+            misses: currentMisses,
+          },
+        ]
       : []),
-    ...(d.model_name ? [{ kind: "model", value: d.model_name, confidence: "high" }] : []),
-    ...d.services.map((service) => ({ kind: "service", value: service, confidence: "high" })),
+    ...(d.model_name
+      ? [{ kind: "model", value: d.model_name, confidence: "high", misses: currentMisses }]
+      : []),
+    ...d.services.map((service) => ({
+      kind: "service",
+      value: service,
+      confidence: "high",
+      misses: 0,
+    })),
+    ...(seed?.past_services ?? []).map((past) => ({
+      kind: "service",
+      value: past.service,
+      confidence: "high",
+      misses: past.misses,
+    })),
   ].map((row) => ({
     source: d.sources[0] ?? "mdns",
     kind: row.kind,
@@ -1235,12 +1421,14 @@ function deviceDiscoveryOf(deviceId: number): DeviceDiscovery | null {
     confidence: row.confidence,
     first_seen: firstSeen ?? "",
     last_seen: d.last_discovered_at ?? "",
+    freshness: freshnessOf(row.misses),
+    misses: row.misses,
   }));
+  const state = freshnessFor(deviceId);
   return {
     detected_name: d.detected_name,
     name_source: d.name_source,
     device_type: d.device_type ?? "unknown",
-    type_confidence: d.type_confidence ?? "unknown",
     type_evidence: d.type_evidence,
     type_conflicts: d.type_conflicts,
     manufacturer: d.manufacturer,
@@ -1257,6 +1445,11 @@ function deviceDiscoveryOf(deviceId: number): DeviceDiscovery | null {
     first_discovered_at: firstSeen,
     last_discovered_at: d.last_discovered_at,
     evidence,
+    evidence_freshness: state,
+    // The classifier's own answer, kept beside the reduced one so the drawer
+    // can explain a reduction rather than only show it.
+    raw_type_confidence: d.type_confidence ?? "unknown",
+    type_confidence: capForFreshness(d.type_confidence ?? "unknown", state),
   };
 }
 
@@ -1312,6 +1505,7 @@ function inventoryRowFor(device: Device): InventoryRow {
     latest_icmp_ms: latest?.icmp_ms ?? null,
     latest_tcp_ms: latest?.tcp_ms ?? null,
     discovery: inventoryDiscoveryOf(device.id),
+    user_device_type: device.user_device_type ?? null,
   };
 }
 
@@ -1533,6 +1727,12 @@ export const mock = {
       }
     }
 
+    // Re-read after the discovery phases: Stop can land inside one of them, and
+    // the backend records exactly that (`report.interrupted = is_cancelled`).
+    // Reading it only before discovery would let the demo show a pass the
+    // operator cut short as though it had finished.
+    const stopped = cancelled || cancelRequested;
+
     listeners.onProgress?.({
       scan_id: scanId,
       done,
@@ -1541,7 +1741,7 @@ export const mock = {
       phase: "resolving",
       elapsed_ms: Date.now() - started,
     });
-    if (!cancelled) await sleep(300);
+    if (!stopped) await sleep(300);
 
     for (const host of found) {
       listeners.onHostUpdated?.({ scan_id: scanId, host });
@@ -1551,7 +1751,7 @@ export const mock = {
       done,
       total,
       found: found.length,
-      phase: cancelled ? "cancelled" : "done",
+      phase: stopped ? "cancelled" : "done",
       elapsed_ms: Date.now() - started,
     });
 
@@ -1563,7 +1763,7 @@ export const mock = {
       scanned: total,
       probed: done,
       hosts: found,
-      cancelled,
+      cancelled: stopped,
       ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
       arp_assist: opts.arp_assist,
       discovery: {
@@ -1853,6 +2053,41 @@ export const mock = {
   setDeviceNotes(id: number, notes: string | null): void {
     const device = requireDevice(id);
     devices.set(id, { ...device, notes: notes?.trim() || null });
+  },
+
+  /**
+   * Correct, change or clear the device type. Mirrors the backend: `null` is
+   * Auto, an explicit `"unknown"` is a real answer, and anything that is not a
+   * shipped type is refused rather than stored, so the drawer's rollback path
+   * is exercised by the demo and not only by a unit test.
+   */
+  setDeviceTypeOverride(id: number, deviceType: string | null): void {
+    const device = requireDevice(id);
+    const chosen = deviceType?.trim() ?? null;
+    if (chosen && !DEVICE_TYPE_IDS.includes(chosen)) {
+      throw new Error(`"${chosen}" is not a device type ArcScan recognises.`);
+    }
+    // One field. Identity, scope, presence, name, notes and status untouched,
+    // and no change event: an operator edit is not a network event.
+    devices.set(id, { ...device, user_device_type: chosen });
+  },
+
+  /** The redacted discovery report for one device. */
+  deviceDiscoveryReport(id: number): string {
+    const device = requireDevice(id);
+    const discovery = deviceDiscoveryOf(id);
+    const resolved = resolveType({
+      userOverride: device.user_device_type,
+      detectedType: discovery?.device_type,
+      detectedConfidence: discovery?.type_confidence,
+    });
+    const latest = observationsFor(id)[0];
+    const scan = latest ? scans.find((s) => s.id === latest.scan.id) : undefined;
+    return reportFromDetail(APP_VERSION, resolved, discovery, {
+      ouiVendor: device.vendor,
+      ip: latest?.host.ip ?? device.last_ip,
+      quality: scan?.discovery_quality ?? null,
+    });
   },
 
   deviceNotes(ids: number[]): Array<[number, string]> {

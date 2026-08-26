@@ -1176,12 +1176,15 @@ const enableColumns = async (keys) => {
 await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
 
 await step("a device's detected name and type reach the drawer", async () => {
-  const drawer = await openDeviceByIp("192.168.1.44");
+  // The printer is the demo's Auto case: nobody has corrected it, so what the
+  // drawer shows is ArcScan's own answer and its confidence.
+  const drawer = await openDeviceByIp("192.168.1.31");
   const text = (await drawer.innerText()).toLowerCase();
   if (!text.includes("discovery")) throw new Error("no Discovery section");
-  if (!text.includes("television")) throw new Error(`no device type: ${text.slice(0, 200)}`);
+  if (!text.includes("printer")) throw new Error(`no device type: ${text.slice(0, 200)}`);
   if (!text.includes("high confidence")) throw new Error("confidence not shown");
-  return "Television, high confidence, with its evidence";
+  if (!text.includes("detected automatically")) throw new Error("the type source is not stated");
+  return "Printer, high confidence, detected automatically, with its evidence";
 });
 
 await step("the evidence behind a type is shown, not just the verdict", async () => {
@@ -1312,12 +1315,22 @@ await step("Stop during discovery keeps results and records no discovery events"
   return "partial results kept, no discovery events written";
 });
 
-await step("with discovery off, the interface shows no discovery at all", async () => {
+await step("with discovery off, nothing is detected but the type is still correctable", async () => {
   await page.goto(`${URL}?discovery=none`, { waitUntil: "networkidle" });
   const drawer = await openDeviceByIp("192.168.1.31");
   const text = (await drawer.innerText()).toLowerCase();
   if (text.includes("acme laserfast")) throw new Error("a detected name appeared with discovery off");
-  return "no Discovery section, and the device keeps its ordinary name";
+  if (text.includes("high confidence")) throw new Error("a confidence appeared with discovery off");
+  // v1.8.3: the correction is deliberately still offered. A device ArcScan
+  // could not reach has a type worth setting too, and hiding the control would
+  // make the one case the operator most wants to fix the one they cannot.
+  if (!text.includes("no discovery-capable scan has reached this device")) {
+    throw new Error("the drawer does not say why there is nothing to show");
+  }
+  if ((await drawer.locator("#device-type").count()) === 0) {
+    throw new Error("the type cannot be corrected with discovery off");
+  }
+  return "nothing detected, said plainly, and the type still correctable";
 });
 
 await step("a hostile advertisement renders as text and breaks nothing", async () => {
@@ -1344,6 +1357,423 @@ await step("conflicting evidence is shown rather than silently resolved", async 
   if (!text.includes("also consistent with")) throw new Error("no conflicts shown");
   if (!text.includes("other names it advertised")) throw new Error("no alternate names shown");
   return "both the competing types and the competing names are visible";
+});
+
+// --- v1.8.3: correcting a type, and evidence that goes quiet ---------------
+//
+// The demo ships three type states on purpose: the printer is Auto, the
+// television has been corrected over a medium-confidence media-device reading,
+// and the driveway camera carries an explicit Unknown. That is what lets these
+// steps check the three without having to set them up first.
+
+await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+
+/** The device-type select inside the open drawer. */
+const typeSelect = (drawer) => drawer.locator("#device-type");
+
+await step("an uncorrected device says the type was detected automatically", async () => {
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("detected automatically")) throw new Error("the type source is not stated");
+  if (text.includes("set by you")) throw new Error("an untouched device claims to be user-set");
+  if ((await typeSelect(drawer).inputValue()) !== "") {
+    throw new Error("the control does not start on Automatic");
+  }
+  return "Automatic, and the control says so";
+});
+
+await step("a corrected device says so and keeps ArcScan's own answer beneath", async () => {
+  const drawer = await openDeviceByIp("192.168.1.44");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("television")) throw new Error("the corrected type is not shown");
+  if (!text.includes("set by you")) throw new Error("the correction is not attributed");
+  // The whole point of keeping the detection underneath: the operator can see
+  // what they overruled, and clearing the correction is not a loss.
+  if (!text.includes("arcscan detected")) throw new Error("the detected answer is not shown");
+  if (!text.includes("media device")) throw new Error("the detected type is not named");
+  if ((await typeSelect(drawer).inputValue()) !== "television") {
+    throw new Error("the control does not show the correction");
+  }
+  return "Television, set by you, over ArcScan's Media device";
+});
+
+await step("an explicit Unknown is a chosen answer and not the absence of one", async () => {
+  const drawer = await openDeviceByIp("192.168.1.60");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("set by you")) throw new Error("the explicit Unknown is not attributed");
+  if (!text.includes("arcscan detected")) throw new Error("the detected answer is not shown");
+  if (!text.includes("camera")) throw new Error("the detected Camera is not named");
+  if ((await typeSelect(drawer).inputValue()) !== "unknown") {
+    throw new Error("the control does not show the explicit Unknown");
+  }
+  return "Unknown, set by you, over ArcScan's Camera";
+});
+
+await step("setting a type saves it and changes nothing about the device's identity", async () => {
+  // Survival across a *restart* is a database guarantee and is proved in the
+  // Rust suite, which owns the storage; the demo backend lives in memory and a
+  // reload is a fresh install by design. What is checked here is what the
+  // interface owns: the correction sticks across closing the drawer, a view
+  // change and reopening, and nothing else about the device moves.
+  const before = await openDeviceByIp("192.168.1.50");
+  const beforeText = await before.innerText();
+  const field = (text, label) => (text.match(new RegExp(`${label}[^\\n]*\\n([^\\n]*)`)) ?? [])[1];
+  const beforeMac = field(beforeText, "MAC address");
+  const beforeIp = field(beforeText, "IP address");
+  const beforeFirstSeen = field(beforeText, "First seen");
+  const beforeCount = await page.locator("tbody tr").count();
+
+  await typeSelect(before).selectOption("printer");
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(250);
+
+  await nav("Changes").click();
+  await page.waitForTimeout(300);
+
+  const after = await openDeviceByIp("192.168.1.50");
+  const afterText = await after.innerText();
+  if (!afterText.toLowerCase().includes("set by you")) {
+    throw new Error("the correction did not survive reopening the drawer");
+  }
+  if ((await typeSelect(after).inputValue()) !== "printer") {
+    throw new Error("the correction did not stick");
+  }
+  if (field(afterText, "MAC address") !== beforeMac) throw new Error("the MAC address changed");
+  if (field(afterText, "IP address") !== beforeIp) throw new Error("the address changed");
+  if (field(afterText, "First seen") !== beforeFirstSeen) throw new Error("first seen changed");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  if ((await page.locator("tbody tr").count()) !== beforeCount) {
+    throw new Error("correcting a type created or removed a device");
+  }
+  return `kept across a view change, identity unchanged (${beforeMac})`;
+});
+
+await step("a correction records no change event", async () => {
+  await nav("Changes").click();
+  await page.waitForTimeout(300);
+  const before = await page.locator("main ul > li").count();
+
+  const drawer = await openDeviceByIp("192.168.1.50");
+  await typeSelect(drawer).selectOption("nas");
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+
+  await nav("Changes").click();
+  await page.waitForTimeout(300);
+  const after = await page.locator("main ul > li").count();
+  if (after !== before) {
+    throw new Error(`a correction added ${after - before} change event(s)`);
+  }
+  return `${before} events before and after: an operator edit is not a network event`;
+});
+
+await step("clearing a correction reveals ArcScan's current answer", async () => {
+  const drawer = await openDeviceByIp("192.168.1.50");
+  await drawer.getByRole("button", { name: "Use automatic detection" }).click();
+  await page.waitForTimeout(400);
+  const text = (await drawer.innerText()).toLowerCase();
+  if (text.includes("set by you")) throw new Error("the correction was not cleared");
+  if (!text.includes("detected automatically")) throw new Error("the automatic answer is not shown");
+  if (!text.includes("nas")) throw new Error("ArcScan's own answer is not revealed");
+  if ((await typeSelect(drawer).inputValue()) !== "") {
+    throw new Error("the control did not return to Automatic");
+  }
+  return "back to Automatic, showing NAS again";
+});
+
+await step("the type filter follows the correction rather than the detection", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const filter = page.getByLabel("Filter by device type");
+  await filter.selectOption("television");
+  await page.waitForTimeout(300);
+  const rows = await page.locator("tbody tr").allInnerTexts();
+  if (rows.length !== 1) throw new Error(`Television matched ${rows.length} devices`);
+  if (!rows[0].includes("192.168.1.44")) throw new Error("the corrected device is not listed");
+
+  // And it no longer appears under the type ArcScan detected. Media device is
+  // still offered, because two other demo devices really are media devices —
+  // what must have changed is that the corrected one is not among them. A
+  // filter that disagreed with the column beside it would make the correction
+  // feel as though it had not saved.
+  await filter.selectOption("media_device");
+  await page.waitForTimeout(300);
+  const media = await page.locator("tbody").innerText();
+  if (media.includes("192.168.1.44")) {
+    throw new Error("the corrected device is still filed under its detected type");
+  }
+  if (!media.includes("192.168.1.77")) throw new Error("a genuine media device was filtered out");
+  await filter.selectOption("");
+  await page.waitForTimeout(200);
+  return "Television lists it; Media device no longer does, and still lists the real ones";
+});
+
+await step("search reaches both the correction and the detection", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const search = page.getByPlaceholder(/search/i).first();
+  const count = async (term) => {
+    await search.fill(term);
+    await page.waitForTimeout(300);
+    return page.locator("tbody tr").count();
+  };
+  // "What did I correct to a television?" and "what did ArcScan call a media
+  // device?" are both real questions and both have to be answerable.
+  if ((await count("television")) === 0) throw new Error("the correction is not searchable");
+  if ((await count("media device")) === 0) throw new Error("the detection is not searchable");
+  await search.fill("");
+  await page.waitForTimeout(200);
+  return "both the corrected type and the detected one are findable";
+});
+
+await step("evidence that is current, getting old and stale reads differently", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  const fresh = (await (await openDeviceByIp("192.168.1.31")).innerText()).toLowerCase();
+  if (!fresh.includes("current")) throw new Error("fresh evidence is not marked current");
+  if (fresh.includes("stale evidence")) throw new Error("fresh evidence shows a stale group");
+
+  const aging = (await (await openDeviceByIp("192.168.1.77")).innerText()).toLowerCase();
+  if (!aging.includes("getting old")) throw new Error("aging evidence is not marked");
+  if (!aging.includes("not heard recently")) throw new Error("no aging group");
+  if (!aging.includes("discovery scan ago")) throw new Error("aging is not counted in scans");
+
+  const stale = (await (await openDeviceByIp("192.168.1.81")).innerText()).toLowerCase();
+  if (!stale.includes("stale")) throw new Error("stale evidence is not marked");
+  if (!stale.includes("stale evidence")) throw new Error("no stale group");
+  if (!stale.includes("discovery scans ago")) throw new Error("staleness is not counted in scans");
+  // Counted in scans and never in days: a wall-clock age would say more about
+  // when the operator last scanned than about the device.
+  if (/\b\d+ (day|week|month)s? ago\b/.test(stale)) {
+    throw new Error("stale evidence is dated in days rather than scans");
+  }
+  return "current, getting old and stale, each counted in discovery scans";
+});
+
+await step("stale evidence no longer supports an unsupported High confidence", async () => {
+  const drawer = await openDeviceByIp("192.168.1.81");
+  const text = (await drawer.innerText()).toLowerCase();
+  if (!text.includes("medium confidence")) throw new Error("the reduced confidence is not shown");
+  if (!text.includes("reduced from high confidence")) {
+    throw new Error("the reduction is shown without being explained");
+  }
+  // The only mention of "high confidence" left must be the explanation of the
+  // reduction; the claim itself must be gone.
+  const claims = text.split("reduced from high confidence").join("");
+  if (claims.includes("high confidence")) {
+    throw new Error("a type resting on stale evidence still claims high confidence");
+  }
+  // Reduced, not erased: the device is still a media device, and the evidence
+  // is still on file.
+  if (!text.includes("media device")) throw new Error("the type was lost rather than reduced");
+  if (!text.includes("mediaserver")) throw new Error("stale evidence was deleted");
+  return "Medium instead of High, explained, with the evidence still on file";
+});
+
+await step("the Inventory marks a type that rests on stale evidence", async () => {
+  await nav("Inventory").click();
+  await page.waitForTimeout(300);
+  const row = page.locator('tbody tr:has-text("192.168.1.81")').first();
+  const text = (await row.innerText()).toLowerCase();
+  if (!text.includes("stale")) throw new Error("a stale type looks exactly like a fresh one");
+  return "the stale type is marked in the table";
+});
+
+await step("the Inventory marks a corrected type without grading the operator", async () => {
+  const row = page.locator('tbody tr:has-text("192.168.1.44")').first();
+  const text = (await row.innerText()).toLowerCase();
+  if (!text.includes("television")) throw new Error("the corrected type is not in the column");
+  if (!text.includes("you")) throw new Error("the correction is not attributed in the table");
+  // A confidence word beside a type a person chose would be ArcScan grading
+  // them, which it has no business doing.
+  for (const word of ["high", "medium", "low"]) {
+    if (text.includes(word)) throw new Error(`a corrected type carries "${word}"`);
+  }
+  return "attributed to you, with no confidence attached";
+});
+
+await step("Copy discovery details produces a redacted, useful report", async () => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const outbound = externalRequestCount();
+  await drawer.getByRole("button", { name: "Copy discovery details" }).click();
+  await page.waitForTimeout(400);
+
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  for (const expected of [
+    "ArcScan discovery report",
+    "Device type: Printer",
+    "Type source: Automatic",
+    "_ipp._tcp",
+  ]) {
+    if (!copied.includes(expected)) throw new Error(`the report is missing ${expected}`);
+  }
+  // Nothing that identifies the unit or its owner.
+  for (const forbidden of [
+    "3C:D9:2B:6F:08:AA",
+    "192.168.1.31",
+    "Toner reordered",
+    "uuid:",
+    "http://",
+  ]) {
+    if (copied.includes(forbidden)) throw new Error(`the report leaked ${forbidden}`);
+  }
+  if (!copied.includes("192.168.x.x")) throw new Error("the address is not masked");
+  if (externalRequestCount() !== outbound) throw new Error("copying made a network request");
+
+  // Confirmed to the operator rather than done silently.
+  const toast = await page.getByText(/copied/i).first().isVisible();
+  if (!toast) throw new Error("the copy was not confirmed");
+  return "redacted, masked, confirmed, and nothing left the machine";
+});
+
+await step("the report names a correction and keeps the detection beside it", async () => {
+  const drawer = await openDeviceByIp("192.168.1.44");
+  await drawer.getByRole("button", { name: "Copy discovery details" }).click();
+  await page.waitForTimeout(400);
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  if (!copied.includes("Device type: Television")) throw new Error("the correction is not named");
+  if (!copied.includes("Type source: Set by you")) throw new Error("it is not attributed");
+  if (!copied.includes("ArcScan detected: Media device")) {
+    throw new Error("the detected answer is missing, which is the point of the report");
+  }
+  return "Television by you, over ArcScan's Media device";
+});
+
+await step("History says how well each discovery pass went", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  await nav("History").click();
+  await page.waitForTimeout(400);
+  const text = (await page.locator("main").innerText()).toLowerCase();
+  if (!text.includes("discovery: complete")) throw new Error("no complete state in History");
+  if (!/\d+ mdns/.test(text)) throw new Error("a complete pass does not show what it heard");
+  // ArcScan never blames a firewall, because it cannot observe one.
+  if (text.includes("firewall")) throw new Error("History claims a firewall blocked something");
+  return "Discovery: Complete, with the counts it actually heard";
+});
+
+await step("History distinguishes skipped, limited and interrupted", async () => {
+  await page.goto(`${URL}?discovery=none`, { waitUntil: "networkidle" });
+  await nav("History").click();
+  await page.waitForTimeout(400);
+  const skipped = (await page.locator("main").innerText()).toLowerCase();
+  if (!skipped.includes("discovery: skipped")) throw new Error("no skipped state");
+
+  await page.goto(`${URL}?discovery=malformed`, { waitUntil: "networkidle" });
+  await nav("History").click();
+  await page.waitForTimeout(400);
+  const limited = (await page.locator("main").innerText()).toLowerCase();
+  if (!limited.includes("discovery: limited")) throw new Error("no limited state");
+  if (!limited.includes("descriptions refused")) {
+    throw new Error("a limited pass does not say what ArcScan observed");
+  }
+
+  // Interrupted: stop the scan while a discovery phase is on screen, which is
+  // the case the state exists for.
+  await page.goto(`${URL}?discovery=slow`, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Scan 192\.168\.1\.0\/24$/ }).click();
+  for (let i = 0; i < 100; i++) {
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    if (body.includes("discovering local services")) break;
+    await page.waitForTimeout(120);
+  }
+  const stop = page.getByRole("button", { name: /^Stop/ });
+  if ((await stop.count()) === 0) throw new Error("the scan finished before it could be stopped");
+  await stop.click();
+  await stop.waitFor({ state: "detached", timeout: 30000 });
+  await nav("History").click();
+  await page.waitForTimeout(600);
+  const interrupted = (await page.locator("main").innerText()).toLowerCase();
+  if (!interrupted.includes("discovery: interrupted")) throw new Error("no interrupted state");
+  return "Skipped, Limited with its observed reason, and Interrupted";
+});
+
+await step("the type control is reachable and operable from the keyboard", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  const drawer = await openDeviceByIp("192.168.1.31");
+  const select = typeSelect(drawer);
+  await select.focus();
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  if (focused !== "device-type") throw new Error(`focus landed on ${focused}`);
+  await select.selectOption("camera");
+  await page.waitForTimeout(400);
+  if ((await select.inputValue()) !== "camera") throw new Error("the keyboard change did not save");
+  // Escape closes the drawer rather than being swallowed by the select.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  const drawerOpen = await page.locator("aside, [role='dialog']").last().isVisible();
+  if (drawerOpen && (await typeSelect(page.locator("aside").last()).count()) > 0) {
+    throw new Error("Escape did not close the drawer");
+  }
+  return "focusable, operable and Escape still closes the drawer";
+});
+
+await step("Settings explains aging without exposing a threshold to tune", async () => {
+  await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Settings" }).click();
+  const panel = page.getByRole("complementary", { name: "Settings" });
+  await panel.waitFor({ timeout: 3000 });
+  const text = (await panel.innerText()).toLowerCase();
+  if (!text.includes("stops relying on it")) throw new Error("aging is not explained");
+  // No threshold, no weights: the number only means anything alongside the
+  // definition of a qualifying miss, and offering one without the other invites
+  // a person to turn it down and then disbelieve the result.
+  for (const forbidden of ["stale after", "classifier", "weight", "threshold"]) {
+    if (text.includes(forbidden)) throw new Error(`Settings exposes "${forbidden}"`);
+  }
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(250);
+  return "explained in words, with nothing to tune";
+});
+
+await step("the drawer holds together at the minimum width, in both themes", async () => {
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+    await page.setViewportSize({ width: 940, height: 900 });
+    await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+    const drawer = await openDeviceByIp("192.168.1.81");
+    if ((await typeSelect(drawer).count()) === 0) {
+      throw new Error(`the type control is missing at 940px in ${theme}`);
+    }
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    );
+    if (overflow) throw new Error(`the drawer overflows at 940px in ${theme}`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  return "no overflow at 940px in either theme, with the control present";
+});
+
+await step("axe-core finds no violations in the new drawer states", async () => {
+  const { default: AxeBuilder } = await import("@axe-core/playwright");
+  const results = [];
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+    for (const ip of ["192.168.1.44", "192.168.1.81", "192.168.1.60"]) {
+      await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+      await openDeviceByIp(ip);
+      const scan = await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+        .analyze();
+      if (scan.violations.length > 0) {
+        throw new Error(
+          `${theme}/${ip}: ${scan.violations.map((v) => `${v.id} (${v.nodes.length})`).join(", ")}`,
+        );
+      }
+      results.push(`${theme}/${ip}: ${scan.passes.length}`);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(200);
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  return results.join(", ");
 });
 
 await page.goto(URL, { waitUntil: "networkidle" });

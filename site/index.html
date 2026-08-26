@@ -72,7 +72,7 @@
         "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps a persistent inventory of them on your own computer, and lists the changes found in later scans.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
-        "softwareVersion": "1.8.2",
+        "softwareVersion": "1.8.3",
         "license": "https://github.com/kingnazz/ArcScan/blob/main/LICENSE",
         "isAccessibleForFree": true,
         "screenshot": "https://kingnazz.github.io/ArcScan/assets/shots/inventory-dark.png",
@@ -312,15 +312,15 @@
           </div>
 
           <p class="release-line">
-            <span id="version-fallback">v1.8.2</span><span id="release-meta"></span>
+            <span id="version-fallback">v1.8.3</span><span id="release-meta"></span>
             <!--
               A local page rather than the GitHub release, so the first thing a
               curious visitor reads is written for them. The technical notes are
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.2.html"
-              >What changed in 1.8.2</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.3.html"
+              >What changed in 1.8.3</a
             >
           </p>
 
@@ -804,43 +804,46 @@
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.2</p>
-            <h2>It now recognises more of what it finds.</h2>
+            <p class="eyebrow">New in 1.8.3</p>
+            <h2>Correct what it detected, and see when an answer gets old.</h2>
             <p>
-              ArcScan can now recognise more devices using mDNS and SSDP, while showing where each
-              detected name and type came from. It asks your local network only, uses no
-              credentials, and contacts no cloud service.
+              ArcScan 1.8.2 started asking your network what its devices are, using mDNS and SSDP.
+              1.8.3 lets you correct what it decided, shows when the evidence behind an answer has
+              gone stale, and can hand you a redacted summary when it gets one wrong. It still asks
+              your local network only, uses no credentials, and contacts no cloud service.
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>Devices that have a name show it</h3>
+              <h3>Set the device type yourself</h3>
               <p>
-                Printers, televisions, routers and media players announce what they are on the
-                local network. ArcScan asks, and shows the name and model it hears instead of a
-                bare address. A name you typed yourself always wins: discovery can name a
-                device that had none, never rename one you named.
+                Pick a device type in the device panel and that is what ArcScan calls it, in the
+                table, in the type filter, in search and in every export. The correction changes
+                what ArcScan calls the device and nothing else: same identity, same network, same
+                history, no duplicate. What ArcScan worked out is kept underneath, so you can change
+                your mind. Choosing Unknown is a real answer, not the absence of one.
               </p>
             </article>
 
             <article>
-              <h3>Device types, with confidence</h3>
+              <h3>Evidence that goes quiet stops being authoritative</h3>
               <p>
-                Printer, router, television, camera, NAS and ten more, each marked high,
-                medium or low confidence, and left as Unknown when nothing supports an answer. The
-                device panel shows the evidence behind the verdict rather than asking you to take
-                it on trust.
+                After three completed scans in a row that could have heard a device's
+                advertisements and did not, ArcScan stops leaning on them: a device type resting
+                entirely on them drops from high confidence to medium, and the panel says why. It
+                is counted in scans rather than in days, and nothing is deleted. One scan that hears
+                it again puts it straight back.
               </p>
             </article>
 
             <article>
-              <h3>Local, read-only, no credentials</h3>
+              <h3>Report a wrong answer without exposing your network</h3>
               <p>
-                Discovery runs only on a network this computer is attached to; remote and routed
-                targets never receive a query. Nothing is sent to any service, nothing is
-                configured or changed, and everything a device says is treated as text. You can
-                switch it all off in Settings.
+                Copy discovery details puts a short summary on your clipboard: what ArcScan decided,
+                how sure it was, and the evidence behind it. It leaves out your notes, the MAC
+                address, the serial number and the full IP address, and it goes on your clipboard
+                and nowhere else. History now also says how much each scan's discovery managed.
               </p>
             </article>
           </div>
@@ -854,36 +857,36 @@
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/inventory-types-dark.webp"
-                srcset="assets/shots/inventory-types-dark-800.webp 800w, assets/shots/inventory-types-dark.webp 1440w"
+                src="assets/shots/device-type-override-dark.webp"
+                srcset="assets/shots/device-type-override-dark-800.webp 800w, assets/shots/device-type-override-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The ArcScan Inventory with an added Type column, showing a router, a computer, a printer, a television, a NAS, a camera and a game console, each with a confidence badge, and two devices with no type at all."
+                alt="The ArcScan device panel for a television, showing a Device type list set to Television, a note reading Set by you with a link to use automatic detection, and a line underneath reading ArcScan detected Media device, Medium confidence."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                Device types in the Inventory, with the confidence beside each one. Two devices
-                advertise nothing, so they carry no type.
+                ArcScan read this one as a media device. The operator disagreed, and what ArcScan
+                thought is kept underneath rather than thrown away.
               </figcaption>
             </figure>
 
             <figure class="frame frame-sm">
               <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
               <img
-                src="assets/shots/device-discovery-dark.webp"
-                srcset="assets/shots/device-discovery-dark-800.webp 800w, assets/shots/device-discovery-dark.webp 1440w"
+                src="assets/shots/device-stale-evidence-dark.webp"
+                srcset="assets/shots/device-stale-evidence-dark-800.webp 800w, assets/shots/device-stale-evidence-dark.webp 1440w"
                 sizes="(max-width: 820px) 100vw, 34rem"
                 width="1440"
                 height="900"
-                alt="The ArcScan device panel for a printer, showing a Discovery section with the detected name, the device type Printer marked high confidence, the manufacturer, the model, and the protocols it was discovered by."
+                alt="The ArcScan device panel for a media device, showing Device type set to Automatic with Media device and Medium confidence, a line explaining that the confidence was reduced from high because nothing has confirmed it in the last few scans, and an Evidence row carrying a Stale badge."
                 loading="lazy"
                 decoding="async"
               />
               <figcaption>
-                The detected name, the type, and which protocols found them. The operator named
-                this printer, so their name is the one shown.
+                Nothing has confirmed this device's advertisements in three qualifying scans, so
+                ArcScan says so rather than continuing to sound sure.
               </figcaption>
             </figure>
           </div>
@@ -913,7 +916,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.2</dd>
+                <dd data-field="version">1.8.3</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -938,7 +941,7 @@
                 <dt>Installer</dt>
                 <dd>NSIS setup (.exe)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.2</dd>
+                <dd data-field="version">1.8.3</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -963,7 +966,7 @@
                 <dt>Installer</dt>
                 <dd>Disk image (.dmg)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.2</dd>
+                <dd data-field="version">1.8.3</dd>
                 <dt>Size</dt>
                 <dd data-field="size">See the release page</dd>
               </dl>
@@ -1256,6 +1259,7 @@
           <nav aria-label="Footer">
             <a href="#download">Download</a>
             <a href="#features">Features</a>
+            <a href="whats-new-1.8.3.html">What's new in 1.8.3</a>
             <a href="whats-new-1.8.2.html">What's new in 1.8.2</a>
             <a href="whats-new-1.8.1.html">What's new in 1.8.1</a>
             <a href="whats-new-1.8.0.html">What's new in 1.8</a>

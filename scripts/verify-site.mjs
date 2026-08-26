@@ -262,24 +262,24 @@ await step("exactly one platform is recommended, and only on that platform", asy
  * A release as GitHub actually returns one, including the signature and
  * updater assets that sit alongside the installers. Using the real asset names
  * is the point: the page picks assets by pattern, and a pattern that quietly
- * matched ArcScan_1.8.2_x64-setup.exe.sig would hand visitors a 400 byte file.
+ * matched ArcScan_1.8.3_x64-setup.exe.sig would hand visitors a 400 byte file.
  */
 const RELEASE_FIXTURE = {
-  tag_name: "v1.8.2",
-  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.2",
+  tag_name: "v1.8.3",
+  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.3",
   published_at: "2026-08-01T06:28:00Z",
   assets: [
     { name: "ArcScan.app.tar.gz", size: 7505259 },
     { name: "ArcScan.app.tar.gz.sig", size: 404 },
-    { name: "ArcScan_1.8.2_arm64-setup.exe", size: 4285945 },
-    { name: "ArcScan_1.8.2_arm64-setup.exe.sig", size: 420 },
-    { name: "ArcScan_1.8.2_universal.dmg", size: 7576208 },
-    { name: "ArcScan_1.8.2_x64-setup.exe", size: 4543127 },
-    { name: "ArcScan_1.8.2_x64-setup.exe.sig", size: 416 },
+    { name: "ArcScan_1.8.3_arm64-setup.exe", size: 4285945 },
+    { name: "ArcScan_1.8.3_arm64-setup.exe.sig", size: 420 },
+    { name: "ArcScan_1.8.3_universal.dmg", size: 7576208 },
+    { name: "ArcScan_1.8.3_x64-setup.exe", size: 4543127 },
+    { name: "ArcScan_1.8.3_x64-setup.exe.sig", size: 416 },
     { name: "latest.json", size: 2376 },
   ].map((a) => ({
     ...a,
-    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.2/${a.name}`,
+    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.3/${a.name}`,
   })),
 };
 
@@ -322,9 +322,9 @@ await step("the release API fills every card with the right asset", async () => 
   await p.close();
 
   const expected = {
-    "win-x64": { file: "ArcScan_1.8.2_x64-setup.exe", size: "4.3 MB" },
-    "win-arm64": { file: "ArcScan_1.8.2_arm64-setup.exe", size: "4.1 MB" },
-    mac: { file: "ArcScan_1.8.2_universal.dmg", size: "7.2 MB" },
+    "win-x64": { file: "ArcScan_1.8.3_x64-setup.exe", size: "4.3 MB" },
+    "win-arm64": { file: "ArcScan_1.8.3_arm64-setup.exe", size: "4.1 MB" },
+    mac: { file: "ArcScan_1.8.3_universal.dmg", size: "7.2 MB" },
   };
   for (const card of cards) {
     const want = expected[card.os];
@@ -335,9 +335,9 @@ await step("the release API fills every card with the right asset", async () => 
     if (/\.sig$|\.tar\.gz$|latest\.json$/.test(card.link ?? "")) {
       throw new Error(`${card.os} links to a non-installer asset: ${card.link}`);
     }
-    if (card.version !== "1.8.2") throw new Error(`${card.os} shows version ${card.version}`);
+    if (card.version !== "1.8.3") throw new Error(`${card.os} shows version ${card.version}`);
     if (card.size !== want.size) throw new Error(`${card.os} shows size ${card.size}`);
-    if (!card.notes?.includes("/releases/tag/v1.8.2")) {
+    if (!card.notes?.includes("/releases/tag/v1.8.3")) {
       throw new Error(`${card.os} notes link is ${card.notes}`);
     }
   }
@@ -349,17 +349,17 @@ await step("each platform is recommended the build it can run", async () => {
     [
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
       "mac",
-      "ArcScan_1.8.2_universal.dmg",
+      "ArcScan_1.8.3_universal.dmg",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-x64",
-      "ArcScan_1.8.2_x64-setup.exe",
+      "ArcScan_1.8.3_x64-setup.exe",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; ARM64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-arm64",
-      "ArcScan_1.8.2_arm64-setup.exe",
+      "ArcScan_1.8.3_arm64-setup.exe",
     ],
   ];
   const seen = [];
@@ -471,22 +471,28 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.8.2 improvements", async () => {
+await step("the release section states the 1.8.3 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
   // The version has to be named, or the section could describe any release.
-  if (!text.includes("1.8.2")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.3")) throw new Error("the section does not name the version");
 
   // One assertion per claim, phrased as the claim rather than as exact wording,
   // so the copy can be edited without the test becoming a transcript.
   const claims = [
     [/mdns/, "mDNS"],
     [/ssdp/, "SSDP"],
-    [/device type|printer, router/, "device types"],
+    [/device type/, "device types"],
     [/confidence/, "confidence being shown"],
-    [/name you typed|never rename/, "user names winning"],
+    [/pick a device type|set the device type|correct/, "correcting the type"],
+    [/same identity|nothing else|no duplicate/, "the correction changing nothing else"],
+    [/unknown is a real answer|choosing unknown/, "explicit Unknown"],
+    [/stale|stops leaning|no longer/, "evidence going stale"],
+    [/in scans rather than in days|counted in scans/, "aging counted in scans"],
+    [/copy discovery details/, "the redacted summary"],
+    [/leaves out|omits/, "what the summary leaves out"],
     [/local network only|only on a network this computer|remote and routed/, "local-only behaviour"],
     [/no credentials/, "no credentials being sent"],
     [/cloud service|no.*service/, "no cloud service"],
@@ -510,13 +516,13 @@ await step("the release section states the 1.8.2 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.8.2 page", async () => {
+await step("the What changed link opens the local 1.8.3 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A first-party page, not GitHub: a visitor asking what changed should get
   // something written for them before they get a commit list.
-  if (href !== "whats-new-1.8.2.html") {
+  if (href !== "whats-new-1.8.3.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -532,8 +538,8 @@ await step("the What changed link opens the local 1.8.2 page", async () => {
 
 await step("the new screenshots load at their stated size", async () => {
   const shots = [
-    "assets/shots/inventory-types-dark.webp",
-    "assets/shots/device-discovery-dark.webp",
+    "assets/shots/device-type-override-dark.webp",
+    "assets/shots/device-stale-evidence-dark.webp",
   ];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
@@ -664,10 +670,10 @@ await step("download flow survives a GitHub API failure", async () => {
 
 
 // ---------------------------------------------------------------------------
-// The first-party What's New page for 1.8.2
+// The first-party What's New page for 1.8.3
 // ---------------------------------------------------------------------------
 
-const WHATS_NEW = "/whats-new-1.8.2.html";
+const WHATS_NEW = "/whats-new-1.8.3.html";
 
 await step("the What's New page loads with the right title and metadata", async () => {
   const response = await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
@@ -719,7 +725,7 @@ await step("the What's New page loads with the right title and metadata", async 
   return `${title.length} char title, ${description.length} char description`;
 });
 
-await step("structured data names version 1.8.2 and parses", async () => {
+await step("structured data names version 1.8.3 and parses", async () => {
   const blocks = await page.$$eval('script[type="application/ld+json"]', (nodes) =>
     nodes.map((n) => n.textContent),
   );
@@ -727,7 +733,7 @@ await step("structured data names version 1.8.2 and parses", async () => {
   const parsed = blocks.map((b) => JSON.parse(b));
   const article = parsed.find((b) => b["@type"] === "Article");
   if (!article) throw new Error("no Article block");
-  if (article.about?.softwareVersion !== "1.8.2") {
+  if (article.about?.softwareVersion !== "1.8.3") {
     throw new Error(`structured data says version ${article.about?.softwareVersion}`);
   }
   if (!article.datePublished) throw new Error("no published date");
@@ -738,7 +744,7 @@ await step("the page states the version visibly", async () => {
   const text = await page.locator("main").innerText();
   if (!/1\.8\.2/.test(text)) throw new Error("the version is not visible on the page");
   if (!/free and open source/i.test(text)) throw new Error("the free and open source label is missing");
-  return "version 1.8.2";
+  return "version 1.8.3";
 });
 
 await step("the hero offers a download and a way back to the home page", async () => {
@@ -754,11 +760,28 @@ await step("the hero offers a download and a way back to the home page", async (
 
 await step("every required section is present and explained", async () => {
   const sections = {
-    names: [/mdns/i, /ssdp/i, /name you typed/i, /never rename/i, /manufacturer and model/i],
-    types: [/printer/i, /confidence/i, /unknown/i, /evidence/i],
+    // The two things this release exists for, each asserted on its own claims
+    // rather than on its wording, so the copy can be edited without the test
+    // turning into a transcript of it.
+    correct: [
+      /device type you can set yourself|set the device type/i,
+      /never changes what the device is|nothing else/i,
+      /same identity/i,
+      /unknown is a real answer/i,
+      /automatic/i,
+    ],
+    stale: [
+      /three scans in a row/i,
+      /counted in scans, not in days|in scans, not in days/i,
+      /never deleted|is kept, shown and dated/i,
+      /high confidence to medium/i,
+    ],
+    classification: [/no new protocols/i, /unknown is still a valid answer/i, /high confidence/i],
+    quality: [/complete/i, /limited/i, /skipped/i, /interrupted/i, /never says a firewall/i],
+    report: [/copy discovery details/i, /clipboard/i, /notes/i, /mac address/i, /masked/i],
     local: [/no credentials/i, /read-only/i, /remote subnets|routed targets/i, /time-to-live/i],
     unchanged: [/same four views/i, /partial scans/i, /ipv4 only/i, /no account/i],
-    upgrade: [/without losing/i, /no database change|nothing to migrate|carries straight over/i, /settings are kept/i],
+    upgrade: [/without losing/i, /nothing is rewritten|no database change|nothing to migrate/i, /settings are kept/i],
   };
   for (const [id, patterns] of Object.entries(sections)) {
     const node = page.locator(`#${id}`);
@@ -813,16 +836,19 @@ await step("the release is not described as changing how scanning works", async 
   }
 });
 
-await step("both previous What's New pages are still published and reachable", async () => {
+await step("every previous What's New page is still published and reachable", async () => {
   // People land on these from search results and from older release notes, so
-  // neither may 404, and neither may be quietly overwritten with newer content.
-  for (const link of ["whats-new-1.8.1.html", "whats-new-1.8.0.html"]) {
+  // none may 404, and none may be quietly overwritten with newer content. The
+  // list grows by one every release, on purpose: an old page being deleted is
+  // exactly the failure this catches.
+  for (const link of ["whats-new-1.8.2.html", "whats-new-1.8.1.html", "whats-new-1.8.0.html"]) {
     if ((await page.locator(`#unchanged a[href="${link}"]`).count()) === 0) {
-      throw new Error(`the 1.8.2 page does not link back to ${link}`);
+      throw new Error(`the 1.8.3 page does not link back to ${link}`);
     }
   }
 
   const expectations = [
+    ["whats-new-1.8.2.html", /What's new in ArcScan 1\.8\.2$/, /1\.8\.2/, /mdns/i],
     ["whats-new-1.8.1.html", /What's new in ArcScan 1\.8\.1$/, /1\.8\.1/, /public ip/i],
     ["whats-new-1.8.0.html", /What's new in ArcScan 1\.8$/, /1\.8\.0/, /inventory/i],
   ];
@@ -837,9 +863,11 @@ await step("both previous What's New pages are still published and reachable", a
     const body = await previous.locator("main").innerText();
     if (!version.test(body)) throw new Error(`${file} no longer names its own version`);
     if (!content.test(body)) throw new Error(`${file} lost its own content`);
+    // An older page must keep describing its own release, not this one.
+    if (/1\.8\.3/.test(body)) throw new Error(`${file} was rewritten to describe 1.8.3`);
   }
   await previous.close();
-  return "1.8.1 and 1.8.0 intact";
+  return "1.8.2, 1.8.1 and 1.8.0 intact";
 });
 
 await step("a partial scan is explicitly excluded from marking devices Missing", async () => {
@@ -866,8 +894,8 @@ await step("the technical release notes stay one click away", async () => {
   const links = await page.$$eval("a[href]", (nodes) =>
     nodes.map((n) => n.getAttribute("href")).filter(Boolean),
   );
-  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.2")) {
-    throw new Error("no link to the v1.8.2 release notes on GitHub");
+  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.3")) {
+    throw new Error("no link to the v1.8.3 release notes on GitHub");
   }
   if (!links.includes("https://github.com/kingnazz/ArcScan/releases")) {
     throw new Error("no link to all releases");
@@ -894,7 +922,7 @@ await step("the download section covers every platform", async () => {
   for (const os of wanted) {
     const card = cards.find((c) => c.os === os);
     if (!card) throw new Error(`no download card for ${os}`);
-    if (card.version !== "1.8.2") throw new Error(`${os} shows version ${card.version}`);
+    if (card.version !== "1.8.3") throw new Error(`${os} shows version ${card.version}`);
     if (!card.link?.startsWith("https://github.com/")) throw new Error(`${os} has no link`);
     if (!card.hasChecksum) throw new Error(`${os} has no checksum link`);
   }
@@ -908,14 +936,17 @@ await step("the download section covers every platform", async () => {
     (m) => m[1].trim(),
   );
   if (fallbacks.length !== 3) throw new Error(`${fallbacks.length} static version fallbacks`);
-  const stale = fallbacks.filter((v) => v !== "1.8.2");
+  const stale = fallbacks.filter((v) => v !== "1.8.3");
   if (stale.length > 0) throw new Error(`static fallback still says ${stale.join(", ")}`);
 
-  return `${cards.length} cards, all at 1.8.2, static fallback 1.8.2`;
+  return `${cards.length} cards, all at 1.8.3, static fallback 1.8.3`;
 });
 
 await step("both screenshots load at their stated size with real alt text", async () => {
-  const shots = ["assets/shots/inventory-types-dark.webp", "assets/shots/device-discovery-dark.webp"];
+  const shots = [
+    "assets/shots/device-type-override-dark.webp",
+    "assets/shots/device-stale-evidence-dark.webp",
+  ];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
     if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
