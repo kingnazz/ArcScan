@@ -1664,6 +1664,10 @@ function demoRuntimeInfo(): RuntimeInfo {
     ? {
         edition: "portable",
         version: APP_VERSION,
+        // Portable is a Windows edition, so the demo says Windows -- a
+        // screenshot of this panel labelled with whatever the reviewer's
+        // browser happens to run on would be misleading about the product.
+        platform: "Windows",
         architecture,
         // A fictional path, on a drive letter no real machine's user profile is
         // on, so no screenshot of this ever carries somebody's name.
@@ -1674,6 +1678,7 @@ function demoRuntimeInfo(): RuntimeInfo {
     : {
         edition: "installed",
         version: APP_VERSION,
+        platform: "Windows",
         architecture,
         data_root: "C:\\Users\\Operator\\AppData\\Roaming\\com.arcscan.app",
         writable: true,

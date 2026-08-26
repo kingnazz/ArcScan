@@ -166,12 +166,89 @@
     return mb >= 1 ? mb.toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB";
   }
 
-  function pickAsset(assets, pattern) {
+  /**
+   * Choose one release asset for a platform and a kind of download.
+   *
+   * Strict on purpose. The consequence of a loose match here is a person on an
+   * ARM64 machine downloading an x64 build, or somebody clicking "Download
+   * installer" and getting a portable ZIP -- both of which look like a working
+   * download right up until they do not work. So each rule states what the
+   * name must contain *and* what it must not, and a rule that matches nothing
+   * leaves the card pointing at the release page rather than at a guess.
+   */
+  var ASSET_RULES = {
+    "win-x64": {
+      installer: {
+        must: [/(^|[^a-z0-9])x64[-_]setup\.exe$/i],
+        mustNot: [/arm64|aarch64/i, /portable/i],
+      },
+      portable: {
+        must: [/^ArcScan_[\d.]+_windows-x64-portable\.zip$/i],
+        mustNot: [/arm64|aarch64/i],
+      },
+    },
+    "win-arm64": {
+      installer: {
+        must: [/(^|[^a-z0-9])arm64[-_]setup\.exe$/i],
+        mustNot: [/portable/i],
+      },
+      portable: {
+        must: [/^ArcScan_[\d.]+_windows-arm64-portable\.zip$/i],
+        mustNot: [],
+      },
+    },
+    mac: {
+      installer: {
+        must: [/universal.*\.dmg$/i],
+        mustNot: [/portable/i],
+      },
+      // No portable macOS build in 1.8.4. Absent rather than empty-and-hidden,
+      // so nothing on this page can end up implying one exists.
+      portable: null,
+    },
+  };
+
+  /**
+   * Names that must never be offered as a download, whatever else matches.
+   *
+   * Updater signatures and the manifest are machinery for the in-app updater.
+   * The macOS .app.tar.gz is an updater payload, not something to hand a
+   * person. A GitHub source archive is not a build at all.
+   */
+  var NEVER = [
+    /\.sig$/i,
+    /^latest\.json$/i,
+    /\.app\.tar\.gz$/i,
+    /\.nsis\.zip$/i,
+    /^(source|Source)[-_ ]?code/i,
+  ];
+
+  function pickAsset(assets, rule) {
+    if (!rule) return null;
     for (var i = 0; i < assets.length; i++) {
-      if (pattern.test(assets[i].name)) return assets[i];
+      var name = assets[i].name || "";
+      var forbidden = false;
+      for (var n = 0; n < NEVER.length; n++) {
+        if (NEVER[n].test(name)) forbidden = true;
+      }
+      if (forbidden) continue;
+
+      var ok = rule.must.length > 0;
+      for (var m = 0; m < rule.must.length; m++) {
+        if (!rule.must[m].test(name)) ok = false;
+      }
+      for (var x = 0; x < rule.mustNot.length; x++) {
+        if (rule.mustNot[x].test(name)) ok = false;
+      }
+      if (ok) return assets[i];
     }
     return null;
   }
+
+  // Exposed for the site verification suite, which runs these rules against a
+  // fixture of every asset a release publishes. Reading them from here means the
+  // tests check the rules the page actually uses.
+  window.__arcscanAssetRules = { rules: ASSET_RULES, never: NEVER, pick: pickAsset };
 
   function setField(card, field, apply) {
     var el = card.querySelector('[data-field="' + field + '"]');
@@ -201,12 +278,12 @@
       var assets = release.assets || [];
       var version = (release.tag_name || "").replace(/^v/, "");
 
-      var map = {
-        "win-x64": pickAsset(assets, /x64[-_]setup\.exe$/i) || pickAsset(assets, /x64.*\.exe$/i),
-        "win-arm64":
-          pickAsset(assets, /arm64[-_]setup\.exe$/i) || pickAsset(assets, /arm64.*\.exe$/i),
-        mac: pickAsset(assets, /universal.*\.dmg$/i) || pickAsset(assets, /\.dmg$/i),
-      };
+      var map = {};
+      var portableMap = {};
+      Object.keys(ASSET_RULES).forEach(function (key) {
+        map[key] = pickAsset(assets, ASSET_RULES[key].installer);
+        portableMap[key] = pickAsset(assets, ASSET_RULES[key].portable);
+      });
 
       if (releaseMeta && release.published_at) {
         releaseMeta.textContent =
@@ -222,15 +299,31 @@
           setField(card, "notes", function (el) { el.href = release.html_url; });
           setField(card, "checksum", function (el) { el.href = release.html_url; });
         }
-        if (!asset) {
-          // No matching asset in this release: leave the card pointing at the
+        if (asset) {
+          setField(card, "link", function (el) { el.href = asset.browser_download_url; });
+          if (typeof asset.size === "number") {
+            setField(card, "size", function (el) { el.textContent = formatSize(asset.size); });
+          }
+        } else {
+          // No matching asset in this release: leave the control pointing at the
           // release page rather than at a link that would 404.
           setField(card, "size", function (el) { el.textContent = "See the release page"; });
-          return;
         }
-        setField(card, "link", function (el) { el.href = asset.browser_download_url; });
-        if (typeof asset.size === "number") {
-          setField(card, "size", function (el) { el.textContent = formatSize(asset.size); });
+
+        var portable = portableMap[key];
+        if (portable) {
+          setField(card, "portable-link", function (el) {
+            el.href = portable.browser_download_url;
+          });
+          if (typeof portable.size === "number") {
+            setField(card, "portable-size", function (el) {
+              el.textContent = formatSize(portable.size);
+            });
+          }
+        } else {
+          setField(card, "portable-size", function (el) {
+            el.textContent = "See the release page";
+          });
         }
       });
 

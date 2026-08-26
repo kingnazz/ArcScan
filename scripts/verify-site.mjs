@@ -216,17 +216,26 @@ await step("download cards list every platform with real detail", async () => {
       terms: Array.from(el.querySelectorAll("dt")).map((d) => d.textContent?.trim()),
       hasChecksum: Boolean(el.querySelector('[data-field="checksum"]')),
       hasNotes: Boolean(el.querySelector('[data-field="notes"]')),
+      options: Array.from(el.querySelectorAll(".dl-option h4")).map((h) => h.textContent?.trim()),
     })),
   );
   if (cards.length !== 3) throw new Error(`expected 3 download cards, got ${cards.length}`);
   for (const card of cards) {
-    for (const term of ["Architecture", "Installer", "Version", "Size"]) {
+    for (const term of ["Architecture", "Version", "Size"]) {
       if (!card.terms.includes(term)) throw new Error(`${card.os} is missing "${term}"`);
     }
     if (!card.link?.startsWith("https://github.com/")) throw new Error(`${card.os} has no link`);
     if (!card.hasChecksum || !card.hasNotes) throw new Error(`${card.os} lacks checksum or notes`);
+    if (!card.options.includes("Installer")) throw new Error(`${card.os} has no Installer option`);
   }
-  return cards.map((c) => c.os).join(", ");
+  // Both Windows cards offer a portable ZIP; macOS must not, because there is
+  // no portable macOS build and a card implying one would be a false claim on
+  // the download page itself.
+  const portable = cards.filter((c) => c.options.includes("Portable ZIP")).map((c) => c.os).sort();
+  if (JSON.stringify(portable) !== JSON.stringify(["win-arm64", "win-x64"])) {
+    throw new Error(`portable options on ${JSON.stringify(portable)}`);
+  }
+  return cards.map((c) => `${c.os} (${c.options.join(" + ")})`).join(", ");
 });
 
 await step("exactly one platform is recommended, and only on that platform", async () => {
@@ -262,24 +271,29 @@ await step("exactly one platform is recommended, and only on that platform", asy
  * A release as GitHub actually returns one, including the signature and
  * updater assets that sit alongside the installers. Using the real asset names
  * is the point: the page picks assets by pattern, and a pattern that quietly
- * matched ArcScan_1.8.3_x64-setup.exe.sig would hand visitors a 400 byte file.
+ * matched ArcScan_1.8.4_x64-setup.exe.sig would hand visitors a 400 byte file.
  */
 const RELEASE_FIXTURE = {
-  tag_name: "v1.8.3",
-  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.3",
+  tag_name: "v1.8.4",
+  html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4",
   published_at: "2026-08-01T06:28:00Z",
   assets: [
     { name: "ArcScan.app.tar.gz", size: 7505259 },
     { name: "ArcScan.app.tar.gz.sig", size: 404 },
-    { name: "ArcScan_1.8.3_arm64-setup.exe", size: 4285945 },
-    { name: "ArcScan_1.8.3_arm64-setup.exe.sig", size: 420 },
-    { name: "ArcScan_1.8.3_universal.dmg", size: 7576208 },
-    { name: "ArcScan_1.8.3_x64-setup.exe", size: 4543127 },
-    { name: "ArcScan_1.8.3_x64-setup.exe.sig", size: 416 },
+    { name: "ArcScan_1.8.4_arm64-setup.exe", size: 4285945 },
+    { name: "ArcScan_1.8.4_arm64-setup.exe.sig", size: 420 },
+    { name: "ArcScan_1.8.4_universal.dmg", size: 7576208 },
+    { name: "ArcScan_1.8.4_x64-setup.exe", size: 4543127 },
+    { name: "ArcScan_1.8.4_x64-setup.exe.sig", size: 416 },
+    // The portable ZIPs, unsigned as updater artifacts by design. Their names
+    // are close enough to the installers' that a loose pattern would confuse
+    // them, which is the point of having them in the fixture.
+    { name: "ArcScan_1.8.4_windows-x64-portable.zip", size: 4194304 },
+    { name: "ArcScan_1.8.4_windows-arm64-portable.zip", size: 3984588 },
     { name: "latest.json", size: 2376 },
   ].map((a) => ({
     ...a,
-    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.3/${a.name}`,
+    browser_download_url: `https://github.com/kingnazz/ArcScan/releases/download/v1.8.4/${a.name}`,
   })),
 };
 
@@ -317,31 +331,63 @@ await step("the release API fills every card with the right asset", async () => 
       version: el.querySelector('[data-field="version"]')?.textContent?.trim(),
       size: el.querySelector('[data-field="size"]')?.textContent?.trim(),
       notes: el.querySelector('[data-field="notes"]')?.getAttribute("href"),
+      portableLink: el.querySelector('[data-field="portable-link"]')?.getAttribute("href"),
+      portableSize: el.querySelector('[data-field="portable-size"]')?.textContent?.trim(),
     })),
   );
   await p.close();
 
   const expected = {
-    "win-x64": { file: "ArcScan_1.8.3_x64-setup.exe", size: "4.3 MB" },
-    "win-arm64": { file: "ArcScan_1.8.3_arm64-setup.exe", size: "4.1 MB" },
-    mac: { file: "ArcScan_1.8.3_universal.dmg", size: "7.2 MB" },
+    "win-x64": {
+      file: "ArcScan_1.8.4_x64-setup.exe",
+      size: "4.3 MB",
+      portable: "ArcScan_1.8.4_windows-x64-portable.zip",
+      portableSize: "4.0 MB",
+    },
+    "win-arm64": {
+      file: "ArcScan_1.8.4_arm64-setup.exe",
+      size: "4.1 MB",
+      portable: "ArcScan_1.8.4_windows-arm64-portable.zip",
+      portableSize: "3.8 MB",
+    },
+    mac: { file: "ArcScan_1.8.4_universal.dmg", size: "7.2 MB", portable: null },
   };
   for (const card of cards) {
     const want = expected[card.os];
     if (!want) throw new Error(`unexpected card ${card.os}`);
     if (!card.link?.endsWith(want.file)) throw new Error(`${card.os} links to ${card.link}`);
-    // A .sig or the updater tarball reaching a download button is the failure
-    // this guards against.
-    if (/\.sig$|\.tar\.gz$|latest\.json$/.test(card.link ?? "")) {
-      throw new Error(`${card.os} links to a non-installer asset: ${card.link}`);
+    // A .sig, the updater tarball, or a portable ZIP reaching the *installer*
+    // button is the failure this guards against.
+    if (/\.sig$|\.tar\.gz$|latest\.json$|portable/i.test(card.link ?? "")) {
+      throw new Error(`${card.os} installer links to ${card.link}`);
     }
-    if (card.version !== "1.8.3") throw new Error(`${card.os} shows version ${card.version}`);
+    if (card.version !== "1.8.4") throw new Error(`${card.os} shows version ${card.version}`);
     if (card.size !== want.size) throw new Error(`${card.os} shows size ${card.size}`);
-    if (!card.notes?.includes("/releases/tag/v1.8.3")) {
+    if (!card.notes?.includes("/releases/tag/v1.8.4")) {
       throw new Error(`${card.os} notes link is ${card.notes}`);
     }
+
+    if (want.portable === null) {
+      if (card.portableLink) {
+        throw new Error(`${card.os} offers a portable download, which does not exist`);
+      }
+      continue;
+    }
+    if (!card.portableLink?.endsWith(want.portable)) {
+      throw new Error(`${card.os} portable links to ${card.portableLink}`);
+    }
+    // And the architectures must not cross. This is the mistake with the
+    // quietest failure: the download works, the app launches, and it is the
+    // wrong build.
+    const other = card.os === "win-x64" ? /arm64/i : /(^|[^a-z])x64/i;
+    if (other.test(card.portableLink.split("/").pop() ?? "")) {
+      throw new Error(`${card.os} portable links to the other architecture: ${card.portableLink}`);
+    }
+    if (card.portableSize !== want.portableSize) {
+      throw new Error(`${card.os} portable shows size ${card.portableSize}`);
+    }
   }
-  return cards.map((c) => `${c.os} ${c.size}`).join(", ");
+  return cards.map((c) => `${c.os} ${c.size}${c.portableSize ? ` + ${c.portableSize}` : ""}`).join(", ");
 });
 
 await step("each platform is recommended the build it can run", async () => {
@@ -349,17 +395,17 @@ await step("each platform is recommended the build it can run", async () => {
     [
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
       "mac",
-      "ArcScan_1.8.3_universal.dmg",
+      "ArcScan_1.8.4_universal.dmg",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-x64",
-      "ArcScan_1.8.3_x64-setup.exe",
+      "ArcScan_1.8.4_x64-setup.exe",
     ],
     [
       "Mozilla/5.0 (Windows NT 10.0; Win64; ARM64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       "win-arm64",
-      "ArcScan_1.8.3_arm64-setup.exe",
+      "ArcScan_1.8.4_arm64-setup.exe",
     ],
   ];
   const seen = [];
@@ -400,8 +446,13 @@ await step("a release with no installers never shows a broken download", async (
     );
     await q.goto(BASE, { waitUntil: "domcontentloaded" });
     await q.waitForTimeout(1200);
-    const links = await q.$$eval(".dl [data-field='link']", (els) =>
-      els.map((el) => el.getAttribute("href")),
+    const links = await q.$$eval(
+      ".dl [data-field='link'], .dl [data-field='portable-link']",
+      (els) => els.map((el) => el.getAttribute("href")),
+    );
+    const sizes = await q.$$eval(
+      ".dl [data-field='size'], .dl [data-field='portable-size']",
+      (els) => els.map((el) => el.textContent?.trim()),
     );
     await q.close();
     for (const href of links) {
@@ -409,7 +460,10 @@ await step("a release with no installers never shows a broken download", async (
         throw new Error(`a card pointed at ${href} with no assets`);
       }
     }
-    return "cards stay on the releases page";
+    for (const size of sizes) {
+      if (size !== "See the release page") throw new Error(`a size read "${size}" with no assets`);
+    }
+    return `${links.length} controls stay on the releases page`;
   }
   await p.close();
   throw new Error("a release with no installers filled in a size");
@@ -471,44 +525,47 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.8.3 improvements", async () => {
+await step("the release section states the 1.8.4 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
   // The version has to be named, or the section could describe any release.
-  if (!text.includes("1.8.3")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.4")) throw new Error("the section does not name the version");
 
   // One assertion per claim, phrased as the claim rather than as exact wording,
   // so the copy can be edited without the test becoming a transcript.
   const claims = [
-    [/mdns/, "mDNS"],
-    [/ssdp/, "SSDP"],
-    [/device type/, "device types"],
-    [/confidence/, "confidence being shown"],
-    [/pick a device type|set the device type|correct/, "correcting the type"],
-    [/same identity|nothing else|no duplicate/, "the correction changing nothing else"],
-    [/unknown is a real answer|choosing unknown/, "explicit Unknown"],
-    [/stale|stops leaning|no longer/, "evidence going stale"],
-    [/in scans rather than in days|counted in scans/, "aging counted in scans"],
-    [/copy discovery details/, "the redacted summary"],
-    [/leaves out|omits/, "what the summary leaves out"],
-    [/local network only|only on a network this computer|remote and routed/, "local-only behaviour"],
-    [/no credentials/, "no credentials being sent"],
-    [/cloud service|no.*service/, "no cloud service"],
+    [/portable/, "the portable edition"],
+    [/windows/, "the platform it is for"],
+    [/x64/, "x64"],
+    [/arm64/, "ARM64"],
+    [/arcscandata/, "the ArcScanData folder"],
+    [/beside/, "the data being beside the app"],
+    [/usb/, "USB use"],
+    [/no installer|without installing|unzip/, "no installation being needed"],
+    [/administrator rights|no admin/, "no administrator rights"],
+    [/separate build|separate databases|independent/, "independence from the installed copy"],
+    [/settings names|names the exact path|exact path/, "the data path being shown"],
+    [/nothing merged|nothing is merged/, "no automatic merging"],
+    [/says so and stops|instead of quietly|never falls back/, "the absence of a silent fallback"],
+    [/network share|network location/, "the network-location policy"],
+    [/manual replacement|replacement of the application files/, "manual updating"],
+    [/updater is unchanged|automatic updater is unchanged/, "the installed updater being unchanged"],
+    [/unchanged/, "what did not change"],
   ];
   for (const [pattern, label] of claims) {
     if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
   }
 
-  // Discovery must never be sold as more certain than it is.
+  // The four claims this release must never make.
   for (const overclaim of [
-    /identifies every device/,
-    /always know|guaranteed/,
-    /perfect(ly)? identif/,
-    /recognises all/,
+    [/portable.{0,40}macos|macos.{0,40}portable/, "portable macOS"],
+    [/zero dependencies|no dependencies/, "zero dependencies"],
+    [/updates itself|self-updat|automatic.{0,20}portable update/, "portable self-update"],
+    [/writes nothing (?:else )?outside|nothing outside (?:the|that) folder/, "Windows writing nothing outside the folder"],
   ]) {
-    if (overclaim.test(text)) throw new Error(`the section overclaims: ${overclaim}`);
+    if (overclaim[0].test(text)) throw new Error(`the section claims ${overclaim[1]}`);
   }
 
   const headings = await section.locator("h3").allInnerTexts();
@@ -516,13 +573,13 @@ await step("the release section states the 1.8.3 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.8.3 page", async () => {
+await step("the What changed link opens the local 1.8.4 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A first-party page, not GitHub: a visitor asking what changed should get
   // something written for them before they get a commit list.
-  if (href !== "whats-new-1.8.3.html") {
+  if (href !== "whats-new-1.8.4.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -537,10 +594,7 @@ await step("the What changed link opens the local 1.8.3 page", async () => {
 });
 
 await step("the new screenshots load at their stated size", async () => {
-  const shots = [
-    "assets/shots/device-type-override-dark.webp",
-    "assets/shots/device-stale-evidence-dark.webp",
-  ];
+  const shots = ["assets/shots/settings-portable-dark.webp"];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
     if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
@@ -615,12 +669,25 @@ await step("SEO metadata is complete", async () => {
   return `title ${meta.title.length} chars, description ${meta.description.length} chars`;
 });
 
-await step("robots.txt and sitemap.xml are served", async () => {
+await step("robots.txt and sitemap.xml are served, and the sitemap is current", async () => {
   for (const path of ["/robots.txt", "/sitemap.xml"]) {
     const response = await page.request.get(`${BASE}${path}`);
     if (!response.ok()) throw new Error(`${path} returned ${response.status()}`);
   }
-  return "both present";
+  // A What's New page nothing links to from a sitemap is a page search engines
+  // find late, and the 1.8.2 entry was missed once already.
+  const sitemap = await (await page.request.get(`${BASE}/sitemap.xml`)).text();
+  for (const page_ of [
+    "whats-new-1.8.4.html",
+    "whats-new-1.8.3.html",
+    "whats-new-1.8.2.html",
+    "whats-new-1.8.1.html",
+    "whats-new-1.8.0.html",
+    "privacy.html",
+  ]) {
+    if (!sitemap.includes(page_)) throw new Error(`the sitemap does not list ${page_}`);
+  }
+  return "both present, sitemap lists every page";
 });
 
 await step("privacy page loads and names the public IP providers", async () => {
@@ -670,10 +737,10 @@ await step("download flow survives a GitHub API failure", async () => {
 
 
 // ---------------------------------------------------------------------------
-// The first-party What's New page for 1.8.3
+// The first-party What's New page for 1.8.4
 // ---------------------------------------------------------------------------
 
-const WHATS_NEW = "/whats-new-1.8.3.html";
+const WHATS_NEW = "/whats-new-1.8.4.html";
 
 await step("the What's New page loads with the right title and metadata", async () => {
   const response = await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
@@ -725,7 +792,7 @@ await step("the What's New page loads with the right title and metadata", async 
   return `${title.length} char title, ${description.length} char description`;
 });
 
-await step("structured data names version 1.8.3 and parses", async () => {
+await step("structured data names version 1.8.4 and parses", async () => {
   const blocks = await page.$$eval('script[type="application/ld+json"]', (nodes) =>
     nodes.map((n) => n.textContent),
   );
@@ -733,18 +800,19 @@ await step("structured data names version 1.8.3 and parses", async () => {
   const parsed = blocks.map((b) => JSON.parse(b));
   const article = parsed.find((b) => b["@type"] === "Article");
   if (!article) throw new Error("no Article block");
-  if (article.about?.softwareVersion !== "1.8.3") {
+  if (article.about?.softwareVersion !== "1.8.4") {
     throw new Error(`structured data says version ${article.about?.softwareVersion}`);
   }
-  if (!article.datePublished) throw new Error("no published date");
+  // No datePublished assertion: a page written before the release is published
+  // must not carry an invented date, and the release date is not knowable here.
   return `Article, softwareVersion ${article.about.softwareVersion}`;
 });
 
 await step("the page states the version visibly", async () => {
   const text = await page.locator("main").innerText();
-  if (!/1\.8\.2/.test(text)) throw new Error("the version is not visible on the page");
+  if (!/1\.8\.4/.test(text)) throw new Error("the version is not visible on the page");
   if (!/free and open source/i.test(text)) throw new Error("the free and open source label is missing");
-  return "version 1.8.3";
+  return "version 1.8.4";
 });
 
 await step("the hero offers a download and a way back to the home page", async () => {
@@ -760,28 +828,61 @@ await step("the hero offers a download and a way back to the home page", async (
 
 await step("every required section is present and explained", async () => {
   const sections = {
-    // The two things this release exists for, each asserted on its own claims
-    // rather than on its wording, so the copy can be edited without the test
-    // turning into a transcript of it.
-    correct: [
-      /device type you can set yourself|set the device type/i,
-      /never changes what the device is|nothing else/i,
-      /same identity/i,
-      /unknown is a real answer/i,
-      /automatic/i,
+    // Each section is asserted on its claims rather than on its wording, so the
+    // copy can be edited without the test turning into a transcript of it.
+    portable: [
+      /arcscandata/i,
+      /database/i,
+      /theme|recent targets|column layout|settings/i,
+      /from the executable itself/i,
+      /never from whatever directory/i,
+      /isolating the database alone/i,
+      /copy it|copy data path/i,
     ],
-    stale: [
-      /three scans in a row/i,
-      /counted in scans, not in days|in scans, not in days/i,
-      /never deleted|is kept, shown and dated/i,
-      /high confidence to medium/i,
+    choose: [
+      /installer/i,
+      /portable/i,
+      /usb/i,
+      /administrator rights/i,
+      /no portable macos build/i,
     ],
-    classification: [/no new protocols/i, /unknown is still a valid answer/i, /high confidence/i],
-    quality: [/complete/i, /limited/i, /skipped/i, /interrupted/i, /never says a firewall/i],
-    report: [/copy discovery details/i, /clipboard/i, /notes/i, /mac address/i, /masked/i],
-    local: [/no credentials/i, /read-only/i, /remote subnets|routed targets/i, /time-to-live/i],
-    unchanged: [/same four views/i, /partial scans/i, /ipv4 only/i, /no account/i],
-    upgrade: [/without losing/i, /nothing is rewritten|no database change|nothing to migrate/i, /settings are kept/i],
+    data: [
+      /arcscan\.exe/i,
+      /webview/i,
+      /lock file/i,
+      /close arcscan and move/i,
+      /close arcscan and delete/i,
+      /arcscan-owned persistent data stays in/i,
+      /no application controls those/i,
+    ],
+    independent: [
+      /separate databases/i,
+      /nothing is merged in either direction/i,
+      /two portable folders/i,
+      /same arcscandata/i,
+    ],
+    updating: [
+      /does not install it|does not install updates/i,
+      /does not contain the installer updater/i,
+      /close arcscan/i,
+      /leave.*arcscandata/i,
+      /installed edition.*updater is unchanged/i,
+    ],
+    limits: [
+      /actually writing a file/i,
+      /read-only flag/i,
+      /network location|mapped drive/i,
+      /extract first/i,
+      /webview2/i,
+      /not a claim arcscan makes|no dependencies.{0,40}not a claim/i,
+      /smartscreen/i,
+    ],
+    unchanged: [
+      /same application-data location/i,
+      /same updater/i,
+      /mdns and ssdp/i,
+      /no telemetry, no analytics|no telemetry/i,
+    ],
   };
   for (const [id, patterns] of Object.entries(sections)) {
     const node = page.locator(`#${id}`);
@@ -794,36 +895,80 @@ await step("every required section is present and explained", async () => {
   return `${Object.keys(sections).length} sections`;
 });
 
-await step("the discovery wording states every part of the promise", async () => {
-  const text = await page.locator("#local").innerText();
-  // Each of these is a separate promise, and a page that makes five of them is
-  // not making the sixth. They are asserted individually on purpose.
-  const promises = [
-    [/only when what you are scanning is inside|network this computer is actually attached/i,
-      "that discovery is local-only"],
-    [/remote subnets, routed targets and public addresses/i, "that remote targets are excluded"],
-    [/time-to-live of one/i, "that queries cannot leave the local link"],
-    [/no username, no password|no credentials|sends no username/i, "that no credentials are sent"],
-    [/nothing about your network.*is sent anywhere/i, "that nothing is sent anywhere"],
-    [/no lookup service|no fingerprint database|no telemetry/i, "that no service is contacted"],
-    [/configures nothing|changes nothing|read-only/i, "that it is read-only"],
-    [/switch (all of )?it off|switch it all off/i, "that it can be switched off"],
-  ];
-  for (const [pattern, label] of promises) {
-    if (!pattern.test(text)) throw new Error(`the page does not state ${label}`);
+await step("the installer and portable comparison covers the real differences", async () => {
+  const rows = await page.$$eval("#choose table.compare tbody tr", (trs) =>
+    trs.map((tr) => ({
+      label: tr.querySelector("th")?.textContent?.trim() ?? "",
+      cells: Array.from(tr.querySelectorAll("td")).map((td) => td.textContent?.trim() ?? ""),
+    })),
+  );
+  if (rows.length < 6) throw new Error(`the comparison has only ${rows.length} rows`);
+  for (const needed of [/setup required/i, /data/i, /updates/i, /usb/i, /platforms/i]) {
+    if (!rows.some((r) => needed.test(r.label))) throw new Error(`no row for ${needed}`);
   }
+  for (const row of rows) {
+    if (row.cells.length !== 2) {
+      throw new Error(`"${row.label}" has ${row.cells.length} cells, expected installer + portable`);
+    }
+  }
+  // The platforms row is where a false portable-macOS claim would appear.
+  const platforms = rows.find((r) => /platforms/i.test(r.label));
+  if (/macos/i.test(platforms.cells[1])) {
+    throw new Error(`the portable column claims macOS: ${platforms.cells[1]}`);
+  }
+  if (!/macos/i.test(platforms.cells[0])) {
+    throw new Error("the installer column should still list macOS");
+  }
+  return `${rows.length} rows compared`;
+});
 
-  // Discovery must never be sold as certain.
-  const body = (await page.locator("main").innerText()).toLowerCase();
-  for (const overclaim of [
-    /identifies every device/,
-    /guaranteed|perfect(ly)? identif/,
-    /always knows what/,
-    /recognises all/,
+await step("the page makes none of the four claims this release must not make", async () => {
+  // The prose, not the download cards. Card text flattens into one run in which
+  // the ARM64 card's "Download portable" sits next to the macOS card's heading,
+  // and that adjacency is not a claim. The cards have their own assertion above:
+  // exactly the two Windows cards offer a portable option, and the macOS one
+  // does not.
+  const raw = (
+    await page.$$eval("main section", (sections) =>
+      sections
+        .filter((section) => section.id !== "download")
+        .map((section) => section.innerText)
+        .join("\n"),
+    )
+  ).toLowerCase();
+  // Sentences that deny a thing must not read as claiming it. "There is no
+  // portable macOS build" and "no dependencies is not a claim ArcScan makes"
+  // are the page being careful, so negated sentences are dropped before the
+  // claim patterns run.
+  const text = raw
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((sentence) => !/\b(no|not|never|without|cannot|does not|is not)\b/.test(sentence))
+    .join(" ");
+  for (const [pattern, label] of [
+    [/portable.{0,40}macos|macos.{0,40}portable/, "portable macOS"],
+    [/zero dependencies/, "zero dependencies"],
+    [/updates itself|self-updat/, "portable self-update"],
+    [/code-signed with a paid|is signed with a paid/, "code signing it does not have"],
   ]) {
-    if (overclaim.test(body)) throw new Error(`the page overclaims: ${overclaim}`);
+    if (pattern.test(text)) throw new Error(`the page claims ${label}`);
   }
-  return `${promises.length} statements present`;
+  // The denials themselves are checked against the full text, since dropping
+  // them above is exactly what makes them invisible to the loop.
+  for (const [pattern, label] of [
+    [/no portable macos build/, "that there is no portable macOS build"],
+    [/not a claim arcscan makes/, "that no-dependencies is not claimed"],
+  ]) {
+    if (!pattern.test(raw)) throw new Error(`the page does not state ${label}`);
+  }
+  // And it must make the honest versions of two of them.
+  for (const [pattern, label] of [
+    [/webview2/, "the WebView2 requirement"],
+    [/no application controls those/, "that Windows keeps its own records"],
+    [/not code-signed/, "the unsigned publisher status"],
+  ]) {
+    if (!pattern.test(raw)) throw new Error(`the page does not state ${label}`);
+  }
+  return "no overclaims";
 });
 
 await step("the release is not described as changing how scanning works", async () => {
@@ -832,7 +977,7 @@ await step("the release is not described as changing how scanning works", async 
     if (pattern.test(text)) throw new Error(`the page overstates the release: ${pattern}`);
   }
   if (!/unchanged|the same/.test(text)) {
-    throw new Error("a polish release must say what stayed the same");
+    throw new Error("a distribution release must say what stayed the same");
   }
 });
 
@@ -841,13 +986,19 @@ await step("every previous What's New page is still published and reachable", as
   // none may 404, and none may be quietly overwritten with newer content. The
   // list grows by one every release, on purpose: an old page being deleted is
   // exactly the failure this catches.
-  for (const link of ["whats-new-1.8.2.html", "whats-new-1.8.1.html", "whats-new-1.8.0.html"]) {
-    if ((await page.locator(`#unchanged a[href="${link}"]`).count()) === 0) {
-      throw new Error(`the 1.8.3 page does not link back to ${link}`);
+  for (const link of [
+    "whats-new-1.8.3.html",
+    "whats-new-1.8.2.html",
+    "whats-new-1.8.1.html",
+    "whats-new-1.8.0.html",
+  ]) {
+    if ((await page.locator(`#download a[href="${link}"]`).count()) === 0) {
+      throw new Error(`the 1.8.4 page does not link back to ${link}`);
     }
   }
 
   const expectations = [
+    ["whats-new-1.8.3.html", /What's new in ArcScan 1\.8\.3$/, /1\.8\.3/, /device type/i],
     ["whats-new-1.8.2.html", /What's new in ArcScan 1\.8\.2$/, /1\.8\.2/, /mdns/i],
     ["whats-new-1.8.1.html", /What's new in ArcScan 1\.8\.1$/, /1\.8\.1/, /public ip/i],
     ["whats-new-1.8.0.html", /What's new in ArcScan 1\.8$/, /1\.8\.0/, /inventory/i],
@@ -864,16 +1015,24 @@ await step("every previous What's New page is still published and reachable", as
     if (!version.test(body)) throw new Error(`${file} no longer names its own version`);
     if (!content.test(body)) throw new Error(`${file} lost its own content`);
     // An older page must keep describing its own release, not this one.
-    if (/1\.8\.3/.test(body)) throw new Error(`${file} was rewritten to describe 1.8.3`);
+    if (/1\.8\.4/.test(body)) throw new Error(`${file} was rewritten to describe 1.8.4`);
   }
   await previous.close();
-  return "1.8.2, 1.8.1 and 1.8.0 intact";
+  return "1.8.3, 1.8.2, 1.8.1 and 1.8.0 intact";
 });
 
-await step("a partial scan is explicitly excluded from marking devices Missing", async () => {
-  const text = await page.locator("#unchanged").innerText();
-  if (!/partial scans still never mark a device missing/i.test(text)) {
-    throw new Error("the page does not state that a partial scan never marks a device Missing");
+await step("a removed drive is described as failing rather than falling back", async () => {
+  // The 1.8.3 equivalent of this step asserted that a partial scan never marks
+  // a device Missing, which was that release's most easily overstated
+  // behaviour. This is 1.8.4's: a portable copy on a drive that has gone must
+  // say saving failed, and must not be described as recovering by writing
+  // somewhere else.
+  const text = await page.locator("#limits").innerText();
+  if (!/saving will start failing/i.test(text)) {
+    throw new Error("the page does not say that saving fails when the drive goes");
+  }
+  if (!/does not write your data elsewhere/i.test(text)) {
+    throw new Error("the page does not say the data is not written elsewhere instead");
   }
 });
 
@@ -894,8 +1053,8 @@ await step("the technical release notes stay one click away", async () => {
   const links = await page.$$eval("a[href]", (nodes) =>
     nodes.map((n) => n.getAttribute("href")).filter(Boolean),
   );
-  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.3")) {
-    throw new Error("no link to the v1.8.3 release notes on GitHub");
+  if (!links.includes("https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4")) {
+    throw new Error("no link to the v1.8.4 release notes on GitHub");
   }
   if (!links.includes("https://github.com/kingnazz/ArcScan/releases")) {
     throw new Error("no link to all releases");
@@ -922,7 +1081,7 @@ await step("the download section covers every platform", async () => {
   for (const os of wanted) {
     const card = cards.find((c) => c.os === os);
     if (!card) throw new Error(`no download card for ${os}`);
-    if (card.version !== "1.8.3") throw new Error(`${os} shows version ${card.version}`);
+    if (card.version !== "1.8.4") throw new Error(`${os} shows version ${card.version}`);
     if (!card.link?.startsWith("https://github.com/")) throw new Error(`${os} has no link`);
     if (!card.hasChecksum) throw new Error(`${os} has no checksum link`);
   }
@@ -936,17 +1095,14 @@ await step("the download section covers every platform", async () => {
     (m) => m[1].trim(),
   );
   if (fallbacks.length !== 3) throw new Error(`${fallbacks.length} static version fallbacks`);
-  const stale = fallbacks.filter((v) => v !== "1.8.3");
+  const stale = fallbacks.filter((v) => v !== "1.8.4");
   if (stale.length > 0) throw new Error(`static fallback still says ${stale.join(", ")}`);
 
-  return `${cards.length} cards, all at 1.8.3, static fallback 1.8.3`;
+  return `${cards.length} cards, all at 1.8.4, static fallback 1.8.4`;
 });
 
-await step("both screenshots load at their stated size with real alt text", async () => {
-  const shots = [
-    "assets/shots/device-type-override-dark.webp",
-    "assets/shots/device-stale-evidence-dark.webp",
-  ];
+await step("the portable screenshot loads at its stated size with real alt text", async () => {
+  const shots = ["assets/shots/settings-portable-dark.webp"];
   for (const src of shots) {
     const img = page.locator(`img[src="${src}"]`);
     if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
@@ -973,6 +1129,11 @@ await step("both screenshots load at their stated size with real alt text", asyn
     // The responsive sources are the existing optimised assets, not a reshoot.
     if (!/-800\.webp|@2x\.webp/.test(info.srcset)) {
       throw new Error(`${src} does not use the responsive assets`);
+    }
+    // The portable panel is shown with a fictional path, so no published image
+    // of it can carry a real person's user name.
+    if (/users\\\\|\/home\/|\/Users\//.test(info.alt)) {
+      throw new Error(`${src} alt text describes a real-looking user path`);
     }
   }
   return `${shots.length} screenshots`;

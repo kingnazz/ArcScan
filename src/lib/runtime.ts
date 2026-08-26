@@ -15,6 +15,8 @@ export type UpdaterMode = "installer" | "manual";
 export interface RuntimeInfo {
   edition: Edition;
   version: string;
+  /** "Windows", "macOS", "Linux" — the build's target, not the host's. */
+  platform: string;
   /** "x64", "ARM64", "x86" — the build's target, not the host's. */
   architecture: string;
   /** The data root, already formatted for display and for Copy data path. */
@@ -29,14 +31,15 @@ export const isPortable = (info: RuntimeInfo | null): boolean => info?.edition =
 /**
  * How the edition is described in Settings: "Portable edition · Windows x64".
  *
- * The platform word comes from the runtime's architecture label rather than from
- * the user agent, because the point of the line is to tell an operator which
- * *build* they are running — which is exactly the thing a user agent gets wrong
- * for an x64 build on an ARM64 machine.
+ * Both words after the separator come from the backend, which reads them off its
+ * own compile target. Neither comes from the user agent, because the point of
+ * the line is to say which *build* is running, and a user agent describes the
+ * machine — which is exactly the wrong answer for an x64 build running on an
+ * ARM64 Windows box under emulation.
  */
-export function editionLabel(info: RuntimeInfo, platform: string): string {
+export function editionLabel(info: RuntimeInfo): string {
   const edition = info.edition === "portable" ? "Portable edition" : "Installed edition";
-  return `${edition} · ${platform} ${info.architecture}`;
+  return `${edition} · ${info.platform} ${info.architecture}`;
 }
 
 /**
