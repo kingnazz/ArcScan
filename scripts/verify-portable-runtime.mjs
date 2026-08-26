@@ -134,6 +134,45 @@ function run(folder) {
   });
 }
 
+/**
+ * Launch a copy that is expected to be refused, and wait for it to say so.
+ *
+ * On Linux the process exits, so watching for the exit is enough. On Windows the
+ * refusal is a modal MessageBoxW and the process sits there until somebody
+ * presses OK, which no CI runner is going to do -- so what is watched for is the
+ * message on standard error, which ArcScan writes before raising the dialog. The
+ * launch is then ended either way.
+ */
+function runExpectingRefusal(folder, pattern) {
+  const [command, prefix] = launchCommand(path.join(folder, exeName));
+  return new Promise((resolve) => {
+    const child = spawn(command, prefix, {
+      cwd: tmpdir(),
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: !windows,
+    });
+    let out = "";
+    let settled = false;
+    const finish = (refused) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      killTree(child);
+      resolve({ refused, output: out });
+    };
+    const watch = (d) => {
+      out += d;
+      if (pattern.test(out)) finish(true);
+    };
+    child.stdout.on("data", watch);
+    child.stderr.on("data", watch);
+    child.on("exit", (code) => finish(code !== 0 && code !== null));
+    child.on("error", () => finish(false));
+    // Long enough for a refusal, which happens before Tauri starts at all.
+    const timer = setTimeout(() => finish(false), Math.min(RUN_MS, 12000));
+  });
+}
+
 function stage(name, exe) {
   const folder = path.join(root, name);
   mkdirSync(folder, { recursive: true });
@@ -259,17 +298,13 @@ const held = spawn(heldCommand, heldPrefix, {
   detached: !windows,
 });
 await new Promise((r) => setTimeout(r, Math.min(RUN_MS, 8000)));
-const secondA = await run(a);
-check(!secondA.ranToTimeout && secondA.code !== 0, "it is refused", `exit ${secondA.code}`);
-if (!windows) {
-  // On Windows the refusal is a MessageBoxW rather than stderr, so its text is
-  // not capturable here; the non-zero exit above is the observable part.
-  check(
-    /already running from this folder/i.test(secondA.output),
-    "it says which folder is already in use",
-    secondA.output.slice(-400),
-  );
-}
+const secondA = await runExpectingRefusal(a, /already running from this folder/i);
+check(secondA.refused, "it is refused, and says which folder is already in use", secondA.output.slice(-400));
+check(
+  !/appdata|application data/i.test(secondA.output),
+  "and does not offer to put the data somewhere else",
+  secondA.output.slice(-400),
+);
 
 console.log("\n3. A different portable folder, while A is still running");
 const firstB = await run(b);

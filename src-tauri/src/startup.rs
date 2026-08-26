@@ -47,15 +47,25 @@ pub fn portable_startup() -> Result<Option<PortableStartup>, PortableError> {
 
 /// Report a fatal startup failure to the operator, with no window to put it in.
 ///
-/// On Windows this is a plain `MessageBoxW`: a synchronous system modal that
+/// Two channels, and both are unconditional.
+///
+/// Standard error always gets the message. A GUI-subsystem process on Windows
+/// has no console attached when it is double-clicked, so nobody sees this in
+/// ordinary use -- but a program that fails should say why on stderr, and a
+/// script or a shell that captured it then has something to read. That is what
+/// makes the portable failure paths observable to the verification script rather
+/// than only to a person.
+///
+/// Windows additionally gets a `MessageBoxW`: a synchronous system modal that
 /// needs no event loop, no WebView and no window, which is the whole reason the
-/// preflight runs before Tauri starts. Everywhere else it goes to stderr, which
-/// is where a developer running a portable build outside Windows will look.
+/// preflight runs before Tauri starts rather than inside its setup hook.
 pub fn report_fatal(error: &PortableError) {
     let message = match error.detail() {
         Some(detail) => format!("{}\n\n{detail}", error.message()),
         None => error.message(),
     };
+
+    eprintln!("{message}");
 
     #[cfg(windows)]
     {
@@ -83,9 +93,6 @@ pub fn report_fatal(error: &PortableError) {
             );
         }
     }
-
-    #[cfg(not(windows))]
-    eprintln!("{message}");
 }
 
 /// Build the main window.
