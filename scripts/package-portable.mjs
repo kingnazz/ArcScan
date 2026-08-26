@@ -115,21 +115,36 @@ if (machine !== spec.machine) {
 }
 
 /**
+ * Strings that are in the binary only because the updater plugin is linked.
+ *
+ * Each was checked against both editions built from this tree, and each is
+ * present in the installed build and absent from the portable one. The updater
+ * *endpoint* is deliberately not on this list: `tauri::generate_context!`
+ * embeds the whole of tauri.conf.json, `plugins.updater.endpoints` included, so
+ * that URL is in the portable binary too and testing for it would reject every
+ * portable build. It took a real Windows cross-compile to notice, which is why
+ * the list says how it was arrived at.
+ */
+const UPDATER_MARKERS = [
+  "tauri-plugin-updater",
+  "plugin:updater",
+  "download_and_install",
+  // The signature verifier the updater uses, and nothing else does.
+  "minisign",
+];
+
+/**
  * Refuse the installed build.
  *
- * The portable edition is compiled without tauri-plugin-updater, so the
- * updater's own strings are absent from the binary. The installed build carries
- * them. This is a heuristic and it is treated as one -- it can only ever say
- * "this is definitely the installed build", never "this is definitely the
- * portable one" -- but it catches the mistake this release exists to prevent:
- * shipping the installed executable in a ZIP and calling it portable.
+ * A heuristic, and treated as one: it can say "this is definitely the installed
+ * build" and never "this is definitely the portable one". That is enough,
+ * because the mistake it exists to catch is the one this release exists to
+ * prevent -- shipping the installed executable in a ZIP and calling it
+ * portable.
  */
 function looksLikeInstalledBuild(file) {
   const text = readFileSync(file).toString("latin1");
-  // A string only the updater plugin puts in the binary: its manifest field
-  // names and its endpoint. Present in the installed build, absent without it.
-  const updaterMarkers = ["tauri-plugin-updater", "releases/latest/download/latest.json"];
-  return updaterMarkers.filter((m) => text.includes(m));
+  return UPDATER_MARKERS.filter((m) => text.includes(m));
 }
 
 const installedMarkers = looksLikeInstalledBuild(binaryPath);

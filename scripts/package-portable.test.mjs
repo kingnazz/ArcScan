@@ -174,6 +174,27 @@ describe("packaging a portable ZIP", () => {
 });
 
 describe("refusing to package the wrong thing", () => {
+  it("accepts a binary carrying the updater endpoint, which both editions have", () => {
+    // generate_context! embeds the whole of tauri.conf.json, so the updater
+    // endpoint is in the portable binary as well. An earlier version of this
+    // check treated it as proof of the installed build and would have rejected
+    // every portable build in CI. A real Windows cross-compile found it.
+    const exe = fakePe("arcscan.exe", X64, {
+      extraStrings: ["https://github.com/kingnazz/ArcScan/releases/latest/download/latest.json"],
+    });
+    pack([
+      "--version",
+      "1.8.4",
+      "--target",
+      "x86_64-pc-windows-msvc",
+      "--binary",
+      exe,
+      "--out",
+      work,
+    ]);
+    expect(existsSync(path.join(work, "ArcScan_1.8.4_windows-x64-portable.zip"))).toBe(true);
+  });
+
   it("refuses an x64 binary for the ARM64 ZIP", () => {
     const exe = fakePe("arcscan.exe", X64);
     const output = packExpectingFailure([
@@ -210,7 +231,7 @@ describe("refusing to package the wrong thing", () => {
     // edition, and a ZIP containing it would be exactly the "installed exe in a
     // ZIP" this release exists not to ship.
     const exe = fakePe("arcscan.exe", X64, {
-      extraStrings: ["tauri-plugin-updater", "releases/latest/download/latest.json"],
+      extraStrings: ["tauri-plugin-updater", "plugin:updater", "minisign"],
     });
     const output = packExpectingFailure([
       "--version",
