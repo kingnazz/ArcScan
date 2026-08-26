@@ -92,7 +92,7 @@ installed edition is untouched. Full notes:
 - macOS distribution, with no portable build and no claim of one.
 - The Content Security Policy, which portable mode did not need broadened.
 
-## [1.8.3] - unreleased
+## [1.8.3] - 2026-08-26
 
 Discovery tuning and user corrections. You can now correct the device type
 ArcScan detected without changing anything else about the device, older
