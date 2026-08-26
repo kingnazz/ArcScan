@@ -255,6 +255,37 @@ function seedPreferences(profileDir, settings, recents) {
   );
 }
 
+/**
+ * Does a refusal suggest putting the data somewhere other than where the
+ * operator chose?
+ *
+ * The technical detail line under each message names the path involved, and on
+ * Windows a staging folder under `%TEMP%` legitimately contains the literal
+ * string "AppData" -- `C:\Users\RUNNER~1\AppData\Local\Temp\...`. An earlier
+ * version of this check tested the whole output for that word and failed a CI
+ * run over a path it had itself created, which is the test being wrong rather
+ * than ArcScan.
+ *
+ * So the detail lines are dropped and the operator-facing sentences are what is
+ * examined, which is where an offer would actually be made. The stronger form
+ * of this property -- that portable ArcScan never *writes* to the
+ * application-data directory -- is checked separately in step 5, against the
+ * filesystem rather than against wording.
+ */
+const DETAIL_PREFIXES = [
+  /^Data folder:/,
+  /^Location:/,
+  /^Could not (create|write to|lock|open) /,
+];
+
+function offersAnywhereElse(output) {
+  const prose = output
+    .split(/\r?\n/)
+    .filter((line) => !DETAIL_PREFIXES.some((prefix) => prefix.test(line.trim())))
+    .join("\n");
+  return /appdata|application data|instead|fell back|falling back/i.test(prose);
+}
+
 if (!displayAvailable()) {
   console.log("No display and no xvfb-run: cannot launch a window. Skipping.");
   process.exit(0);
@@ -301,7 +332,7 @@ await new Promise((r) => setTimeout(r, Math.min(RUN_MS, 8000)));
 const secondA = await runExpectingRefusal(a, /already running from this folder/i);
 check(secondA.refused, "it is refused, and says which folder is already in use", secondA.output.slice(-400));
 check(
-  !/appdata|application data/i.test(secondA.output),
+  !offersAnywhereElse(secondA.output),
   "and does not offer to put the data somewhere else",
   secondA.output.slice(-400),
 );
