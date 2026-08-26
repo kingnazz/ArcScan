@@ -12,6 +12,7 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 [Download](https://github.com/kingnazz/ArcScan/releases/latest) ·
 [Website](https://kingnazz.github.io/ArcScan/) ·
 [User guide](docs/USER-GUIDE.md) ·
+[Portable](docs/PORTABLE.md) ·
 [Privacy](https://kingnazz.github.io/ArcScan/privacy.html)
 
 </div>
@@ -69,15 +70,26 @@ whatever was found, saved and labelled as a partial scan.
 
 ## Install
 
-Download the installer for your platform from the
+Download from the
 [latest release](https://github.com/kingnazz/ArcScan/releases/latest).
 
-| System | Architectures | Installer |
-| --- | --- | --- |
-| Windows 10 and 11 | x64, ARM64 | NSIS setup (`.exe`) |
-| macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) |
+| System | Architectures | Installer | Portable |
+| --- | --- | --- | --- |
+| Windows 10 and 11 | x64, ARM64 | NSIS setup (`.exe`) | ZIP |
+| macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) | Not available |
 
-Scanning needs no administrator or root privileges. ArcScan is not code-signed
+The installer is the right choice for a computer you use regularly. The
+**portable** ZIP runs ArcScan without installing it, keeping ArcScan-owned
+persistent data in an `ArcScanData` folder beside the application, which makes it
+suitable for a USB drive or a technician toolkit. Extract the ZIP before running
+ArcScan, and see [docs/PORTABLE.md](docs/PORTABLE.md) for the full reference,
+including where portable ArcScan will refuse to run and how updating works.
+
+The Microsoft Edge WebView2 Runtime is required on Windows in both editions.
+Current Windows 10 and Windows 11 already have it.
+
+Scanning needs no administrator or root privileges, and neither does running the
+portable edition. ArcScan is not code-signed
 with a paid publisher certificate and the macOS builds are not notarised, so both
 systems warn on first launch; the
 [user guide](docs/USER-GUIDE.md#installation) explains what to do. SHA-256
@@ -111,6 +123,8 @@ history, exporting, device actions, keyboard shortcuts, where the database
 lives, upgrading, uninstalling, troubleshooting, known limitations, and
 responsible scanning.
 
+- [Portable edition](docs/PORTABLE.md)
+- [Portable architecture and the persistence audit](docs/PORTABLE-ARCHITECTURE.md)
 - [Auto-update setup](docs/AUTO_UPDATE.md)
 - [Website](site/README.md)
 
