@@ -5,7 +5,7 @@ description = "A fast, lightweight network and port scanner"
 authors = ["ArcScan"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.89"
 
 [lib]
 # The `_lib` suffix avoids a name collision with the binary on Windows.
@@ -36,15 +36,48 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 if-addrs = "0.13"
 
+# Two Windows calls, for portable mode only. GetDriveTypeW classifies a mapped
+# network drive, and MessageBoxW reports a failed portable preflight before any
+# window exists to report it in. windows-sys is already in the dependency graph
+# several times over via tauri, so this adds no new code to the build -- just
+# these declarations and their constants.
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Storage_FileSystem",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 # Desktop-only auto-updater (checks a public feed, verifies signatures, installs
-# and relaunches). Not built for mobile targets.
+# and relaunches). Not built for mobile targets, and -- see the `portable`
+# feature below -- not built for portable ones either.
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
 
 [features]
+default = ["installed-updater"]
+
 # This feature is used for production builds or when a dev server is not specified.
 custom-protocol = ["tauri/custom-protocol"]
+
+# The installed edition's auto-updater: check the signed feed, download, install,
+# relaunch. Default on, so `cargo build` and `cargo test` behave exactly as they
+# did before 1.8.4.
+installed-updater = ["dep:tauri-plugin-updater", "dep:tauri-plugin-process"]
+
+# The Windows Portable edition.
+#
+# Two things at once, and both matter. It moves ArcScan-owned persistent state
+# into an ArcScanData folder beside the executable, and it takes the installer
+# updater out of the binary rather than hiding its button: build with
+# `--no-default-features --features portable` and there is no
+# tauri-plugin-updater linked, so no install-and-relaunch path exists to be
+# reached by a bug, a stale build of the frontend, or anything else.
+#
+# The edition is compiled in on purpose. See src/runtime.rs for why inferring it
+# from the folder at runtime would be a silent data-location change waiting to
+# happen.
+portable = []
 
 [profile.release]
 panic = "abort"
