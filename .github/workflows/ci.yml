@@ -102,6 +102,44 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      # The portable edition is a different binary: no updater plugin, a
+      # different capability set, and the portable startup path compiled in. It
+      # has to be built and tested in its own right, or "it compiles" would only
+      # ever have been checked for the installed half.
+      #
+      # Its own target directory, so this does not evict the installed build's
+      # cache on every run.
+      - name: Test the portable edition
+        working-directory: src-tauri
+        env:
+          CARGO_TARGET_DIR: target-portable
+        run: cargo test --no-default-features --features portable
+      - name: Clippy the portable edition
+        working-directory: src-tauri
+        env:
+          CARGO_TARGET_DIR: target-portable
+        run: cargo clippy --all-targets --no-default-features --features portable -- -D warnings
+
+      # Enabling both edition features would compile a binary that reports
+      # portable while carrying the installer updater. Cargo.toml makes that a
+      # compile error; this checks the guard is actually wired, because a guard
+      # nobody tests is a comment.
+      - name: The two editions cannot be combined
+        working-directory: src-tauri
+        env:
+          CARGO_TARGET_DIR: target-portable
+        run: |
+          if cargo check --features portable 2>err.log; then
+            echo "expected a compile error when both editions are enabled"
+            exit 1
+          fi
+          grep -q "mutually exclusive" err.log || {
+            echo "the build failed, but not with the mutual-exclusion error:"
+            cat err.log
+            exit 1
+          }
+          echo "Enabling both editions fails to compile, as intended."
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
