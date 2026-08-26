@@ -143,6 +143,10 @@ jobs:
       # a check that silently did nothing would be worse than an absent one.
       - name: Verify the portable runtime
         if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          # A cold runner has to initialise WebView2 on the first launch, which
+          # the default 15 seconds can be tight for.
+          ARCSCAN_VERIFY_RUN_MS: 25000
         run: >
           node scripts/verify-portable-runtime.mjs
           --portable src-tauri/target-portable/${{ matrix.target }}/release/arcscan.exe
