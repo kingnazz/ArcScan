@@ -6758,9 +6758,17 @@ mod tests {
         // The bounds below are deliberately loose: this runs on shared CI
         // hardware and the point is to catch a *change of shape* — a query per
         // device, or a scan of all evidence per row — not to police tens of
-        // milliseconds. A per-device query at this size costs seconds, not
-        // hundreds of milliseconds, so the gap between the real numbers and
-        // these limits is what makes the test meaningful rather than flaky.
+        // milliseconds.
+        //
+        // The inventory bound matches the one the v1.8.2 test above uses for
+        // the same 5,000 devices and 100,000 observations, and for the same
+        // reason: most of that time is the window function picking each
+        // device's latest observation, which is seconds on any machine and
+        // several seconds on a slow one. A tighter bound does not measure
+        // shape, it measures the runner — an earlier 6,000 ms limit here read
+        // 4.4 s locally and 6.6 s on CI, and failed for no defect. What it is
+        // built to catch is far bigger than the spread between runners: 5,000
+        // round trips against this database cost tens of seconds.
         let dir = std::env::temp_dir().join(format!("arcscan-scale-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scale.db");
@@ -6774,7 +6782,7 @@ mod tests {
         let inventory_ms = started.elapsed().as_millis();
         assert_eq!(inventory.rows.len(), 5_000);
         assert!(
-            inventory_ms < 6_000,
+            inventory_ms < 20_000,
             "the inventory took {inventory_ms} ms, which suggests per-device work"
         );
 
