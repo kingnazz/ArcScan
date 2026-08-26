@@ -281,7 +281,117 @@ A second launch from the *same* folder is refused with a clear message. A launch
 from a *different* portable folder is allowed. Installed ArcScan is unaffected:
 it takes no lock, because it has no same-root problem to solve.
 
-## 9. Honest limits
+## 9. Security review
+
+Every path the portable edition introduces, and what stops each one from being
+pointed somewhere it should not go.
+
+### 9.1 The portable root
+
+Derived from `std::env::current_exe()`, which is `GetModuleFileNameW` on Windows:
+the path of the module actually loaded, not an argument, not the working
+directory, and not an environment variable. Nothing the frontend can send
+reaches it, because it is resolved before Tauri starts and before a window
+exists.
+
+### 9.2 Every child path is a fixed name
+
+`PortableLayout::for_root` joins compile-time constants — `ArcScanData`,
+`arcscan.db`, `WebView`, `runtime.lock` — onto the root, and nothing else ever
+constructs one. There is no parameter, no configuration value and no stored
+string anywhere in the chain, so there is no traversal to attempt: `..`, an
+absolute path, a device name and a NUL byte have nowhere to be injected.
+
+### 9.3 Junctions and symlinks: not canonicalised, deliberately
+
+The root is used as `current_exe()` reports it. It is **not** passed through
+`canonicalize()`.
+
+That is a decision rather than an oversight, and it goes the way it does because
+canonicalising would be the surprising behaviour. An operator who reaches
+`E:\Tools\ArcScan` through a junction has arranged that deliberately, and
+resolving the link would put their data under the junction's target instead —
+which is to say somewhere they did not choose, which is the one thing this
+release exists to prevent. Keeping the path as launched means the data lands
+beside the executable *as the operator sees it*.
+
+The safety this gives up is nil, because there is nothing to exploit: the paths
+are fixed children either way, and an attacker who can plant a junction next to
+the executable can already replace the executable. What it does mean is that two
+junctions pointing at one folder are one data root, and are correctly treated as
+such by the lock (§8), which locks the file rather than the name.
+
+### 9.4 The webview profile
+
+An absolute path from the layout, handed to
+`WebviewWindowBuilder::data_directory` before the WebView is created. Tauri's
+relative-path resolution against `data_local_dir()` applies only to a
+`data_directory` set in `tauri.conf.json`, and the config sets none.
+
+### 9.5 The lock file
+
+Opened by fixed path with create/read/write and locked with `try_lock`. It is
+never read from, never written to and never parsed, so its contents cannot
+influence anything — which is also why a file left behind by a crash is
+harmless.
+
+### 9.6 The two new commands
+
+`runtime_info` takes no argument and returns the data root as a display string
+plus five scalars. It exposes no other path, so the frontend cannot derive the
+database's location, the profile's or the lock's from what it is told.
+
+`open_data_folder` takes no argument either. It reads the data root out of
+application state and opens that, so a compromised webview invoking it a
+thousand times opens the same folder a thousand times. This is the narrowest
+possible form of the feature: the alternative, granting the opener plugin's
+`open_path` permission to the webview, would have handed it an arbitrary
+path-opening capability, and ArcScan has deliberately never had one.
+
+`open_portable_downloads` opens a compile-time constant URL, exactly like the
+existing `open_releases` and `open_privacy`.
+
+### 9.7 Capabilities and the updater
+
+The portable capability set grants `core:default` and `dialog:allow-save`, and
+nothing else. `updater:default` and `process:allow-restart` are absent because
+the plugins behind them are not linked; enabling both edition features is a
+compile error, so no build can report portable while carrying an installer-apply
+path. The portable binary is measurably smaller as a result.
+
+### 9.8 What is unchanged
+
+The Content Security Policy is not broadened: portable mode needed no new
+origin and no new script source. `save_text` still requires an absolute path
+with a `.csv`, `.json` or `.xml` extension under a size cap. The mDNS and SSDP
+protections, the URL guard and the IPv4 validation on every launcher command are
+untouched — the only edit anywhere in the scanner or discovery code in this
+release is two clippy rewrites (`x % n == 0` to `x.is_multiple_of(n)`) that
+compile to the same thing.
+
+### 9.9 Dependencies
+
+No new package in `Cargo.lock`. `windows-sys` was already in the graph several
+times over via Tauri, so `GetDriveTypeW` and `MessageBoxW` add two FFI
+declarations and no code. File locking is `std::fs::File::try_lock`, which is
+why the minimum Rust version moves to 1.89 and why nothing was added for it.
+`npm audit --audit-level=high` is clean.
+
+`Cargo.lock` moves to lockfile format 4, which any Rust from 1.78 writes and
+which is below this crate's 1.89 minimum. Pinning it back would be undone by the
+next person to build.
+
+### 9.10 One thing worth stating plainly
+
+A portable database is as protected as the medium holding it. `ArcScanData` on a
+USB stick is readable by anyone holding that stick, and ArcScan does not encrypt
+it. That is inherent to a portable tool rather than a defect, but it is the sort
+of thing that should be said out loud rather than left to be inferred: a
+portable ArcScan carrying a client's network inventory should be treated like
+any other removable medium carrying that inventory. An encrypted portable
+database is listed as a future improvement and is not in 1.8.4.
+
+## 10. Honest limits
 
 * Portable is Windows-only in 1.8.4. There is no portable macOS build, and the
   website does not claim one.
