@@ -22,6 +22,7 @@ tauri-plugin-opener = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
 
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "process"] }
 futures = "0.3"
@@ -36,15 +37,11 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 if-addrs = "0.13"
 
-# Two Windows calls, for portable mode only. GetDriveTypeW classifies a mapped
-# network drive, and MessageBoxW reports a failed portable preflight before any
-# window exists to report it in. windows-sys is already in the dependency graph
-# several times over via tauri, so this adds no new code to the build -- just
-# these declarations and their constants.
+# MessageBoxW reports a failed Portable temporary-session startup before any
+# window exists to report it in. `windows-sys` is already in Tauri's dependency
+# graph; this direct entry only enables the declaration ArcScan calls.
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = [
-  "Win32_Storage_FileSystem",
-  "Win32_System_WindowsProgramming",
   "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -68,9 +65,9 @@ installed-updater = ["dep:tauri-plugin-updater", "dep:tauri-plugin-process"]
 
 # The Windows Portable edition.
 #
-# Two things at once, and both matter. It moves ArcScan-owned persistent state
-# into an ArcScanData folder beside the executable, and it takes the installer
-# updater out of the binary rather than hiding its button: build with
+# Two things at once, and both matter. It moves ArcScan-owned state into one
+# disposable system-temp session per process, and it takes the installer updater
+# out of the binary rather than hiding its button: build with
 # `--no-default-features --features portable` and there is no
 # tauri-plugin-updater linked, so no install-and-relaunch path exists to be
 # reached by a bug, a stale build of the frontend, or anything else.
