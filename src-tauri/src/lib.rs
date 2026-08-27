@@ -30,11 +30,8 @@ compile_error!(
 pub fn run() {
     // Portable startup happens before Tauri does.
     //
-    // Everything the portable preflight needs comes from `current_exe()`, so
-    // none of it requires an app handle -- and doing it first means a folder
-    // that cannot hold ArcScan's data never gets a window, a WebView profile or
-    // a database created in it. On failure this reports the problem natively
-    // and exits; there is no path from here to the application-data directory.
+    // The Portable temp session needs no app handle, and creating it first
+    // means failure never reaches a window, WebView, database or AppData path.
     let portable = match startup::portable_startup() {
         Ok(portable) => portable,
         Err(error) => {
@@ -42,6 +39,12 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    #[cfg(feature = "portable")]
+    let portable_cleanup = portable
+        .as_ref()
+        .expect("a Portable build always creates a Portable session")
+        .session
+        .cleanup_handle();
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -58,13 +61,13 @@ pub fn run() {
             .plugin(tauri_plugin_process::init());
     }
 
-    builder
+    let app = builder
         .setup(move |app| {
             // Where this edition keeps its data. The installed edition resolves
             // the same application-data directory it always has; the portable
-            // edition uses the layout its preflight already proved works.
+            // edition uses the unique temp layout startup already claimed.
             let paths = match &portable {
-                Some(portable) => RuntimePaths::portable(&portable.layout),
+                Some(portable) => RuntimePaths::portable(&portable.session.layout),
                 None => RuntimePaths::installed(
                     app.path()
                         .app_data_dir()
@@ -78,7 +81,7 @@ pub fn run() {
                 // still not a reason to try somewhere else.
                 if let Some(portable) = &portable {
                     let error = runtime::PortableError::DatabaseUnavailable {
-                        path: portable.layout.database_path.display().to_string(),
+                        path: portable.session.layout.database_path.display().to_string(),
                         detail: e.clone(),
                     };
                     startup::report_fatal(&error);
@@ -147,6 +150,37 @@ pub fn run() {
             commands::open_rdp,
             commands::open_ssh,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ArcScan");
+        .build(tauri::generate_context!())
+        .expect("error while building ArcScan");
+
+    #[cfg(feature = "portable")]
+    {
+        // Unlike App::run, run_return lets every Tauri-managed state value and
+        // WebView close before the owned profile directory is removed. SQLite
+        // is shut down on Exit; WebView cleanup then happens inside Tauri; only
+        // after both boundaries does the marker-validated filesystem cleanup run.
+        let exit_code = app.run_return(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                scanner::request_cancel();
+                if let Some(database) = app.try_state::<db::Db>() {
+                    if let Err(error) = database.shutdown() {
+                        eprintln!("ArcScan Portable database shutdown: {error}");
+                    }
+                }
+            }
+        });
+        match portable_cleanup.cleanup() {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "ArcScan Portable left its active temporary session for stale cleanup."
+            ),
+            Err(error) => eprintln!(
+                "ArcScan Portable could not remove its temporary session; it will be retried on the next launch: {error}"
+            ),
+        }
+        std::process::exit(exit_code);
+    }
+
+    #[cfg(not(feature = "portable"))]
+    app.run(|_, _| {});
 }

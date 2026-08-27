@@ -1,170 +1,551 @@
-//! Portable startup: prove the folder works, then claim it.
+//! Disposable Portable sessions.
 //!
-//! Portable ArcScan opens no application state until it has established that
-//! the folder it is running from can actually keep that state, and that no
-//! other copy is already keeping it there. If either is not true it says so and
-//! stops. There is no AppData fallback, no second database somewhere else, and
-//! no startup that looks successful with the data going to a place the operator
-//! did not choose — which is the difference between a portable build and an
-//! installed build in a ZIP.
-//!
-//! # Why a write, and not a flag
-//!
-//! [`probe_writable`] creates a file, writes to it, flushes it and deletes it.
-//! Reading a read-only attribute would be cheaper and would be wrong: a
-//! directory ACL that denies creation, a full disk, a write-protect switch on an
-//! SD card, an antivirus holding the folder, and removable media that has
-//! already been pulled all report a perfectly writable directory right up until
-//! something is written to it.
-//!
-//! # Why an OS lock, and not a lock file
-//!
-//! [`lock_data_root`] takes a real advisory lock on `runtime.lock` and holds it
-//! for the life of the process. The alternative — treating the *existence* of
-//! `runtime.lock` as the lock — fails in the one case that matters: a crash
-//! leaves the file behind and every future launch is refused until somebody
-//! finds and deletes a file they have never heard of. An OS lock is released by
-//! the kernel when the process ends, however it ends, so the next launch simply
-//! relocks the file that is already sitting there.
+//! Each Portable process owns one fresh directory under
+//! `<system temp>/ArcScanPortable/sessions/<uuid>/`. An exclusive lock proves a
+//! session is active. A strict marker proves ArcScan ownership before cleanup.
+//! Nothing here consults or writes beside the executable.
 
-use std::fs;
-use std::io::Write;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::runtime::{
-    classify_location, DriveTypeProbe, LocationKind, PortableError, PortableLayout,
+    valid_session_id, PortableError, PortableLayout, ACTIVE_LOCK_FILE, DATABASE_FILE,
+    OWNERSHIP_MARKER_FILE, WEBVIEW_DIR,
 };
+#[cfg(test)]
+use crate::runtime::{NAMESPACE_LOCK_FILE, PORTABLE_NAMESPACE_DIR, PORTABLE_SESSIONS_DIR};
 
-/// Holds a portable data root for the life of the process.
-///
-/// The lock is the open file handle inside this value, so keeping the guard
-/// alive is what keeps the claim. Dropping it — or the process ending for any
-/// reason, including a crash — releases the lock.
-#[derive(Debug)]
-pub struct PortableGuard {
-    /// The locked `runtime.lock` handle. Never read or written; only held.
-    _lock: fs::File,
+const MARKER_PRODUCT: &str = "ArcScan";
+const MARKER_KIND: &str = "portable-session";
+const MARKER_FORMAT: u32 = 1;
+const MAX_MARKER_BYTES: u64 = 4096;
+const NAMESPACE_LOCK_ATTEMPTS: usize = 200;
+const NAMESPACE_LOCK_DELAY: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnershipMarker {
+    product: String,
+    kind: String,
+    format: u32,
+    session_id: String,
+    created_at: String,
+    process_id: u32,
 }
 
-/// Run the portable startup checks against a resolved layout.
-///
-/// In order: refuse a network location, create the data folder, prove it can be
-/// written to, then claim it. Returns the guard that must be kept alive for as
-/// long as ArcScan is running.
-///
-/// The database is opened by the caller *after* this returns, so a folder that
-/// cannot hold a database never has one created in it.
-pub fn preflight(
-    layout: &PortableLayout,
-    probe: &dyn DriveTypeProbe,
-) -> Result<PortableGuard, PortableError> {
-    if classify_location(&layout.portable_root, probe) == LocationKind::Network {
-        return Err(PortableError::NetworkLocation {
-            location: layout.portable_root.display().to_string(),
-        });
+impl OwnershipMarker {
+    fn new(session_id: &str) -> Self {
+        OwnershipMarker {
+            product: MARKER_PRODUCT.into(),
+            kind: MARKER_KIND.into(),
+            format: MARKER_FORMAT,
+            session_id: session_id.into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            process_id: std::process::id(),
+        }
     }
 
-    fs::create_dir_all(&layout.data_root).map_err(|e| PortableError::CannotCreateDataDir {
-        path: layout.data_root.display().to_string(),
-        detail: e.to_string(),
-    })?;
-
-    probe_writable(&layout.data_root)?;
-
-    lock_data_root(&layout.lock_path)
+    fn is_valid_for(&self, session_id: &str) -> bool {
+        self.product == MARKER_PRODUCT
+            && self.kind == MARKER_KIND
+            && self.format == MARKER_FORMAT
+            && self.session_id == session_id
+            && self.process_id != 0
+            && chrono::DateTime::parse_from_rfc3339(&self.created_at).is_ok()
+    }
 }
 
-/// Prove `dir` is writable by writing to it.
-///
-/// Every step is checked separately, because they fail separately: a directory
-/// can allow creation but not writing (a quota), allow writing but not flushing
-/// (a disconnected drive), and allow all three but not deletion (a mandatory
-/// lock or an antivirus). The probe name carries the process id so two ArcScans
-/// racing here cannot delete each other's probe and report a failure that is
-/// really the other process tidying up.
-pub fn probe_writable(dir: &Path) -> Result<(), PortableError> {
-    let path = dir.join(format!(".arcscan-write-probe-{}", std::process::id()));
-    let fail = |detail: String| PortableError::NotWritable {
-        path: dir.display().to_string(),
-        detail,
+/// Holds the active-session lock for the entire Portable process lifetime.
+#[derive(Debug)]
+pub struct PortableSession {
+    pub layout: PortableLayout,
+    _active_lock: File,
+}
+
+impl PortableSession {
+    pub fn start() -> Result<Self, PortableError> {
+        Self::start_in(&std::env::temp_dir())
+    }
+
+    pub(crate) fn start_in(system_temp: &Path) -> Result<Self, PortableError> {
+        let roots = namespace_layout(system_temp);
+        let _namespace = prepare_namespace(&roots)?;
+        let session = create_session(&roots)?;
+
+        // Cleanup is intentionally non-fatal. A locked WebView profile, a
+        // malformed unknown folder, or an antivirus race must not make the new
+        // independent session unavailable.
+        let report = cleanup_stale_locked(&roots.sessions_root, Some(&session.layout.session_id));
+        if report.failed > 0 {
+            eprintln!(
+                "ArcScan Portable could not clean {} stale temporary session(s); they will be retried later.",
+                report.failed
+            );
+        }
+        Ok(session)
+    }
+
+    #[cfg(any(feature = "portable", test))]
+    pub fn cleanup_handle(&self) -> PortableCleanup {
+        PortableCleanup {
+            layout: self.layout.clone(),
+        }
+    }
+}
+
+/// Path-only cleanup token retained outside Tauri until every managed resource
+/// and WebView has been torn down.
+#[derive(Debug, Clone)]
+#[cfg(any(feature = "portable", test))]
+pub struct PortableCleanup {
+    layout: PortableLayout,
+}
+
+#[cfg(any(feature = "portable", test))]
+impl PortableCleanup {
+    pub fn cleanup(&self) -> Result<bool, String> {
+        let _namespace = prepare_namespace(&self.layout).map_err(|e| e.to_string())?;
+        match remove_owned_session(&self.layout.sessions_root, &self.layout.session_root) {
+            CleanupDisposition::Removed => Ok(true),
+            CleanupDisposition::Active => Ok(false),
+            CleanupDisposition::Ignored(reason) | CleanupDisposition::Failed(reason) => Err(reason),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupReport {
+    pub removed: usize,
+    pub active: usize,
+    pub ignored: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CleanupDisposition {
+    Removed,
+    Active,
+    Ignored(String),
+    Failed(String),
+}
+
+struct NamespaceGuard {
+    _lock: File,
+}
+
+fn namespace_layout(system_temp: &Path) -> PortableLayout {
+    PortableLayout::for_session(system_temp, "00000000000040008000000000000000")
+}
+
+fn portable_error(path: &Path, detail: impl Into<String>) -> PortableError {
+    PortableError::TemporarySessionUnavailable {
+        path: path.display().to_string(),
+        detail: detail.into(),
+    }
+}
+
+fn prepare_namespace(layout: &PortableLayout) -> Result<NamespaceGuard, PortableError> {
+    create_plain_directory(&layout.namespace_root)?;
+    create_plain_directory(&layout.sessions_root)?;
+
+    let file = open_or_create_plain_file(&layout.namespace_lock_path)?;
+    for attempt in 0..NAMESPACE_LOCK_ATTEMPTS {
+        match file.try_lock() {
+            Ok(()) => return Ok(NamespaceGuard { _lock: file }),
+            Err(fs::TryLockError::WouldBlock) if attempt + 1 < NAMESPACE_LOCK_ATTEMPTS => {
+                thread::sleep(NAMESPACE_LOCK_DELAY);
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(portable_error(
+                    &layout.namespace_lock_path,
+                    "another Portable startup kept the session namespace busy",
+                ));
+            }
+            Err(fs::TryLockError::Error(error)) => {
+                return Err(portable_error(
+                    &layout.namespace_lock_path,
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+    unreachable!("bounded namespace lock loop always returns")
+}
+
+fn create_plain_directory(path: &Path) -> Result<(), PortableError> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(portable_error(path, error.to_string())),
+    }
+    validate_plain_directory(path).map_err(|detail| portable_error(path, detail))
+}
+
+fn open_or_create_plain_file(path: &Path) -> Result<File, PortableError> {
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => {
+            validate_plain_file(path).map_err(|detail| portable_error(path, detail))?;
+            Ok(file)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_plain_file(path).map_err(|detail| portable_error(path, detail))?;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|error| portable_error(path, error.to_string()))
+        }
+        Err(error) => Err(portable_error(path, error.to_string())),
+    }
+}
+
+fn create_session(roots: &PortableLayout) -> Result<PortableSession, PortableError> {
+    for _ in 0..32 {
+        let session_id = Uuid::new_v4().simple().to_string();
+        let layout = PortableLayout::from_sessions_root(roots.sessions_root.clone(), &session_id);
+        match fs::create_dir(&layout.session_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(portable_error(&layout.session_root, error.to_string())),
+        }
+        let initialize = || -> Result<File, PortableError> {
+            validate_plain_directory(&layout.session_root)
+                .map_err(|detail| portable_error(&layout.session_root, detail))?;
+
+            let active_lock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&layout.active_lock_path)
+                .map_err(|error| portable_error(&layout.active_lock_path, error.to_string()))?;
+            active_lock
+                .try_lock()
+                .map_err(|error| portable_error(&layout.active_lock_path, error.to_string()))?;
+
+            let marker = OwnershipMarker::new(&session_id);
+            let bytes = serde_json::to_vec_pretty(&marker).map_err(|error| {
+                portable_error(&layout.ownership_marker_path, error.to_string())
+            })?;
+            let mut marker_file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&layout.ownership_marker_path)
+                .map_err(|error| {
+                    portable_error(&layout.ownership_marker_path, error.to_string())
+                })?;
+            marker_file
+                .write_all(&bytes)
+                .and_then(|()| marker_file.sync_all())
+                .map_err(|error| {
+                    portable_error(&layout.ownership_marker_path, error.to_string())
+                })?;
+            drop(marker_file);
+            Ok(active_lock)
+        };
+
+        match initialize() {
+            Ok(active_lock) => {
+                return Ok(PortableSession {
+                    layout,
+                    _active_lock: active_lock,
+                });
+            }
+            Err(error) => {
+                // This directory was created above with a fresh random name and
+                // no application payload can exist yet. Roll back only those
+                // three exact paths so a partial marker never becomes an
+                // uncollectable stale directory.
+                let _ = fs::remove_file(&layout.ownership_marker_path);
+                let _ = fs::remove_file(&layout.active_lock_path);
+                let _ = fs::remove_dir(&layout.session_root);
+                return Err(error);
+            }
+        }
+    }
+
+    Err(portable_error(
+        &roots.sessions_root,
+        "could not allocate a unique session identifier",
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn cleanup_stale_sessions_in(
+    system_temp: &Path,
+) -> Result<CleanupReport, PortableError> {
+    let roots = namespace_layout(system_temp);
+    let _namespace = prepare_namespace(&roots)?;
+    Ok(cleanup_stale_locked(&roots.sessions_root, None))
+}
+
+fn cleanup_stale_locked(sessions_root: &Path, current_session_id: Option<&str>) -> CleanupReport {
+    let mut report = CleanupReport::default();
+    let entries = match fs::read_dir(sessions_root) {
+        Ok(entries) => entries,
+        Err(_) => {
+            report.failed = 1;
+            return report;
+        }
     };
 
-    let mut file = fs::File::create(&path).map_err(|e| fail(e.to_string()))?;
-    let outcome = file
-        .write_all(b"ArcScan Portable write probe\n")
-        .and_then(|()| file.flush())
-        // sync_data is the step that actually reaches the device on removable
-        // media, where the earlier ones can succeed against a cache that is
-        // never written back.
-        .and_then(|()| file.sync_data());
-    drop(file);
+    for entry in entries {
+        let Ok(entry) = entry else {
+            report.failed += 1;
+            continue;
+        };
+        let path = entry.path();
+        if current_session_id.is_some_and(|id| entry.file_name() == id) {
+            report.active += 1;
+            continue;
+        }
+        match remove_owned_session(sessions_root, &path) {
+            CleanupDisposition::Removed => report.removed += 1,
+            CleanupDisposition::Active => report.active += 1,
+            CleanupDisposition::Ignored(_) => report.ignored += 1,
+            CleanupDisposition::Failed(_) => report.failed += 1,
+        }
+    }
+    report
+}
 
-    if let Err(e) = outcome {
-        // Best effort: the probe may or may not be removable now, and the
-        // failure being reported is the write, not the cleanup.
-        let _ = fs::remove_file(&path);
-        return Err(fail(e.to_string()));
+/// Remove one direct child only after marker, type and activity validation.
+///
+/// The ownership marker is deliberately removed last. If WebView2 still has a
+/// profile file open, the failure leaves the marker in place so a later launch
+/// can prove ownership and retry.
+fn remove_owned_session(sessions_root: &Path, candidate: &Path) -> CleanupDisposition {
+    let layout = match validate_owned_candidate(sessions_root, candidate) {
+        Ok(layout) => layout,
+        Err(reason) => return CleanupDisposition::Ignored(reason),
+    };
+
+    let active_lock = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&layout.active_lock_path)
+    {
+        Ok(file) => file,
+        Err(error) => return CleanupDisposition::Ignored(error.to_string()),
+    };
+    match active_lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return CleanupDisposition::Active,
+        Err(fs::TryLockError::Error(error)) => {
+            return CleanupDisposition::Failed(error.to_string());
+        }
     }
 
-    fs::remove_file(&path).map_err(|e| fail(e.to_string()))?;
+    // Revalidate while holding the lock, then validate the whole deletion set
+    // before removing its first byte.
+    if let Err(reason) = validate_owned_candidate(sessions_root, candidate) {
+        return CleanupDisposition::Ignored(reason);
+    }
+    let payloads = match validated_payloads(&layout) {
+        Ok(payloads) => payloads,
+        Err(reason) => return CleanupDisposition::Ignored(reason),
+    };
+
+    for payload in payloads {
+        let result = if payload.is_dir {
+            fs::remove_dir_all(&payload.path)
+        } else {
+            fs::remove_file(&payload.path)
+        };
+        if let Err(error) = result {
+            return CleanupDisposition::Failed(format!("{}: {error}", payload.path.display()));
+        }
+    }
+
+    drop(active_lock);
+    if let Err(error) = fs::remove_file(&layout.active_lock_path) {
+        return CleanupDisposition::Failed(format!(
+            "{}: {error}",
+            layout.active_lock_path.display()
+        ));
+    }
+
+    let marker_bytes = match fs::read(&layout.ownership_marker_path) {
+        Ok(bytes) => bytes,
+        Err(error) => return CleanupDisposition::Failed(error.to_string()),
+    };
+    if let Err(error) = fs::remove_file(&layout.ownership_marker_path) {
+        return CleanupDisposition::Failed(format!(
+            "{}: {error}",
+            layout.ownership_marker_path.display()
+        ));
+    }
+    if let Err(error) = fs::remove_dir(&layout.session_root) {
+        // Best effort to restore deletion authority if something raced a new
+        // entry into the otherwise empty directory.
+        let _ = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&layout.ownership_marker_path)
+            .and_then(|mut file| file.write_all(&marker_bytes));
+        return CleanupDisposition::Failed(format!("{}: {error}", layout.session_root.display()));
+    }
+
+    CleanupDisposition::Removed
+}
+
+fn validate_owned_candidate(
+    sessions_root: &Path,
+    candidate: &Path,
+) -> Result<PortableLayout, String> {
+    if candidate.parent() != Some(sessions_root) {
+        return Err("cleanup target is not a direct session child".into());
+    }
+    let session_id = candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("session name is not valid UTF-8")?;
+    if !valid_session_id(session_id) {
+        return Err("session name is not a compact UUID".into());
+    }
+
+    validate_plain_directory(candidate)?;
+    let layout = PortableLayout::from_sessions_root(sessions_root.to_path_buf(), session_id);
+    validate_plain_file(&layout.ownership_marker_path)?;
+    validate_plain_file(&layout.active_lock_path)?;
+
+    let marker = read_marker(&layout.ownership_marker_path)?;
+    if !marker.is_valid_for(session_id) {
+        return Err("ownership marker does not match this session".into());
+    }
+    Ok(layout)
+}
+
+fn read_marker(path: &Path) -> Result<OwnershipMarker, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    if file.metadata().map_err(|error| error.to_string())?.len() > MAX_MARKER_BYTES {
+        return Err("ownership marker is oversized".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_MARKER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_MARKER_BYTES {
+        return Err("ownership marker is oversized".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| format!("invalid ownership marker: {error}"))
+}
+
+struct Payload {
+    path: PathBuf,
+    is_dir: bool,
+}
+
+fn validated_payloads(layout: &PortableLayout) -> Result<Vec<Payload>, String> {
+    let mut payloads = Vec::new();
+    for entry in fs::read_dir(&layout.session_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or("session entry name is not valid UTF-8")?;
+        let path = entry.path();
+        match name {
+            OWNERSHIP_MARKER_FILE | ACTIVE_LOCK_FILE => continue,
+            DATABASE_FILE | "arcscan.db-wal" | "arcscan.db-shm" | "arcscan.db-journal" => {
+                validate_plain_file(&path)?;
+                payloads.push(Payload {
+                    path,
+                    is_dir: false,
+                });
+            }
+            WEBVIEW_DIR => {
+                validate_plain_directory(&path)?;
+                validate_tree_without_links(&path)?;
+                payloads.push(Payload { path, is_dir: true });
+            }
+            _ => return Err(format!("unknown session entry {name}")),
+        }
+    }
+    Ok(payloads)
+}
+
+fn validate_tree_without_links(root: &Path) -> Result<(), String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
+            return Err(format!("{} is a link or reparse point", path.display()));
+        }
+        if metadata.is_file() {
+            continue;
+        }
+        if !metadata.is_dir() {
+            return Err(format!("{} has an unexpected file type", path.display()));
+        }
+        for entry in fs::read_dir(&path).map_err(|error| error.to_string())? {
+            stack.push(entry.map_err(|error| error.to_string())?.path());
+        }
+    }
     Ok(())
 }
 
-/// Take the exclusive same-root lock, or explain which way it failed.
-///
-/// The two failures are told apart deliberately. `WouldBlock` means another
-/// ArcScan holds this folder, and the operator needs to close a window.
-/// Anything else means the lock file itself could not be created or locked —
-/// a read-only folder, a filesystem with no locking — and the operator needs a
-/// different folder. Telling someone to close a window they do not have open
-/// would be worse than saying nothing.
-pub fn lock_data_root(path: &Path) -> Result<PortableGuard, PortableError> {
-    let file = fs::File::options()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| PortableError::LockUnavailable {
-            path: path.display().to_string(),
-            detail: e.to_string(),
-        })?;
-
-    match file.try_lock() {
-        Ok(()) => Ok(PortableGuard { _lock: file }),
-        Err(fs::TryLockError::WouldBlock) => Err(PortableError::AlreadyRunning {
-            path: path.parent().unwrap_or(path).display().to_string(),
-        }),
-        Err(fs::TryLockError::Error(e)) => Err(PortableError::LockUnavailable {
-            path: path.display().to_string(),
-            detail: e.to_string(),
-        }),
+fn validate_plain_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&metadata)
+    {
+        return Err("expected an ordinary directory, not a link or reparse point".into());
     }
+    Ok(())
+}
+
+fn validate_plain_file(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&metadata)
+    {
+        return Err("expected an ordinary file, not a link or reparse point".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::SystemDriveType;
-    use std::path::PathBuf;
 
-    /// A temporary directory that removes itself, so the suite leaves nothing
-    /// behind on a machine or a CI runner.
     struct TempDir(PathBuf);
 
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "arcscan-portable-{tag}-{}-{:?}",
+            let path = std::env::temp_dir().join(format!(
+                "arcscan-disposable-{tag}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
+                Uuid::new_v4().simple()
             ));
-            fs::create_dir_all(&dir).unwrap();
-            TempDir(dir)
+            fs::create_dir(&path).unwrap();
+            TempDir(path)
         }
+
         fn path(&self) -> &Path {
             &self.0
         }
@@ -176,191 +557,250 @@ mod tests {
         }
     }
 
-    struct NeverRemote;
-    impl DriveTypeProbe for NeverRemote {
-        fn is_remote(&self, _path: &Path) -> bool {
-            false
-        }
-    }
-
-    struct AlwaysRemote;
-    impl DriveTypeProbe for AlwaysRemote {
-        fn is_remote(&self, _path: &Path) -> bool {
-            true
-        }
+    #[test]
+    fn a_session_has_a_valid_marker_lock_and_no_database_yet() {
+        let temp = TempDir::new("create");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        assert!(valid_session_id(&session.layout.session_id));
+        assert!(session.layout.session_root.is_dir());
+        assert!(session.layout.ownership_marker_path.is_file());
+        assert!(session.layout.active_lock_path.is_file());
+        assert!(!session.layout.database_path.exists());
+        assert!(!session.layout.webview_data_path.exists());
+        assert!(session.layout.session_root.starts_with(
+            temp.path()
+                .join(PORTABLE_NAMESPACE_DIR)
+                .join(PORTABLE_SESSIONS_DIR)
+        ));
     }
 
     #[test]
-    fn a_writable_folder_passes_and_creates_the_data_root() {
-        let temp = TempDir::new("ok");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
-        assert!(!layout.data_root.exists());
-
-        let guard = preflight(&layout, &NeverRemote).unwrap();
-
-        assert!(layout.data_root.is_dir());
-        assert!(layout.lock_path.is_file());
-        // The preflight creates the data root and the lock, and nothing else.
-        // No database, no WebView folder: those are the caller's to make, after
-        // this has said the folder works.
-        assert!(!layout.database_path.exists());
-        assert!(!layout.webview_data_path.exists());
-        drop(guard);
+    fn two_simultaneous_sessions_from_the_same_temp_root_are_independent() {
+        let temp = TempDir::new("two");
+        let a = PortableSession::start_in(temp.path()).unwrap();
+        let b = PortableSession::start_in(temp.path()).unwrap();
+        assert_ne!(a.layout.session_root, b.layout.session_root);
+        assert_ne!(a.layout.database_path, b.layout.database_path);
+        assert_ne!(a.layout.webview_data_path, b.layout.webview_data_path);
+        assert!(a.layout.session_root.exists());
+        assert!(b.layout.session_root.exists());
     }
 
     #[test]
-    fn the_probe_leaves_nothing_behind() {
-        let temp = TempDir::new("probe");
-        probe_writable(temp.path()).unwrap();
-        let left: Vec<_> = fs::read_dir(temp.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert!(left.is_empty(), "probe left {left:?}");
+    fn concurrent_creation_is_serialized_but_sessions_are_not_shared() {
+        let temp = TempDir::new("race");
+        let root_a = temp.path().to_path_buf();
+        let root_b = root_a.clone();
+        let a = thread::spawn(move || PortableSession::start_in(&root_a).unwrap());
+        let b = thread::spawn(move || PortableSession::start_in(&root_b).unwrap());
+        let a = a.join().unwrap();
+        let b = b.join().unwrap();
+        assert_ne!(a.layout.session_id, b.layout.session_id);
+        assert!(a.layout.session_root.exists());
+        assert!(b.layout.session_root.exists());
     }
 
     #[test]
-    fn a_network_location_is_refused_before_anything_is_created() {
-        let temp = TempDir::new("unc");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
-        let error = preflight(&layout, &AlwaysRemote).unwrap_err();
-        assert!(matches!(error, PortableError::NetworkLocation { .. }));
-        // Refused means refused: not one directory made on the way out.
-        assert!(!layout.data_root.exists());
-    }
+    fn active_sessions_survive_stale_cleanup_and_unlocked_sessions_do_not() {
+        let temp = TempDir::new("stale");
+        let stale = PortableSession::start_in(temp.path()).unwrap();
+        let stale_root = stale.layout.session_root.clone();
+        drop(stale);
 
-    #[test]
-    fn a_missing_parent_that_cannot_be_created_reports_the_folder() {
-        // A path under a *file* can never become a directory, which is the
-        // deterministic stand-in for a denied ACL: create_dir_all fails.
-        let temp = TempDir::new("nodir");
-        let blocker = temp.path().join("not-a-directory");
-        fs::write(&blocker, b"x").unwrap();
-        let layout = PortableLayout::for_root(blocker.join("ArcScan Portable"));
-        let error = preflight(&layout, &NeverRemote).unwrap_err();
+        let active = PortableSession::start_in(temp.path()).unwrap();
+        let active_root = active.layout.session_root.clone();
         assert!(
-            matches!(error, PortableError::CannotCreateDataDir { .. }),
-            "{error:?}"
+            !stale_root.exists(),
+            "the next startup should remove stale state"
         );
-        assert!(error.message().contains("cannot save data"));
-        assert!(error.detail().is_some());
+        assert!(active_root.exists());
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert_eq!(report.active, 1);
+        assert!(active_root.exists());
     }
 
     #[test]
-    fn the_probe_fails_when_the_folder_is_a_file() {
-        // File::create inside a non-directory is the portable, deterministic
-        // "this folder will not take a write".
-        let temp = TempDir::new("probefail");
-        let file = temp.path().join("f");
-        fs::write(&file, b"x").unwrap();
-        let error = probe_writable(&file).unwrap_err();
+    fn normal_cleanup_removes_the_whole_owned_session() {
+        let temp = TempDir::new("normal");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        fs::write(&session.layout.database_path, b"sqlite fixture").unwrap();
+        fs::create_dir(&session.layout.webview_data_path).unwrap();
+        fs::write(session.layout.webview_data_path.join("prefs"), b"dark").unwrap();
+        let root = session.layout.session_root.clone();
+        let cleanup = session.cleanup_handle();
+        drop(session);
+        assert!(cleanup.cleanup().unwrap());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn malformed_and_mismatched_markers_are_preserved() {
+        let temp = TempDir::new("bad-marker");
+        let malformed = PortableSession::start_in(temp.path()).unwrap();
+        let malformed_root = malformed.layout.session_root.clone();
+        let malformed_marker = malformed.layout.ownership_marker_path.clone();
+        drop(malformed);
+        fs::write(&malformed_marker, b"not json").unwrap();
+
+        let mismatched = PortableSession::start_in(temp.path()).unwrap();
+        let mismatched_root = mismatched.layout.session_root.clone();
+        let mismatched_marker = mismatched.layout.ownership_marker_path.clone();
+        drop(mismatched);
+        let wrong = OwnershipMarker::new("fedcba9876544abc8fedcba987654321");
+        fs::write(&mismatched_marker, serde_json::to_vec(&wrong).unwrap()).unwrap();
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert!(report.ignored >= 2);
+        assert!(malformed_root.exists());
+        assert!(mismatched_root.exists());
+    }
+
+    #[test]
+    fn oversized_and_path_bearing_markers_are_preserved() {
+        let temp = TempDir::new("marker-shape");
+        let oversized = PortableSession::start_in(temp.path()).unwrap();
+        let oversized_root = oversized.layout.session_root.clone();
+        let oversized_marker = oversized.layout.ownership_marker_path.clone();
+        drop(oversized);
+        fs::write(&oversized_marker, vec![b'x'; MAX_MARKER_BYTES as usize + 1]).unwrap();
+
+        let path_bearing = PortableSession::start_in(temp.path()).unwrap();
+        let path_bearing_root = path_bearing.layout.session_root.clone();
+        let path_bearing_marker = path_bearing.layout.ownership_marker_path.clone();
+        let marker = OwnershipMarker::new(&path_bearing.layout.session_id);
+        drop(path_bearing);
+        let mut value = serde_json::to_value(marker).unwrap();
+        value["delete"] = serde_json::json!("C:\\\\not-ours");
+        fs::write(&path_bearing_marker, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert!(report.ignored >= 2);
+        assert!(oversized_root.exists());
+        assert!(path_bearing_root.exists());
+    }
+
+    #[test]
+    fn unknown_folders_and_generic_temp_data_are_never_deleted() {
+        let temp = TempDir::new("unknown");
+        let sessions = temp
+            .path()
+            .join(PORTABLE_NAMESPACE_DIR)
+            .join(PORTABLE_SESSIONS_DIR);
+        fs::create_dir_all(&sessions).unwrap();
+        let unknown = sessions.join("0123456789ab4def8123456789abcdef");
+        fs::create_dir(&unknown).unwrap();
+        fs::write(unknown.join("important.txt"), b"not ArcScan").unwrap();
+        let generic = temp.path().join("unrelated-project");
+        fs::create_dir(&generic).unwrap();
+        fs::write(generic.join("keep.txt"), b"keep").unwrap();
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert_eq!(report.removed, 0);
+        assert!(unknown.join("important.txt").exists());
+        assert!(generic.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn an_unknown_entry_leaves_the_marker_for_a_future_safe_retry() {
+        let temp = TempDir::new("marker-last");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let root = session.layout.session_root.clone();
+        let marker = session.layout.ownership_marker_path.clone();
+        fs::write(root.join("explicit-export.csv"), b"keep me").unwrap();
+        drop(session);
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert_eq!(report.ignored, 1);
         assert!(
-            matches!(error, PortableError::NotWritable { .. }),
-            "{error:?}"
+            marker.exists(),
+            "marker must survive every incomplete cleanup"
         );
+        assert!(root.join("explicit-export.csv").exists());
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_read_only_folder_fails_the_probe_rather_than_falling_back() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = TempDir::new("ro");
-        let dir = temp.path().join("locked");
-        fs::create_dir_all(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
-        let outcome = probe_writable(&dir);
-        // Restore first, so the temporary directory can be removed whatever
-        // the assertion below does.
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    fn a_symlinked_webview_is_ignored_and_its_external_target_survives() {
+        use std::os::unix::fs::symlink;
 
-        match outcome {
-            Err(error @ PortableError::NotWritable { .. }) => {
-                let message = error.message();
-                assert!(message.contains("Move the ArcScan Portable folder"));
-                assert!(!message.to_lowercase().contains("appdata"));
-            }
-            // Mode bits do not apply to a sufficiently privileged process, and
-            // CI containers frequently run as root. That is an environment
-            // fact, not a behaviour to assert around: the packaged read-only
-            // case is verified by hand on Windows as well.
-            Ok(()) => {}
-            Err(other) => panic!("expected a write failure, got {other:?}"),
-        }
+        let temp = TempDir::new("symlink");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"keep").unwrap();
+
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let root = session.layout.session_root.clone();
+        symlink(&outside, &session.layout.webview_data_path).unwrap();
+        drop(session);
+
+        let report = cleanup_stale_sessions_in(temp.path()).unwrap();
+        assert_eq!(report.ignored, 1);
+        assert!(root.exists());
+        assert!(outside.join("keep.txt").exists());
     }
 
     #[test]
-    fn a_second_instance_from_the_same_root_is_refused() {
-        let temp = TempDir::new("lock1");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
+    fn temp_creation_failure_is_fatal_and_does_not_touch_appdata() {
+        let temp = TempDir::new("failure");
+        let not_a_directory = temp.path().join("not-a-directory");
+        fs::write(&not_a_directory, b"block").unwrap();
+        let appdata = temp.path().join("AppData");
+        fs::create_dir(&appdata).unwrap();
+        fs::write(appdata.join("arcscan.db"), b"installed sentinel").unwrap();
 
-        let first = preflight(&layout, &NeverRemote).unwrap();
-
-        let error = preflight(&layout, &NeverRemote).unwrap_err();
-        assert!(
-            matches!(error, PortableError::AlreadyRunning { .. }),
-            "{error:?}"
+        let error = PortableSession::start_in(&not_a_directory).unwrap_err();
+        assert!(matches!(
+            error,
+            PortableError::TemporarySessionUnavailable { .. }
+        ));
+        assert_eq!(
+            fs::read(appdata.join("arcscan.db")).unwrap(),
+            b"installed sentinel"
         );
-        assert!(error.message().contains("already running from this folder"));
-
-        drop(first);
     }
 
     #[test]
-    fn a_different_root_is_allowed_at_the_same_time() {
-        let a = TempDir::new("lock-a");
-        let b = TempDir::new("lock-b");
-        let layout_a = PortableLayout::for_root(a.path().to_path_buf());
-        let layout_b = PortableLayout::for_root(b.path().to_path_buf());
+    fn external_csv_json_and_xml_exports_survive_session_cleanup() {
+        let temp = TempDir::new("exports");
+        let exports = temp.path().join("exports");
+        fs::create_dir(&exports).unwrap();
+        for name in ["scan.csv", "scan.json", "scan.xml"] {
+            fs::write(exports.join(name), format!("valid {name}")).unwrap();
+        }
 
-        let guard_a = preflight(&layout_a, &NeverRemote).unwrap();
-        let guard_b = preflight(&layout_b, &NeverRemote).unwrap();
-
-        assert_ne!(layout_a.data_root, layout_b.data_root);
-        drop(guard_a);
-        drop(guard_b);
-    }
-
-    #[test]
-    fn the_lock_is_released_on_a_clean_close() {
-        let temp = TempDir::new("lock-release");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
-
-        let first = preflight(&layout, &NeverRemote).unwrap();
-        drop(first);
-
-        // Same folder, straight away, no error.
-        let second = preflight(&layout, &NeverRemote).unwrap();
-        drop(second);
-    }
-
-    #[test]
-    fn a_leftover_lock_file_does_not_brick_the_next_launch() {
-        // This is the crash case. The file is there, with content, and nothing
-        // holds it. A launch must succeed, because the kernel released the lock
-        // when the previous process died -- which is exactly why existence is
-        // not the test.
-        let temp = TempDir::new("stale");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
-        fs::create_dir_all(&layout.data_root).unwrap();
-        fs::write(&layout.lock_path, b"leftover from a crash").unwrap();
-
-        let guard = preflight(&layout, &NeverRemote).unwrap();
-        assert!(layout.lock_path.is_file());
-        drop(guard);
-
-        // And again, repeatedly: relocking is idempotent.
-        for _ in 0..3 {
-            drop(preflight(&layout, &NeverRemote).unwrap());
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let cleanup = session.cleanup_handle();
+        drop(session);
+        assert!(cleanup.cleanup().unwrap());
+        for name in ["scan.csv", "scan.json", "scan.xml"] {
+            assert_eq!(
+                fs::read_to_string(exports.join(name)).unwrap(),
+                format!("valid {name}")
+            );
         }
     }
 
     #[test]
-    fn the_real_drive_probe_allows_the_temp_directory() {
-        // The production probe must not refuse an ordinary local folder. On
-        // Windows this exercises GetDriveTypeW for real; elsewhere it confirms
-        // the non-Windows arm answers "local".
-        let temp = TempDir::new("realdrive");
-        let layout = PortableLayout::for_root(temp.path().to_path_buf());
-        drop(preflight(&layout, &SystemDriveType).unwrap());
+    fn no_runtime_file_is_created_beside_a_read_only_executable_folder() {
+        let temp = TempDir::new("readonly-exe");
+        let exe_folder = temp.path().join("toolkit");
+        fs::create_dir(&exe_folder).unwrap();
+        fs::write(exe_folder.join("ArcScan.exe"), b"fixture").unwrap();
+
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let names: Vec<_> = fs::read_dir(&exe_folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("ArcScan.exe")]);
+        assert!(!session.layout.session_root.starts_with(&exe_folder));
+    }
+
+    #[test]
+    fn marker_constants_and_namespace_lock_are_exact() {
+        assert_eq!(NAMESPACE_LOCK_FILE, ".sessions.lock");
+        assert_eq!(OWNERSHIP_MARKER_FILE, ".arcscan-portable-session");
+        assert_eq!(ACTIVE_LOCK_FILE, ".arcscan-portable-session.lock");
     }
 }
