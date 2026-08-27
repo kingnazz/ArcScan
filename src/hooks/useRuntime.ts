@@ -5,11 +5,9 @@ import type { RuntimeInfo } from "../lib/runtime";
 /**
  * Which edition this is, asked once at startup.
  *
- * Null until the backend answers. Every caller treats null as "not portable",
- * which is the safe reading in both directions: an installed build is what
- * every release before 1.8.4 was, so a moment of null shows the interface those
- * releases showed, and a portable build cannot have its updater re-enabled by a
- * failed read because the portable binary does not contain one.
+ * Null until the backend answers. Edition-specific controls stay hidden and the
+ * updater hook defaults to manual/no-op during that interval, so a failed read
+ * cannot make a Portable process call the Installer updater.
  */
 export function useRuntime(): RuntimeInfo | null {
   const [info, setInfo] = useState<RuntimeInfo | null>(null);

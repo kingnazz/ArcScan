@@ -1669,10 +1669,9 @@ function demoRuntimeInfo(): RuntimeInfo {
         // browser happens to run on would be misleading about the product.
         platform: "Windows",
         architecture,
-        // A fictional path, on a drive letter no real machine's user profile is
-        // on, so no screenshot of this ever carries somebody's name.
-        data_root: "E:\\Tools\\ArcScan\\ArcScanData",
-        writable: true,
+        storage_mode: "temporary",
+        // The native backend also withholds its internal disposable path.
+        data_root: null,
         updater_mode: "manual",
       }
     : {
@@ -1680,8 +1679,8 @@ function demoRuntimeInfo(): RuntimeInfo {
         version: APP_VERSION,
         platform: "Windows",
         architecture,
+        storage_mode: "persistent",
         data_root: "C:\\Users\\Operator\\AppData\\Roaming\\com.arcscan.app",
-        writable: true,
         updater_mode: "installer",
       };
 }

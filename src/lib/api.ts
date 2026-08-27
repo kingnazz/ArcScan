@@ -247,7 +247,7 @@ export const api = {
   },
 
   /**
-   * Which edition this is and where its data lives.
+   * Which edition this is and whether its state is persistent or temporary.
    *
    * Answered by Rust from the paths it resolved at startup. The browser demo
    * answers from the mock, which reports an installed edition unless a test
@@ -260,9 +260,8 @@ export const api = {
   },
 
   /**
-   * Reveal this edition's data folder in the system file manager. Takes no
-   * argument: the folder is the one the backend resolved at startup, which is
-   * why this does not reintroduce a general path-opening capability.
+   * Reveal Installed ArcScan's data folder. Portable rejects this command and
+   * never exposes its disposable internal path.
    */
   async openDataFolder(): Promise<void> {
     if (isTauri()) return invoke<void>("open_data_folder");

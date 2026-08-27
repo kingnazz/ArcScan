@@ -1,16 +1,14 @@
-// Which edition of ArcScan this is, and where it keeps its data.
+// Which edition of ArcScan this is, and how it treats session state.
 //
 // The backend decides all of this and the interface only displays it. There is
 // deliberately no path arithmetic here and no way to ask for a different answer:
-// `runtime_info` reports the data root the Rust startup already resolved, as a
-// single display string, and the two actions that use it take no argument at all
-// (`open_data_folder` opens that root; `open_portable_downloads` opens a fixed
-// URL). A frontend that could build a portable path could get it wrong, and a
-// wrong answer here would be a wrong answer about where somebody's scan history
-// is.
+// Installed builds report their normal data root. Portable builds deliberately
+// do not expose the internal temporary path: the only path-oriented action they
+// offer opens a fixed download URL, and exports use an operator-chosen location.
 
 export type Edition = "installed" | "portable";
 export type UpdaterMode = "installer" | "manual";
+export type StorageMode = "persistent" | "temporary";
 
 export interface RuntimeInfo {
   edition: Edition;
@@ -19,10 +17,9 @@ export interface RuntimeInfo {
   platform: string;
   /** "x64", "ARM64", "x86" — the build's target, not the host's. */
   architecture: string;
-  /** The data root, already formatted for display and for Copy data path. */
-  data_root: string;
-  /** Whether the startup write probe succeeded. */
-  writable: boolean;
+  storage_mode: StorageMode;
+  /** Installed data root. Null for disposable Portable sessions. */
+  data_root: string | null;
   updater_mode: UpdaterMode;
 }
 
@@ -45,11 +42,10 @@ export function editionLabel(info: RuntimeInfo): string {
 /**
  * What to tell a portable operator when a newer version exists.
  *
- * Not "Update now". A portable copy is a folder somebody chose to put
- * somewhere, and replacing the application files inside it while keeping
- * ArcScanData is their deliberate act, not something an installer should do
- * behind them. The wording says what to do and, importantly, what to keep.
+ * Not "Update now". Exports are the only intentional persistence mechanism,
+ * so the order matters: retain work first, end the disposable session, then
+ * fetch a fresh ZIP.
  */
 export const PORTABLE_UPDATE_STEPS =
-  "You're using ArcScan Portable. Download the new Portable ZIP, close ArcScan, " +
-  "replace the application files, and keep the ArcScanData folder.";
+  "Export anything you want to keep, finish this session and close ArcScan, then download and extract " +
+  "the latest Portable ZIP.";
