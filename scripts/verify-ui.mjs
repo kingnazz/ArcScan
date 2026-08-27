@@ -284,6 +284,39 @@ await step("Inventory export writes the whole filtered set with real headers", a
   return `${lines.length - 1} rows as ${name}`;
 });
 
+await step("Inventory JSON and XML exports are complete and parseable", async () => {
+  const rows = await page.locator("tbody tr").count();
+  const results = [];
+  for (const [label, extension] of [
+    ["JSON", "json"],
+    ["XML", "xml"],
+  ]) {
+    const pending = page.waitForEvent("download", { timeout: 8000 });
+    await page.getByRole("button", { name: "Export", exact: true }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
+    const file = await pending;
+    const name = file.suggestedFilename();
+    if (!name.endsWith(`.${extension}`)) throw new Error(`unexpected ${label} name: ${name}`);
+    const stream = await file.createReadStream();
+    let body = "";
+    for await (const chunk of stream) body += chunk;
+    if (extension === "json") {
+      const records = JSON.parse(body);
+      if (!Array.isArray(records) || records.length !== rows) {
+        throw new Error(`JSON has ${records.length} records for ${rows} rows`);
+      }
+    } else {
+      if (!body.startsWith('<?xml version="1.0" encoding="UTF-8"?>')) {
+        throw new Error("XML declaration is missing");
+      }
+      const records = body.match(/<device>/g)?.length ?? 0;
+      if (records !== rows) throw new Error(`XML has ${records} devices for ${rows} rows`);
+    }
+    results.push(name);
+  }
+  return results.join(" and ");
+});
+
 await step("exporting one network names it in the file", async () => {
   const filter = page.getByLabel("Filter by network");
   const options = await filter.locator("option").allInnerTexts();
@@ -1786,9 +1819,17 @@ await step("axe-core finds no violations in the new drawer states", async () => 
 // this way and is the reason it was built that way in the first place.
 // ---------------------------------------------------------------------------
 
-/** Open Settings on a fresh page and return it. */
+/** Open Settings in a fresh browser profile, mirroring one Portable launch. */
 const settingsPage = async (query) => {
-  const p = await context.newPage();
+  const isolated = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    reducedMotion: "reduce",
+  });
+  const p = await isolated.newPage();
+  p.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  p.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   await p.goto(`${URL}${query}`, { waitUntil: "networkidle" });
   await p.getByRole("button", { name: "Settings" }).click();
   await p.getByTestId("edition-label").waitFor({ timeout: 8000 });
@@ -1800,37 +1841,48 @@ await step("the installed edition names itself and its data location", async () 
   const edition = await p.getByTestId("edition-label").innerText();
   const root = await p.getByTestId("data-root").innerText();
   const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
-  await p.close();
+  await p.context().close();
 
   if (!/^Installed edition · /.test(edition)) throw new Error(`edition reads "${edition}"`);
   if (/portable/i.test(edition)) throw new Error("the installed edition calls itself portable");
   if (!root.trim()) throw new Error("no data location shown");
   if (/ArcScanData/.test(root)) throw new Error(`the installed data root is portable: ${root}`);
   // None of the portable guidance belongs in an installed copy's Settings.
-  for (const pattern of [/keep it beside/i, /does not install updates/i]) {
+  for (const pattern of [/temporary portable session/i, /finish this session/i]) {
     if (pattern.test(text)) throw new Error(`installed Settings shows portable copy: ${pattern}`);
   }
   return `${edition}, ${root}`;
 });
 
-await step("the portable edition names itself, its architecture and its folder", async () => {
+await step("the portable edition explains its temporary session without exposing a path", async () => {
   const p = await settingsPage("?edition=portable");
   const edition = await p.getByTestId("edition-label").innerText();
-  const root = await p.getByTestId("data-root").innerText();
+  const storage = await p.getByTestId("portable-session-storage").innerText();
   const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
-  await p.close();
+  const pathCount = await p.getByTestId("data-root").count();
+  const copyCount = await p.getByRole("button", { name: "Copy data path" }).count();
+  const openCount = await p.getByRole("button", { name: "Open data folder" }).count();
+  const updateToggle = await p.locator("#settings-updates").count();
+  await p.context().close();
 
   if (edition !== "Portable edition · Windows x64") throw new Error(`edition reads "${edition}"`);
-  if (!/ArcScanData$/.test(root.trim())) throw new Error(`data root reads "${root}"`);
-  // The two things a portable operator needs to be told, in the panel that
-  // tells them where their data is.
-  if (!/Keep it beside ArcScan\.exe/i.test(text)) {
-    throw new Error("the panel does not say to keep ArcScanData beside the app");
+  for (const phrase of [
+    /Session storage\s+Temporary/i,
+    /This launch starts fresh/i,
+    /Inventory, History, Changes/i,
+    /removed when ArcScan closes/i,
+    /Export CSV, JSON or XML/i,
+    /cannot apply the Installer update/i,
+    /finish this session and close ArcScan/i,
+    /latest Portable ZIP/i,
+  ]) {
+    if (!phrase.test(`${storage}\n${text}`)) throw new Error(`missing Portable copy: ${phrase}`);
   }
-  if (!/does not install updates/i.test(text)) {
-    throw new Error("the panel does not say portable updates are manual");
+  if (pathCount || copyCount || openCount) {
+    throw new Error("Portable exposes its internal session as a data folder");
   }
-  return `${edition}, ${root}`;
+  if (updateToggle) throw new Error("Portable offers the Installed launch update check");
+  return `${edition}, temporary and export-only`;
 });
 
 await step("an ARM64 portable build says ARM64, not x64", async () => {
@@ -1838,51 +1890,49 @@ await step("an ARM64 portable build says ARM64, not x64", async () => {
   // which would send somebody to the wrong ZIP when they update by hand.
   const p = await settingsPage("?edition=portable&arch=arm64");
   const edition = await p.getByTestId("edition-label").innerText();
-  await p.close();
+  await p.context().close();
   if (edition !== "Portable edition · Windows ARM64") throw new Error(`edition reads "${edition}"`);
   return edition;
 });
 
-await step("Copy data path puts the data root on the clipboard", async () => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: URL });
-  const p = await settingsPage("?edition=portable");
+await step("Installed Copy data path still copies its unchanged data root", async () => {
+  const p = await settingsPage("");
+  await p.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: URL });
   const root = (await p.getByTestId("data-root").innerText()).trim();
   await p.getByRole("button", { name: "Copy data path" }).click();
   await p.getByRole("button", { name: "Copied" }).waitFor({ timeout: 3000 });
   const clipboard = await p.evaluate(() => navigator.clipboard.readText());
-  await p.close();
+  await p.context().close();
   if (clipboard !== root) throw new Error(`clipboard holds "${clipboard}", panel shows "${root}"`);
   return "the exact path, confirmed in the button";
 });
 
-await step("Open data folder is offered only where there is a folder to open", async () => {
-  // The browser demo has no file manager to reach, so the button is absent
-  // rather than present and broken. In the desktop app it calls a backend
-  // command that takes no argument.
+await step("Portable offers downloads but no data-folder controls", async () => {
   const p = await settingsPage("?edition=portable");
-  const count = await p.getByRole("button", { name: "Open data folder" }).count();
-  await p.close();
-  if (count !== 0) throw new Error("the browser demo offers Open data folder");
-  return "absent in the browser preview";
+  const downloads = await p.getByRole("button", { name: "View Portable downloads" }).count();
+  const open = await p.getByRole("button", { name: "Open data folder" }).count();
+  const copy = await p.getByRole("button", { name: "Copy data path" }).count();
+  await p.context().close();
+  if (downloads !== 1) throw new Error("Portable has no fixed downloads action");
+  if (open || copy) throw new Error("Portable exposes data-folder controls");
+  return "downloads only";
 });
 
-await step("the portable panel shows no real user path", async () => {
+await step("the portable panel contains no filesystem path", async () => {
   const p = await settingsPage("?edition=portable");
-  const root = await p.getByTestId("data-root").innerText();
-  await p.close();
-  // A published screenshot of this panel must never carry somebody's name.
-  for (const pattern of [/Users\\/i, /\/home\//, /\/Users\//, /AppData/i]) {
-    if (pattern.test(root)) throw new Error(`the demo path looks real: ${root}`);
+  const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
+  await p.context().close();
+  for (const pattern of [/[A-Z]:\\/i, /\/home\//, /\/Users\//, /AppData/i, /ArcScanData/i]) {
+    if (pattern.test(text)) throw new Error(`Portable Settings contains a path: ${pattern}`);
   }
-  return root;
+  return "no temp, AppData or executable-relative path";
 });
 
 await step("the portable panel holds together at the minimum width, in both themes", async () => {
   const results = [];
   for (const theme of ["dark", "light"]) {
-    const p = await context.newPage();
+    const p = await settingsPage("?edition=portable");
     await p.setViewportSize({ width: 940, height: 620 });
-    await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
     await p.evaluate((value) => {
       const raw = localStorage.getItem("arcscan-settings");
       const settings = raw ? JSON.parse(raw) : {};
@@ -1892,20 +1942,19 @@ await step("the portable panel holds together at the minimum width, in both them
     }, theme);
     await p.reload({ waitUntil: "networkidle" });
     await p.getByRole("button", { name: "Settings" }).click();
-    await p.getByTestId("data-root").waitFor({ timeout: 8000 });
-    await p.getByTestId("data-root").scrollIntoViewIfNeeded();
+    await p.getByTestId("portable-session-storage").waitFor({ timeout: 8000 });
+    await p.getByTestId("portable-session-storage").scrollIntoViewIfNeeded();
 
     const overflow = await p.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
-    // A long Windows path must wrap rather than push the drawer wide.
-    const spill = await p.getByTestId("data-root").evaluate((el) => {
+    const spill = await p.getByTestId("portable-session-storage").evaluate((el) => {
       const drawer = el.closest('[role="complementary"]') ?? el.parentElement;
       return el.getBoundingClientRect().right - drawer.getBoundingClientRect().right;
     });
-    await p.close();
+    await p.context().close();
     if (overflow > 0) throw new Error(`${theme} overflows by ${overflow}px`);
-    if (spill > 1) throw new Error(`${theme}: the data path spills ${Math.round(spill)}px`);
+    if (spill > 1) throw new Error(`${theme}: session copy spills ${Math.round(spill)}px`);
     results.push(theme);
   }
   return `${results.join(" and ")} at 940px, nothing spills`;
@@ -1925,10 +1974,10 @@ await step("the About section is reachable and operable from the keyboard", asyn
     await p.keyboard.press("Tab");
     steps += 1;
     onButton = await p.evaluate(
-      () => document.activeElement?.textContent?.trim() === "Copy data path",
+      () => document.activeElement?.textContent?.trim() === "View Portable downloads",
     );
   }
-  if (!onButton) throw new Error(`Copy data path was not reachable in ${steps} tab stops`);
+  if (!onButton) throw new Error(`Portable downloads was not reachable in ${steps} tab stops`);
 
   const ring = await p.evaluate(() => {
     const el = document.activeElement;
@@ -1940,15 +1989,17 @@ await step("the About section is reachable and operable from the keyboard", asyn
     );
   });
 
+  await p.evaluate(() => {
+    window.open = (url) => {
+      window.__arcscanOpened = String(url);
+      return null;
+    };
+  });
   await p.keyboard.press("Enter");
-  const confirmed = await p
-    .getByRole("button", { name: "Copied" })
-    .waitFor({ timeout: 3000 })
-    .then(() => true)
-    .catch(() => false);
-  await p.close();
-  if (!ring) throw new Error("Copy data path has no visible focus ring when tabbed to");
-  if (!confirmed) throw new Error("Enter did not activate Copy data path");
+  const opened = await p.evaluate(() => window.__arcscanOpened ?? "");
+  await p.context().close();
+  if (!ring) throw new Error("Portable downloads has no visible focus ring when tabbed to");
+  if (!opened.endsWith("/#download")) throw new Error(`Enter opened an unexpected URL: ${opened}`);
   return `reachable in ${steps} tab stops, has a focus ring, activates with Enter`;
 });
 
@@ -1961,8 +2012,7 @@ await step("axe-core finds no violations in the portable About panel", async () 
   }
   const results = [];
   for (const theme of ["dark", "light"]) {
-    const p = await context.newPage();
-    await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+    const p = await settingsPage("?edition=portable");
     await p.evaluate((value) => {
       const raw = localStorage.getItem("arcscan-settings");
       const settings = raw ? JSON.parse(raw) : {};
@@ -1972,11 +2022,11 @@ await step("axe-core finds no violations in the portable About panel", async () 
     }, theme);
     await p.reload({ waitUntil: "networkidle" });
     await p.getByRole("button", { name: "Settings" }).click();
-    await p.getByTestId("data-root").waitFor({ timeout: 8000 });
+    await p.getByTestId("portable-session-storage").waitFor({ timeout: 8000 });
     const out = await new AxeBuilder({ page: p })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
       .analyze();
-    await p.close();
+    await p.context().close();
     if (out.violations.length > 0) {
       throw new Error(
         `${theme}: ${out.violations.map((v) => `${v.id} (${v.nodes.length})`).join(", ")}`,
@@ -1987,18 +2037,71 @@ await step("axe-core finds no violations in the portable About panel", async () 
   return results.join(", ");
 });
 
+await step("Portable WebView preferences last within one session but not the next", async () => {
+  const first = await settingsPage("?edition=portable");
+  await first.evaluate(() => localStorage.setItem("arcscan-portable-session-probe", "session-a"));
+  await first.reload({ waitUntil: "networkidle" });
+  const withinSession = await first.evaluate(() =>
+    localStorage.getItem("arcscan-portable-session-probe"),
+  );
+  await first.context().close();
+
+  const second = await settingsPage("?edition=portable");
+  const nextSession = await second.evaluate(() =>
+    localStorage.getItem("arcscan-portable-session-probe"),
+  );
+  await second.context().close();
+  if (withinSession !== "session-a") throw new Error("a reload lost this session's preference");
+  if (nextSession !== null) throw new Error("a fresh Portable profile inherited old preferences");
+  return "reload retained session A; session B started empty";
+});
+
+await step("a completed Portable scan shows a dismissible export reminder", async () => {
+  const p = await settingsPage("?edition=portable");
+  await p.keyboard.press("Escape");
+  if ((await p.getByTestId("portable-session-notice").count()) !== 0) {
+    throw new Error("the reminder appeared before a completed scan");
+  }
+  await p.locator("#scan-target").fill("192.168.1.0/24");
+  await p.locator('form button[type="submit"]').click();
+  await p.getByRole("button", { name: "Stop" }).waitFor({ timeout: 8000 });
+  await p.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout: 30000 });
+  const notice = p.getByTestId("portable-session-notice");
+  await notice.waitFor({ timeout: 5000 });
+  const text = await notice.innerText();
+  if (!/Temporary Portable session/i.test(text) || !/Export anything you want to keep/i.test(text)) {
+    throw new Error(`unexpected reminder: ${text}`);
+  }
+  await notice.getByRole("button", { name: "Dismiss temporary session reminder" }).click();
+  await notice.waitFor({ state: "detached" });
+  await p.context().close();
+  return "shown only after completion and dismissed in memory";
+});
+
+await step("the completed-scan reminder never appears in Installed ArcScan", async () => {
+  const p = await settingsPage("");
+  await p.keyboard.press("Escape");
+  await p.locator("#scan-target").fill("192.168.1.0/24");
+  await p.locator('form button[type="submit"]').click();
+  await p.getByRole("button", { name: "Stop" }).waitFor({ timeout: 8000 });
+  await p.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout: 30000 });
+  const count = await p.getByTestId("portable-session-notice").count();
+  await p.context().close();
+  if (count !== 0) throw new Error("Installed ArcScan showed Portable session copy");
+  return "absent after an Installed scan";
+});
+
 await step("a query parameter cannot change where the desktop app stores anything", async () => {
   // The demo's ?edition= parameter is a mock-backend switch and must be
   // nothing more. Two things establish that here: the parameter changes only
   // what runtime_info reports, and the frontend never assembles a data path of
   // its own -- everything it shows comes from that one command.
-  const p = await context.newPage();
-  await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+  const p = await settingsPage("?edition=portable");
   const usesTauri = await p.evaluate(() => "__TAURI_INTERNALS__" in window);
   const stored = await p.evaluate(() =>
     Object.keys(localStorage).filter((k) => /path|root|data.?dir/i.test(k)),
   );
-  await p.close();
+  await p.context().close();
   if (usesTauri) throw new Error("the browser preview claims to be the native app");
   if (stored.length > 0) {
     throw new Error(`the frontend stored a path of its own: ${stored.join(", ")}`);
