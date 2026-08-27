@@ -58,7 +58,6 @@ import {
 } from "./lib/changes";
 import type { ActionId } from "./lib/actions";
 import { type ChangeEvent, type ChangeFeed, type DeviceDetail, type DeviceStatus, type ExportFormat, type InventorySummary, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
-import { PORTABLE_UPDATE_STEPS } from "./lib/runtime";
 import { APP_VERSION } from "./version";
 
 /** Below this the drawer becomes an overlay rather than a second pane. */
@@ -69,7 +68,11 @@ export default function App() {
   const { settings, update: updateSettings, reset: resetSettings, loaded } = useSettings();
   const theme = useTheme(settings.theme);
   const runtime = useRuntime();
-  const updater = useUpdater(settings.checkForUpdates, runtime?.updater_mode ?? "installer");
+  const updaterMode = runtime?.updater_mode ?? "manual";
+  const updater = useUpdater(
+    settings.checkForUpdates && updaterMode === "installer",
+    updaterMode,
+  );
   const publicIp = usePublicIp();
 
   const [view, setView] = useState<View>("results");
@@ -111,6 +114,7 @@ export default function App() {
     run: () => void;
   } | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [portableNoticeDismissed, setPortableNoticeDismissed] = useState(false);
   const [scopes, setScopes] = useState<NetworkScope[]>([]);
 
   // --- Inventory ----------------------------------------------------------
@@ -152,7 +156,8 @@ export default function App() {
   }, [reportError]);
 
   /**
-   * Reload the persistent inventory.
+   * Reload the cross-scan inventory (persistent for Installed, session-scoped
+   * for Portable).
    *
    * Called after anything that can change it — a completed scan, a rename, a
    * status change, a network rename — rather than reloading the application, so
@@ -985,8 +990,9 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         settingsOpen={settingsOpen}
         onCheckUpdates={() => {
-          if (api.native) void updater.check(true);
-          else void api.openReleases();
+          if (!api.native || runtime == null) void api.openReleases();
+          else if (runtime.updater_mode === "manual") void api.openPortableDownloads();
+          else void updater.check(true);
         }}
         updateBusy={updater.status === "checking"}
       />
@@ -1039,6 +1045,14 @@ export default function App() {
       ) : null}
 
       <UpdateNotice updater={updater} />
+
+      {runtime?.edition === "portable" &&
+      scan.meta != null &&
+      !scan.meta.cancelled &&
+      !scan.scanning &&
+      !portableNoticeDismissed ? (
+        <PortableSessionNotice onDismiss={() => setPortableNoticeDismissed(true)} />
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col">
@@ -1250,6 +1264,7 @@ export default function App() {
               reportError(message, technical);
             });
           }}
+          onOpenPortableDownloads={() => void api.openPortableDownloads()}
           publicIp={publicIp.state}
           onClearPublicIp={publicIp.clear}
           onOpenPrivacy={() => void api.openPrivacy()}
@@ -1364,44 +1379,11 @@ function Notice({
 
 function UpdateNotice({ updater }: { updater: ReturnType<typeof useUpdater> }) {
   const { status, version, progress, error, install, dismiss, mode } = updater;
+  if (mode === "manual") return null;
   // Silence is the right response to "already up to date" on a background check.
   if (status === "idle" || status === "checking") return null;
 
   const busy = status === "downloading" || status === "installing";
-
-  // Portable mode never offers to install. Replacing the application files in a
-  // folder somebody chose, while keeping the ArcScanData beside them, is their
-  // deliberate act -- so this says what to do and what to keep, and offers the
-  // downloads page rather than an Update now button that would have nothing to
-  // run: a portable build does not contain the installer updater at all.
-  if (mode === "manual" && status === "available") {
-    return (
-      <div
-        role="status"
-        data-testid="portable-update-notice"
-        className="animate-fade-in flex shrink-0 items-start gap-3 border-b border-border bg-accent-subtle px-3 py-2 text-[13px]"
-      >
-        <DownloadCloud className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-text" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className="text-text">
-            <span className="font-semibold">ArcScan {version}</span> is available.
-          </p>
-          <p className="mt-0.5 text-text-secondary">{PORTABLE_UPDATE_STEPS}</p>
-        </div>
-        <Button size="sm" variant="secondary" onClick={() => void api.openPortableDownloads()}>
-          View portable downloads
-        </Button>
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={dismiss}
-          className="mt-0.5 shrink-0 rounded p-0.5 text-text-secondary hover:text-text"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -1441,6 +1423,30 @@ function UpdateNotice({ updater }: { updater: ReturnType<typeof useUpdater> }) {
           <X className="h-3.5 w-3.5" />
         </button>
       ) : null}
+    </div>
+  );
+}
+
+function PortableSessionNotice({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div
+      role="status"
+      data-testid="portable-session-notice"
+      className="animate-fade-in flex shrink-0 items-center gap-2.5 border-b border-border bg-surface-raised px-3 py-1.5 text-xs"
+    >
+      <DownloadCloud className="h-3.5 w-3.5 shrink-0 text-accent-text" aria-hidden />
+      <p className="min-w-0 flex-1 text-text-secondary">
+        <span className="font-medium text-text">Temporary Portable session.</span> Export anything
+        you want to keep before closing ArcScan.
+      </p>
+      <button
+        type="button"
+        aria-label="Dismiss temporary session reminder"
+        onClick={onDismiss}
+        className="shrink-0 rounded p-0.5 text-text-muted hover:text-text"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

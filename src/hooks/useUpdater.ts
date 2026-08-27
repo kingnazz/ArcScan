@@ -22,9 +22,9 @@ interface UpdateHandle {
 /**
  * In-app auto-updater.
  *
- * On launch it checks the configured update feed and, if a newer signed build is
- * available, exposes it so the UI can offer a one-click "Update now" (download,
- * install, relaunch). It no-ops outside Tauri or when no feed is reachable.
+ * Installed builds check the configured update feed and can download, install
+ * and relaunch. Manual (Portable) mode never imports or calls either native
+ * updater plugin; its fixed downloads-page action lives outside this hook.
  *
  * The check contacts GitHub, so it is listed in the privacy documentation
  * alongside the public-IP lookup and can be switched off in Settings. Unlike the
@@ -40,6 +40,7 @@ export function useUpdater(autoCheck = true, mode: "installer" | "manual" = "ins
   const [handle, setHandle] = useState<UpdateHandle | null>(null);
 
   const check = useCallback(async (manual = false) => {
+    if (mode === "manual") return;
     if (!isTauri()) return;
     setError(null);
     setStatus("checking");
@@ -60,17 +61,15 @@ export function useUpdater(autoCheck = true, mode: "installer" | "manual" = "ins
       setError(e instanceof Error ? e.message : String(e));
       setStatus(manual ? "error" : "idle");
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
-    if (autoCheck) check(false);
-  }, [check, autoCheck]);
+    if (autoCheck && mode === "installer") check(false);
+  }, [check, autoCheck, mode]);
 
   const install = useCallback(async () => {
-    // The frontend half of the portable gate. The backend half is stronger --
-    // a portable build does not link tauri-plugin-updater at all, so the import
-    // below has nothing to talk to -- and this is here so the two layers agree
-    // rather than so one of them works.
+    // The frontend half of the Portable gate. The binary also omits both
+    // updater plugins, so neither layer has an install-and-relaunch path.
     if (mode === "manual") return;
     if (!handle) return;
     try {
