@@ -1776,6 +1776,236 @@ await step("axe-core finds no violations in the new drawer states", async () => 
   return results.join(", ");
 });
 
+// ---------------------------------------------------------------------------
+// The edition panel: installed and portable
+//
+// The demo backend answers `runtime_info` from a query parameter, so both
+// editions' interfaces are checkable without a Windows machine. The parameter
+// reaches the mock and nothing else: the native build's edition is a
+// compile-time constant, which is what makes it safe to drive the interface
+// this way and is the reason it was built that way in the first place.
+// ---------------------------------------------------------------------------
+
+/** Open Settings on a fresh page and return it. */
+const settingsPage = async (query) => {
+  const p = await context.newPage();
+  await p.goto(`${URL}${query}`, { waitUntil: "networkidle" });
+  await p.getByRole("button", { name: "Settings" }).click();
+  await p.getByTestId("edition-label").waitFor({ timeout: 8000 });
+  return p;
+};
+
+await step("the installed edition names itself and its data location", async () => {
+  const p = await settingsPage("");
+  const edition = await p.getByTestId("edition-label").innerText();
+  const root = await p.getByTestId("data-root").innerText();
+  const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
+  await p.close();
+
+  if (!/^Installed edition · /.test(edition)) throw new Error(`edition reads "${edition}"`);
+  if (/portable/i.test(edition)) throw new Error("the installed edition calls itself portable");
+  if (!root.trim()) throw new Error("no data location shown");
+  if (/ArcScanData/.test(root)) throw new Error(`the installed data root is portable: ${root}`);
+  // None of the portable guidance belongs in an installed copy's Settings.
+  for (const pattern of [/keep it beside/i, /does not install updates/i]) {
+    if (pattern.test(text)) throw new Error(`installed Settings shows portable copy: ${pattern}`);
+  }
+  return `${edition}, ${root}`;
+});
+
+await step("the portable edition names itself, its architecture and its folder", async () => {
+  const p = await settingsPage("?edition=portable");
+  const edition = await p.getByTestId("edition-label").innerText();
+  const root = await p.getByTestId("data-root").innerText();
+  const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
+  await p.close();
+
+  if (edition !== "Portable edition · Windows x64") throw new Error(`edition reads "${edition}"`);
+  if (!/ArcScanData$/.test(root.trim())) throw new Error(`data root reads "${root}"`);
+  // The two things a portable operator needs to be told, in the panel that
+  // tells them where their data is.
+  if (!/Keep it beside ArcScan\.exe/i.test(text)) {
+    throw new Error("the panel does not say to keep ArcScanData beside the app");
+  }
+  if (!/does not install updates/i.test(text)) {
+    throw new Error("the panel does not say portable updates are manual");
+  }
+  return `${edition}, ${root}`;
+});
+
+await step("an ARM64 portable build says ARM64, not x64", async () => {
+  // The failure this catches is a portable ARM64 copy describing itself as x64,
+  // which would send somebody to the wrong ZIP when they update by hand.
+  const p = await settingsPage("?edition=portable&arch=arm64");
+  const edition = await p.getByTestId("edition-label").innerText();
+  await p.close();
+  if (edition !== "Portable edition · Windows ARM64") throw new Error(`edition reads "${edition}"`);
+  return edition;
+});
+
+await step("Copy data path puts the data root on the clipboard", async () => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: URL });
+  const p = await settingsPage("?edition=portable");
+  const root = (await p.getByTestId("data-root").innerText()).trim();
+  await p.getByRole("button", { name: "Copy data path" }).click();
+  await p.getByRole("button", { name: "Copied" }).waitFor({ timeout: 3000 });
+  const clipboard = await p.evaluate(() => navigator.clipboard.readText());
+  await p.close();
+  if (clipboard !== root) throw new Error(`clipboard holds "${clipboard}", panel shows "${root}"`);
+  return "the exact path, confirmed in the button";
+});
+
+await step("Open data folder is offered only where there is a folder to open", async () => {
+  // The browser demo has no file manager to reach, so the button is absent
+  // rather than present and broken. In the desktop app it calls a backend
+  // command that takes no argument.
+  const p = await settingsPage("?edition=portable");
+  const count = await p.getByRole("button", { name: "Open data folder" }).count();
+  await p.close();
+  if (count !== 0) throw new Error("the browser demo offers Open data folder");
+  return "absent in the browser preview";
+});
+
+await step("the portable panel shows no real user path", async () => {
+  const p = await settingsPage("?edition=portable");
+  const root = await p.getByTestId("data-root").innerText();
+  await p.close();
+  // A published screenshot of this panel must never carry somebody's name.
+  for (const pattern of [/Users\\/i, /\/home\//, /\/Users\//, /AppData/i]) {
+    if (pattern.test(root)) throw new Error(`the demo path looks real: ${root}`);
+  }
+  return root;
+});
+
+await step("the portable panel holds together at the minimum width, in both themes", async () => {
+  const results = [];
+  for (const theme of ["dark", "light"]) {
+    const p = await context.newPage();
+    await p.setViewportSize({ width: 940, height: 620 });
+    await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+    await p.evaluate((value) => {
+      const raw = localStorage.getItem("arcscan-settings");
+      const settings = raw ? JSON.parse(raw) : {};
+      settings.theme = value;
+      localStorage.setItem("arcscan-settings", JSON.stringify(settings));
+      localStorage.setItem("arcscan-theme", value);
+    }, theme);
+    await p.reload({ waitUntil: "networkidle" });
+    await p.getByRole("button", { name: "Settings" }).click();
+    await p.getByTestId("data-root").waitFor({ timeout: 8000 });
+    await p.getByTestId("data-root").scrollIntoViewIfNeeded();
+
+    const overflow = await p.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    // A long Windows path must wrap rather than push the drawer wide.
+    const spill = await p.getByTestId("data-root").evaluate((el) => {
+      const drawer = el.closest('[role="complementary"]') ?? el.parentElement;
+      return el.getBoundingClientRect().right - drawer.getBoundingClientRect().right;
+    });
+    await p.close();
+    if (overflow > 0) throw new Error(`${theme} overflows by ${overflow}px`);
+    if (spill > 1) throw new Error(`${theme}: the data path spills ${Math.round(spill)}px`);
+    results.push(theme);
+  }
+  return `${results.join(" and ")} at 940px, nothing spills`;
+});
+
+await step("the About section is reachable and operable from the keyboard", async () => {
+  const p = await settingsPage("?edition=portable");
+
+  // Tabbed to, not focused programmatically. The focus ring is :focus-visible,
+  // which is exactly the point of it: a mouse click should not draw one, and a
+  // Tab should. Calling .focus() would satisfy neither the browser's heuristic
+  // nor the question being asked, which is whether a keyboard user can see
+  // where they are.
+  let steps = 0;
+  let onButton = false;
+  while (steps < 80 && !onButton) {
+    await p.keyboard.press("Tab");
+    steps += 1;
+    onButton = await p.evaluate(
+      () => document.activeElement?.textContent?.trim() === "Copy data path",
+    );
+  }
+  if (!onButton) throw new Error(`Copy data path was not reachable in ${steps} tab stops`);
+
+  const ring = await p.evaluate(() => {
+    const el = document.activeElement;
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    return (
+      (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0) ||
+      style.boxShadow !== "none"
+    );
+  });
+
+  await p.keyboard.press("Enter");
+  const confirmed = await p
+    .getByRole("button", { name: "Copied" })
+    .waitFor({ timeout: 3000 })
+    .then(() => true)
+    .catch(() => false);
+  await p.close();
+  if (!ring) throw new Error("Copy data path has no visible focus ring when tabbed to");
+  if (!confirmed) throw new Error("Enter did not activate Copy data path");
+  return `reachable in ${steps} tab stops, has a focus ring, activates with Enter`;
+});
+
+await step("axe-core finds no violations in the portable About panel", async () => {
+  let AxeBuilder;
+  try {
+    AxeBuilder = (await import("@axe-core/playwright")).default;
+  } catch {
+    throw new Error("@axe-core/playwright is not installed");
+  }
+  const results = [];
+  for (const theme of ["dark", "light"]) {
+    const p = await context.newPage();
+    await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+    await p.evaluate((value) => {
+      const raw = localStorage.getItem("arcscan-settings");
+      const settings = raw ? JSON.parse(raw) : {};
+      settings.theme = value;
+      localStorage.setItem("arcscan-settings", JSON.stringify(settings));
+      localStorage.setItem("arcscan-theme", value);
+    }, theme);
+    await p.reload({ waitUntil: "networkidle" });
+    await p.getByRole("button", { name: "Settings" }).click();
+    await p.getByTestId("data-root").waitFor({ timeout: 8000 });
+    const out = await new AxeBuilder({ page: p })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    await p.close();
+    if (out.violations.length > 0) {
+      throw new Error(
+        `${theme}: ${out.violations.map((v) => `${v.id} (${v.nodes.length})`).join(", ")}`,
+      );
+    }
+    results.push(`${theme}: ${out.passes.length} checks passed`);
+  }
+  return results.join(", ");
+});
+
+await step("a query parameter cannot change where the desktop app stores anything", async () => {
+  // The demo's ?edition= parameter is a mock-backend switch and must be
+  // nothing more. Two things establish that here: the parameter changes only
+  // what runtime_info reports, and the frontend never assembles a data path of
+  // its own -- everything it shows comes from that one command.
+  const p = await context.newPage();
+  await p.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
+  const usesTauri = await p.evaluate(() => "__TAURI_INTERNALS__" in window);
+  const stored = await p.evaluate(() =>
+    Object.keys(localStorage).filter((k) => /path|root|data.?dir/i.test(k)),
+  );
+  await p.close();
+  if (usesTauri) throw new Error("the browser preview claims to be the native app");
+  if (stored.length > 0) {
+    throw new Error(`the frontend stored a path of its own: ${stored.join(", ")}`);
+  }
+  return "the parameter reaches the mock only";
+});
+
 await page.goto(URL, { waitUntil: "networkidle" });
 
 await step("no duplicate element ids anywhere in the tree", async () => {

@@ -1,0 +1,7 @@
+{
+  "$schema": "../../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Least-privilege capability set for the portable ArcScan main window. Identical to the installed set with the updater and the restart permission removed: a portable build does not link the updater plugin at all, so there is no install-and-relaunch path for the webview to be granted access to. External URLs, launchers, the data-folder reveal and file writes go through dedicated Rust commands that validate their input or take no input, so no shell, filesystem or opener permission is granted to the webview.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-save"]
+}

@@ -1,0 +1,723 @@
+<!doctype html>
+<!-- ArcScan site build: v1.8.4 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- No maximum-scale and no user-scalable=no: pinch zoom stays available. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>What's new in ArcScan 1.8.4: a Windows portable edition that is genuinely portable</title>
+    <meta
+      name="description"
+      content="ArcScan 1.8.4 adds Windows Portable builds for x64 and ARM64. The database and the application profile live in an ArcScanData folder beside the app, so a copy on a USB drive carries its own history and settings and stays independent of an installed ArcScan. Free and open source."
+    />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.4.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+
+    <!--
+      Identical to the home page: the only outbound request is the GitHub
+      release API that fills the download cards. No analytics, no web fonts, no
+      CDN, no third-party script of any kind.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'"
+    />
+
+    <link rel="stylesheet" href="arcscan.v5.css" />
+    <!-- The portable About panel is the largest paint on this page. -->
+    <link
+      rel="preload"
+      as="image"
+      href="assets/shots/settings-portable-dark.webp"
+      imagesrcset="assets/shots/settings-portable-dark-800.webp 800w, assets/shots/settings-portable-dark.webp 1440w, assets/shots/settings-portable-dark@2x.webp 2880w"
+      imagesizes="(max-width: 62rem) 100vw, 34rem"
+      fetchpriority="high"
+    />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="ArcScan" />
+    <meta property="og:url" content="https://kingnazz.github.io/ArcScan/whats-new-1.8.4.html" />
+    <meta property="og:title" content="What's new in ArcScan 1.8.4" />
+    <meta
+      property="og:description"
+      content="Windows Portable builds for x64 and ARM64. ArcScan-owned persistent data stays in an ArcScanData folder beside the portable app, so a copy on a USB drive carries its own history and settings and stays independent of an installed ArcScan."
+    />
+    <meta
+      property="og:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/settings-portable-dark.png"
+    />
+    <meta property="og:image:width" content="2880" />
+    <meta property="og:image:height" content="1800" />
+    <meta
+      property="og:image:alt"
+      content="The ArcScan Settings panel, showing an About section that reads ArcScan v1.8.4, Portable edition, Windows x64, and a data location of E:\Tools\ArcScan\ArcScanData with a Copy data path button."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="What's new in ArcScan 1.8.4" />
+    <meta
+      name="twitter:description"
+      content="Windows Portable builds for x64 and ARM64, keeping ArcScan's data in an ArcScanData folder beside the app."
+    />
+    <meta
+      name="twitter:image"
+      content="https://kingnazz.github.io/ArcScan/assets/shots/settings-portable-dark.png"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "What's new in ArcScan 1.8.4",
+        "description": "ArcScan 1.8.4 adds Windows Portable builds for x64 and ARM64, keeping ArcScan's database and application profile in an ArcScanData folder beside the portable app.",
+        "inLanguage": "en",
+        "image": "https://kingnazz.github.io/ArcScan/assets/shots/settings-portable-dark.png",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kingnazz.github.io/ArcScan/whats-new-1.8.4.html"
+        },
+        "author": { "@type": "Organization", "name": "ArcScan" },
+        "publisher": { "@type": "Organization", "name": "ArcScan" },
+        "about": {
+          "@type": "SoftwareApplication",
+          "name": "ArcScan",
+          "applicationCategory": "UtilitiesApplication",
+          "applicationSubCategory": "Network Scanner",
+          "operatingSystem": "Windows 10, Windows 11, macOS 11 or later",
+          "softwareVersion": "1.8.4",
+          "url": "https://kingnazz.github.io/ArcScan/",
+          "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4",
+          "license": "https://opensource.org/licenses/MIT",
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <img src="assets/logo.png" width="24" height="24" alt="" />
+          <span>ArcScan</span>
+        </a>
+
+        <nav aria-label="Primary">
+          <ul class="nav-links">
+            <li><a href="./#features">Features</a></li>
+            <li><a href="./#how">How it works</a></li>
+            <li><a href="./#faq">FAQ</a></li>
+            <li><a href="privacy.html">Privacy</a></li>
+            <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+          </ul>
+        </nav>
+
+        <a class="btn btn-primary btn-small nav-cta" href="#download">Download</a>
+
+        <button
+          class="nav-toggle"
+          type="button"
+          id="nav-toggle"
+          aria-expanded="false"
+          aria-controls="nav-panel"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          Menu
+        </button>
+      </div>
+
+      <div class="nav-panel" id="nav-panel" data-open="false">
+        <ul>
+          <li><a href="#portable">Portable ArcScan</a></li>
+          <li><a href="#choose">Installer or portable</a></li>
+          <li><a href="#data">Where the data lives</a></li>
+          <li><a href="#independent">Independent copies</a></li>
+          <li><a href="#updating">Updating</a></li>
+          <li><a href="#limits">Where it will not run</a></li>
+          <li><a href="#unchanged">Unchanged</a></li>
+          <li><a href="./#features">Features</a></li>
+          <li><a href="./#faq">FAQ</a></li>
+          <li><a href="privacy.html">Privacy</a></li>
+          <li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li>
+        </ul>
+        <div class="wrap nav-panel-cta">
+          <a class="btn btn-primary" href="#download">Download ArcScan</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ============================================================ hero -->
+      <section class="hero" id="top">
+        <div class="wrap">
+          <p class="eyebrow">ArcScan 1.8.4</p>
+          <h1>
+            What's new in ArcScan 1.8.4
+          </h1>
+          <p class="lede">
+            <strong>ArcScan can travel with you.</strong> 1.8.4 adds a Windows Portable edition:
+            unzip it to a folder or a USB drive and run it. It is a different build, not the installer&rsquo;s executable in a ZIP.
+            ArcScan-owned persistent data stays in an <code>ArcScanData</code> folder beside the
+            app: the scan history, the inventory, the names, the notes, and the settings too. That
+            copy of ArcScan carries its own memory wherever you put it.
+          </p>
+
+          <div class="cta-row">
+            <a class="btn btn-primary" id="hero-download" href="https://github.com/kingnazz/ArcScan/releases/latest">
+              <span class="os-glyph win" id="hero-glyph" aria-hidden="true"></span>
+              <span id="hero-label">Download ArcScan</span>
+            </a>
+            <a class="btn btn-secondary" href="./">Back to the ArcScan homepage</a>
+          </div>
+
+          <p class="release-line">
+            Version 1.8.4<span aria-hidden="true"> &middot; </span>free and open source
+            <span aria-hidden="true"> &middot; </span
+            ><a
+              class="release-link"
+              href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4"
+              rel="noopener"
+              >Technical release notes on GitHub</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <!-- ======================================================== portable -->
+      <section class="section" id="portable">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Portable, and meant literally.</h2>
+            <p>
+              Plenty of tools call a ZIP portable while still writing their database into the
+              user&rsquo;s application data. Move the folder and the history stays behind; take it to
+              another machine and it starts empty. This is not that.
+            </p>
+          </div>
+
+          <div class="split">
+            <div>
+              <p class="eyebrow">One folder, everything in it</p>
+              <h2>The database and the settings both travel.</h2>
+              <p class="lede">
+                The portable build is compiled as a portable build. It works out which folder it is
+                running from, taken from the executable itself and never from whatever directory
+                happened to launch it, and keeps two things in an <code>ArcScanData</code> folder
+                there: the SQLite database, and
+                the application profile that holds your theme, recent targets, column layout and
+                discovery settings.
+              </p>
+              <p>
+                Isolating the database alone would have been the easy half and the wrong answer. A
+                portable ArcScan whose preferences came from an installed copy is not portable; it
+                just has a portable database.
+              </p>
+              <p>
+                <strong>Settings tells you where.</strong>
+                The About section names the edition, the architecture of the build you are actually
+                running, and the exact data path, with a button to copy it. If you are about to move
+                the folder, that is the folder to take.
+              </p>
+            </div>
+
+            <figure class="frame">
+              <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+              <img
+                src="assets/shots/settings-portable-dark.webp"
+                srcset="assets/shots/settings-portable-dark-800.webp 800w, assets/shots/settings-portable-dark.webp 1440w, assets/shots/settings-portable-dark@2x.webp 2880w"
+                sizes="(max-width: 62rem) 100vw, 34rem"
+                width="1440"
+                height="900"
+                alt="The ArcScan Settings panel. An About section reads ArcScan v1.8.4, then Portable edition, Windows x64. Under a Data location heading is the path E:\Tools\ArcScan\ArcScanData, followed by a line saying ArcScan-owned persistent data stays in this folder, a Copy data path button, and a note that portable ArcScan does not install updates."
+                decoding="async"
+              />
+              <figcaption>
+                The portable About panel, with the fictional data path the browser demo reports.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================== choose -->
+      <section class="section section-alt" id="choose">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Installer or portable?</h2>
+            <p>
+              For a computer you use regularly, the installer. Portable is for the cases the
+              installer is bad at: a machine you do not want to install anything on, a USB stick in
+              a technician&rsquo;s pocket, a look at a network you are visiting once.
+            </p>
+          </div>
+
+          <div class="table-scroll">
+            <table class="compare">
+              
+              <thead>
+                <tr>
+                  <th scope="col">&nbsp;</th>
+                  <th scope="col">Installer</th>
+                  <th scope="col">Portable</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Setup required</th>
+                  <td>Yes</td>
+                  <td>No</td>
+                </tr>
+                <tr>
+                  <th scope="row">ArcScan data</th>
+                  <td>Windows application data</td>
+                  <td><code>ArcScanData</code> beside the app</td>
+                </tr>
+                <tr>
+                  <th scope="row">Updates</th>
+                  <td>Checked and installed in the app</td>
+                  <td>Checked in the app, replaced by hand</td>
+                </tr>
+                <tr>
+                  <th scope="row">Start menu entry</th>
+                  <td>Yes</td>
+                  <td>No</td>
+                </tr>
+                <tr>
+                  <th scope="row">Runs from a USB drive</th>
+                  <td>Not intended</td>
+                  <td>Yes</td>
+                </tr>
+                <tr>
+                  <th scope="row">Administrator rights</th>
+                  <td>Needed to install</td>
+                  <td>Not needed</td>
+                </tr>
+                <tr>
+                  <th scope="row">Platforms</th>
+                  <td>Windows x64, Windows ARM64, macOS</td>
+                  <td>Windows x64, Windows ARM64</td>
+                </tr>
+                <tr>
+                  <th scope="row">Best for</th>
+                  <td>Regular use on your own machine</td>
+                  <td>Field work and temporary use</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="footnote">
+            There is no portable macOS build in 1.8.4, and the macOS download is unchanged.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============================================================ data -->
+      <section class="section" id="data">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Where the data lives.</h2>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>The folder</h3>
+              <p>
+                Extract the ZIP and you have <code>ArcScan.exe</code> and a README. Run it once and
+                <code>ArcScanData</code> appears beside them, holding <code>arcscan.db</code>, a
+                <code>WebView</code> profile directory and a lock file that exists only while
+                ArcScan is running.
+              </p>
+            </article>
+            <article>
+              <h3>Moving it</h3>
+              <p>
+                Close ArcScan and move the whole folder: another drive, a USB stick, another
+                computer. Nothing inside the database depends on where it was. Backing up is the
+                same operation: close ArcScan, copy the folder.
+              </p>
+            </article>
+            <article>
+              <h3>Removing it</h3>
+              <p>
+                Close ArcScan and delete the folder. There is no installer to run, no service, no
+                registry setting for ArcScan&rsquo;s own state, and no Start-menu entry left behind.
+              </p>
+            </article>
+          </div>
+
+          <div class="notice">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 16v-4M12 8h.01M12 22a10 10 0 100-20 10 10 0 000 20z" /></svg>
+            <div>
+              <h3>Said precisely</h3>
+              <p>
+                <strong>ArcScan-owned persistent data stays in <code>ArcScanData</code></strong>.
+                That is the claim, and it is the whole claim. Windows itself, and the Microsoft Edge
+                WebView2 Runtime, keep ordinary records of programs that have run on a machine, and
+                no application controls those. ArcScan does not write its database, its preferences
+                or its cache anywhere else.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================== independent -->
+      <section class="section section-alt" id="independent">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Two copies, two histories.</h2>
+            <p>
+              An installed ArcScan and a portable one can sit on the same computer without either
+              knowing about the other, and so can two portable folders.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>Nothing shared</h3>
+              <p>
+                Separate databases and separate application profiles. Neither reads the
+                other&rsquo;s scan history, device names, notes, statuses or settings.
+              </p>
+            </article>
+            <article>
+              <h3>Nothing merged</h3>
+              <p>
+                A portable copy starts with its own empty history rather than importing the
+                installed one, and the installed app never goes looking for a portable folder.
+                Nothing is merged in either direction, automatically or silently.
+              </p>
+            </article>
+            <article>
+              <h3>One at a time per folder</h3>
+              <p>
+                Two copies of ArcScan running out of the same <code>ArcScanData</code> would
+                corrupt it, so the second one says so and stops. A second copy from a
+                <em>different</em> folder is fine, and so is running portable and installed
+                together.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== updating -->
+      <section class="section" id="updating">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Updating a portable copy.</h2>
+            <p>
+              Portable ArcScan still tells you when a newer version exists, because an out-of-date
+              network tool is a problem in itself, but it does not install it. The portable
+              build does not contain the installer updater at all.
+            </p>
+          </div>
+
+          <ol class="steps">
+            <li>
+              <h3>Close ArcScan</h3>
+              <p>Nothing can be replaced safely while it is running, and the portable folder is where the running copy keeps its data.</p>
+            </li>
+            <li>
+              <h3>Download the newer ZIP</h3>
+              <p>The Windows Portable ZIP for your architecture, x64 or ARM64, from the release page.</p>
+            </li>
+            <li>
+              <h3>Replace the application files</h3>
+              <p>Extract it somewhere separate, then copy <code>ArcScan.exe</code> and <code>README-PORTABLE.txt</code> over the old ones.</p>
+            </li>
+            <li>
+              <h3>Keep ArcScanData and launch</h3>
+              <p>Leave <code>ArcScanData</code> exactly where it is and launch ArcScan. It upgrades its own database if the new version needs to.</p>
+            </li>
+          </ol>
+
+          <p class="footnote">
+            ArcScan upgrades its own database if the new version needs to, so the history, names,
+            notes and settings are all still there. The installed edition&rsquo;s updater is
+            unchanged: it still checks, verifies the signature, installs and restarts.
+          </p>
+        </div>
+      </section>
+
+      <!-- ========================================================== limits -->
+      <section class="section section-alt" id="limits">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Where portable ArcScan will not run.</h2>
+            <p>
+              In each of these cases it says so and stops. It never quietly writes your data
+              somewhere you did not choose.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>A folder it cannot write to</h3>
+              <p>
+                Checked by actually writing a file and deleting it again, not by reading a
+                read-only flag: a directory permission, a full disk and a write-protected card all
+                look writable until something is written. Move the folder somewhere writable.
+              </p>
+            </article>
+            <article>
+              <h3>A network location</h3>
+              <p>
+                A <code>\\server\share</code> path, or a mapped drive Windows reports as a network
+                drive. Databases over a network share are not reliable enough to keep a scan history
+                in, so ArcScan refuses rather than risking it. Copy the folder to a local or
+                removable drive.
+              </p>
+            </article>
+            <article>
+              <h3>Inside the ZIP</h3>
+              <p>
+                Windows opens an archive in a temporary folder it deletes without warning, so
+                ArcScan started from inside the ZIP would lose everything it saved. Extract first.
+              </p>
+            </article>
+          </div>
+
+          <p class="footnote">
+            The Microsoft Edge WebView2 Runtime is required, as it is for the installed edition.
+            Current Windows 10 and Windows 11 already have it. The portable ZIP deliberately does
+            not include an installer for it, because portable ArcScan does not install system
+            software, so &ldquo;no dependencies&rdquo; is not a claim ArcScan makes. If a USB
+            drive is removed while ArcScan is running, saving will start failing and ArcScan will
+            say so; it does not write your data elsewhere instead. ArcScan is still not code-signed
+            with a paid publisher certificate, so Windows SmartScreen shows an unknown-publisher
+            warning on first launch.
+          </p>
+        </div>
+      </section>
+
+      <!-- ======================================================= unchanged -->
+      <section class="section" id="unchanged">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>What did not change.</h2>
+            <p>
+              1.8.4 is a distribution release. The scanner is the 1.8.3 scanner.
+            </p>
+          </div>
+
+          <div class="whats-new">
+            <article>
+              <h3>The installed edition</h3>
+              <p>
+                Same application-data location, same database, same preferences, same migrations,
+                same updater, same window. Installing 1.8.4 over 1.8.x, 1.7.x or 1.6.x keeps
+                everything, exactly as before.
+              </p>
+            </article>
+            <article>
+              <h3>Scanning and discovery</h3>
+              <p>
+                The same read-only ICMP and TCP scanning, the same local mDNS and SSDP discovery
+                with the same URL guard and the same bounds, the same device identification, the
+                same Inventory, Changes and History.
+              </p>
+            </article>
+            <article>
+              <h3>Privacy</h3>
+              <p>
+                Still local only. No account, no cloud service, no telemetry, no analytics. The
+                same two optional outbound requests, still listed in Settings: the update check,
+                and the public-IP lookup that never runs without a press.
+                <a href="privacy.html">Read the privacy notes</a>
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== download -->
+      <section class="section section-alt" id="download">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Get ArcScan 1.8.4.</h2>
+            <p>
+              Installers and portable ZIPs are published on GitHub Releases and downloaded directly
+              from there, so this site never re-hosts a binary.
+            </p>
+          </div>
+
+          <ul class="downloads" id="download-list">
+            <li class="dl" data-os="win-x64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>x64 (Intel or AMD)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.4</dd>
+              </dl>
+
+              <div class="dl-option">
+                <h4>Installer</h4>
+                <p>NSIS setup (.exe). Recommended for most people.</p>
+                <dl class="dl-meta">
+                  <dt>Size</dt>
+                  <dd data-field="size">See the release page</dd>
+                </dl>
+                <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                  Download installer
+                </a>
+              </div>
+
+              <div class="dl-option">
+                <h4>Portable ZIP</h4>
+                <p>No installation required.</p>
+                <dl class="dl-meta">
+                  <dt>Size</dt>
+                  <dd data-field="portable-size">See the release page</dd>
+                </dl>
+                <a class="btn btn-quiet" data-field="portable-link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                  Download portable
+                </a>
+              </div>
+
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="win-arm64">
+              <div class="dl-top">
+                <span class="os-glyph win" aria-hidden="true"></span>
+                <h3>Windows on ARM</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>ARM64</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.4</dd>
+              </dl>
+
+              <div class="dl-option">
+                <h4>Installer</h4>
+                <p>NSIS setup (.exe). Recommended for most people.</p>
+                <dl class="dl-meta">
+                  <dt>Size</dt>
+                  <dd data-field="size">See the release page</dd>
+                </dl>
+                <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                  Download installer
+                </a>
+              </div>
+
+              <div class="dl-option">
+                <h4>Portable ZIP</h4>
+                <p>No installation required.</p>
+                <dl class="dl-meta">
+                  <dt>Size</dt>
+                  <dd data-field="portable-size">See the release page</dd>
+                </dl>
+                <a class="btn btn-quiet" data-field="portable-link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                  Download portable
+                </a>
+              </div>
+
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+
+            <li class="dl" data-os="mac">
+              <div class="dl-top">
+                <span class="os-glyph apple" aria-hidden="true"></span>
+                <h3>macOS</h3>
+                <span class="badge badge-neutral" data-recommended-badge hidden>Recommended</span>
+              </div>
+              <dl>
+                <dt>Architecture</dt>
+                <dd>Universal (Apple Silicon and Intel)</dd>
+                <dt>Version</dt>
+                <dd data-field="version">1.8.4</dd>
+              </dl>
+
+              <div class="dl-option">
+                <h4>Installer</h4>
+                <p>Disk image (.dmg).</p>
+                <dl class="dl-meta">
+                  <dt>Size</dt>
+                  <dd data-field="size">See the release page</dd>
+                </dl>
+                <a class="btn btn-secondary" data-field="link" href="https://github.com/kingnazz/ArcScan/releases/latest">
+                  Download installer
+                </a>
+              </div>
+
+              <p class="dl-links">
+                <a data-field="checksum" href="https://github.com/kingnazz/ArcScan/releases/latest">Verify this download</a>
+                <a data-field="notes" href="https://github.com/kingnazz/ArcScan/releases/latest">Release notes</a>
+              </p>
+            </li>
+          </ul>
+
+          <p class="footnote" id="download-status">
+            Every link above points at the latest release. Exact file sizes are filled in from the
+            GitHub API when it is reachable.
+          </p>
+
+          <p class="footnote">
+            <a href="https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4" rel="noopener">Release notes for 1.8.4</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">All releases</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="whats-new-1.8.3.html">What&rsquo;s new in 1.8.3</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="whats-new-1.8.2.html">1.8.2</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="whats-new-1.8.1.html">1.8.1</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="whats-new-1.8.0.html">1.8</a>
+            <span aria-hidden="true"> &middot; </span>
+            <a href="./">Back to the ArcScan homepage</a>
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-inner">
+          <a class="brand" href="./">
+            <img src="assets/logo.png" width="22" height="22" alt="" />
+            <span>ArcScan</span>
+          </a>
+          <nav aria-label="Footer">
+            <a href="./#download">Download</a>
+            <a href="whats-new-1.8.4.html" aria-current="page">What's new</a>
+            <a href="whats-new-1.8.3.html">What's new in 1.8.3</a>
+            <a href="whats-new-1.8.2.html">What's new in 1.8.2</a>
+            <a href="whats-new-1.8.1.html">What's new in 1.8.1</a>
+            <a href="whats-new-1.8.0.html">What's new in 1.8</a>
+            <a href="./#faq">FAQ</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/kingnazz/ArcScan" rel="noopener">Source</a>
+            <a href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Releases</a>
+          </nav>
+        </div>
+        <p class="footer-note">
+          ArcScan is a read-only network discovery tool, for networks you own or are authorised to
+          inspect. Free and open source under the MIT license. Every screenshot on this page comes
+          from the real interface running against a fictional demo network, and the portable data
+          path shown is a fictional one.
+        </p>
+      </div>
+    </footer>
+
+    <script src="arcscan.v5.js" defer></script>
+  </body>
+</html>

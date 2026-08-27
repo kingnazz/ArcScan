@@ -10,7 +10,10 @@ export default defineConfig({
     // helpers talk to window, and the public-IP hook is exercised through a
     // real React render.
     environment: "jsdom",
-    include: ["src/**/*.test.ts"],
+    // The packaging scripts get tests too: they decide what actually ships,
+    // and "the ZIP contained the wrong architecture" is not something to find
+    // out from a bug report.
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     restoreMocks: true,
   },
 });

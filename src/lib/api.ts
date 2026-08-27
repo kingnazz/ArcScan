@@ -39,6 +39,7 @@ import {
 } from "./export";
 import { mock } from "./mock";
 import { lookupPublicIp } from "./publicIp";
+import type { RuntimeInfo } from "./runtime";
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -243,6 +244,35 @@ export const api = {
   async detectNetworks(): Promise<LocalNetwork[]> {
     if (isTauri()) return invoke<LocalNetwork[]>("detect_networks");
     return mock.detectNetworks();
+  },
+
+  /**
+   * Which edition this is and where its data lives.
+   *
+   * Answered by Rust from the paths it resolved at startup. The browser demo
+   * answers from the mock, which reports an installed edition unless a test
+   * asks otherwise -- see lib/mock.ts. Nothing here can change where the
+   * native app actually stores anything.
+   */
+  async runtimeInfo(): Promise<RuntimeInfo> {
+    if (isTauri()) return invoke<RuntimeInfo>("runtime_info");
+    return mock.runtimeInfo();
+  },
+
+  /**
+   * Reveal this edition's data folder in the system file manager. Takes no
+   * argument: the folder is the one the backend resolved at startup, which is
+   * why this does not reintroduce a general path-opening capability.
+   */
+  async openDataFolder(): Promise<void> {
+    if (isTauri()) return invoke<void>("open_data_folder");
+    throw new Error("Opening the data folder is only available in the ArcScan desktop app.");
+  },
+
+  /** Open the download page, for a portable copy that needs a newer ZIP. */
+  async openPortableDownloads(): Promise<void> {
+    if (isTauri()) return invoke<void>("open_portable_downloads");
+    window.open("https://kingnazz.github.io/ArcScan/#download", "_blank", "noopener");
   },
 
   async openReleases(): Promise<void> {

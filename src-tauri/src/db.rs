@@ -509,6 +509,21 @@ impl Db {
         })
     }
 
+    /// Make every subsequent write fail, the way a read-only medium does.
+    ///
+    /// Test-only. `PRAGMA query_only` makes SQLite refuse writes with
+    /// `SQLITE_READONLY` -- the same error a write-protected drive, a
+    /// read-only mount and a removed USB stick produce -- which is what makes
+    /// "a failed write is reported as a failure" testable deterministically,
+    /// on any machine, without needing a filesystem that can be made
+    /// unwritable to the user running the suite.
+    #[cfg(test)]
+    pub fn simulate_storage_loss(&self) -> Result<(), String> {
+        let conn = self.lock()?;
+        conn.pragma_update(None, "query_only", true)
+            .map_err(|e| e.to_string())
+    }
+
     /// Open an in-memory database. Used by the migration and inventory tests.
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, String> {
@@ -4149,7 +4164,7 @@ mod tests {
                 vec![
                     host(
                         "192.168.1.1",
-                        Some("aa:bb:cc:00:00:01"),
+                        Some("AA:BB:CC:00:00:01"),
                         Some("gateway"),
                         &[80, 443],
                     ),
@@ -5384,7 +5399,7 @@ mod tests {
         db.save_scan(&result(
             "10.0.0.0/24",
             None,
-            vec![host("10.0.0.1", Some("aa:bb:cc:00:00:01"), None, &[])],
+            vec![host("10.0.0.1", Some("AA:BB:CC:00:00:01"), None, &[])],
         ))
         .unwrap();
         db.save_scan(&result(
@@ -5423,7 +5438,7 @@ mod tests {
             vec![
                 host(
                     "10.0.0.1",
-                    Some("aa:bb:cc:00:00:01"),
+                    Some("AA:BB:CC:00:00:01"),
                     Some("gateway"),
                     &[80],
                 ),
@@ -5437,7 +5452,7 @@ mod tests {
             vec![
                 host(
                     "10.0.0.1",
-                    Some("aa:bb:cc:00:00:01"),
+                    Some("AA:BB:CC:00:00:01"),
                     Some("gateway"),
                     &[80],
                 ),
@@ -5482,7 +5497,7 @@ mod tests {
         let both = vec![
             host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gateway"),
                 &[80],
             ),
@@ -5500,7 +5515,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gateway"),
                 &[80],
             )],
@@ -5533,7 +5548,7 @@ mod tests {
             vec![
                 host(
                     "10.0.0.1",
-                    Some("aa:bb:cc:00:00:01"),
+                    Some("AA:BB:CC:00:00:01"),
                     Some("gateway"),
                     &[80],
                 ),
@@ -5553,7 +5568,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gateway"),
                 &[80],
             )],
@@ -5582,7 +5597,7 @@ mod tests {
         let mut partial = result(
             "10.0.0.0/24",
             Some("quick-lan"),
-            vec![host("10.0.0.1", Some("aa:bb:cc:00:00:01"), None, &[80])],
+            vec![host("10.0.0.1", Some("AA:BB:CC:00:00:01"), None, &[80])],
         );
         partial.cancelled = true;
         db.save_scan(&partial).unwrap();
@@ -5610,7 +5625,7 @@ mod tests {
             vec![
                 host(
                     "10.0.0.1",
-                    Some("aa:bb:cc:00:00:01"),
+                    Some("AA:BB:CC:00:00:01"),
                     Some("gateway"),
                     &[80],
                 ),
@@ -5632,7 +5647,7 @@ mod tests {
             Some(true),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gateway"),
                 &[80],
             )],
@@ -5857,7 +5872,7 @@ mod tests {
     fn a_returning_device_is_recorded_as_returned_not_added() {
         let db = Db::open_in_memory().unwrap();
         let phone = host("10.0.0.20", Some("aa:bb:cc:00:00:20"), Some("phone"), &[]);
-        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        let gateway = host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]);
         db.save_scan(&result(
             "10.0.0.0/24",
             Some("quick-lan"),
@@ -5891,7 +5906,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -5901,7 +5916,7 @@ mod tests {
             "10.0.0.0/24",
             Some("quick-lan"),
             vec![
-                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                 host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
             ],
         );
@@ -5942,7 +5957,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -5952,7 +5967,7 @@ mod tests {
             "10.0.0.0/24",
             Some("quick-lan"),
             vec![
-                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                 host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
             ],
         ))
@@ -5988,7 +6003,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -5998,7 +6013,7 @@ mod tests {
             "10.0.0.0/24",
             Some("quick-lan"),
             vec![
-                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                 host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
             ],
         ))
@@ -6015,7 +6030,7 @@ mod tests {
     #[test]
     fn ignoring_a_device_hides_its_changes_without_losing_them() {
         let db = Db::open_in_memory().unwrap();
-        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        let gateway = host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]);
         db.save_scan(&result(
             "10.0.0.0/24",
             Some("quick-lan"),
@@ -6088,7 +6103,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -6098,7 +6113,7 @@ mod tests {
             "10.0.0.0/24",
             Some("quick-lan"),
             vec![
-                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                 host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
             ],
         ))
@@ -6126,7 +6141,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -6137,7 +6152,7 @@ mod tests {
                 "10.0.0.0/24",
                 Some("quick-lan"),
                 vec![
-                    host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                    host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                     host("10.0.0.4", Some("aa:bb:cc:00:00:04"), Some("tv"), &[8009]),
                 ],
             ))
@@ -6160,7 +6175,7 @@ mod tests {
     #[test]
     fn retention_keeps_change_records_and_clears_their_dead_links() {
         let db = Db::open_in_memory().unwrap();
-        let gateway = host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]);
+        let gateway = host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]);
         for extra in [None, Some(4u8), Some(5), Some(6)] {
             let mut hosts = vec![gateway.clone()];
             if let Some(n) = extra {
@@ -6249,7 +6264,7 @@ mod tests {
             "10.0.0.0/24",
             Some("quick-lan"),
             vec![
-                host("10.0.0.1", Some("aa:bb:cc:00:00:01"), Some("gw"), &[80]),
+                host("10.0.0.1", Some("AA:BB:CC:00:00:01"), Some("gw"), &[80]),
                 host(
                     "10.0.0.7",
                     Some("aa:bb:cc:00:00:07"),
@@ -6264,7 +6279,7 @@ mod tests {
             Some("quick-lan"),
             vec![host(
                 "10.0.0.1",
-                Some("aa:bb:cc:00:00:01"),
+                Some("AA:BB:CC:00:00:01"),
                 Some("gw"),
                 &[80],
             )],
@@ -8359,5 +8374,521 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
             .unwrap();
         assert_eq!(orphans, 0);
+    }
+
+    // --- Portable and installed databases (v1.8.4) -------------------------
+
+    /// A temporary directory that removes itself.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "arcscan-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Every table, index and column a database has, as one comparable string.
+    fn schema_of(db: &Db) -> Vec<String> {
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+            .unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |row| {
+                let kind: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let sql: Option<String> = row.get(2)?;
+                Ok(format!("{kind} {name}: {}", sql.unwrap_or_default()))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        rows
+    }
+
+    fn schema_version(db: &Db) -> i64 {
+        db.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'version'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// A scan with enough shape to exercise every kind of persisted state:
+    /// devices, discovery evidence, a scope, and a comparison baseline.
+    fn seeded_scan() -> ScanResult {
+        let mut nas = host(
+            "192.168.1.10",
+            Some("AA:BB:CC:00:00:01"),
+            Some("nas"),
+            &[22, 445],
+        );
+        nas.discovery = Some(discovery_for("Studio NAS", "nas", "high", &["_smb._tcp"]));
+        let mut printer = host(
+            "192.168.1.20",
+            Some("AA:BB:CC:00:00:02"),
+            Some("printer"),
+            &[80],
+        );
+        printer.discovery = Some(discovery_for(
+            "LaserFast",
+            "printer",
+            "high",
+            &["_ipp._tcp"],
+        ));
+        with_full_discovery(result(
+            "192.168.1.0/24",
+            Some("quick-lan"),
+            vec![nas, printer],
+        ))
+    }
+
+    #[test]
+    fn the_two_editions_use_exactly_the_same_schema() {
+        // The portable database is not a variant, a subset or a newer shape. It
+        // is the same schema at the same version in a different folder, which is
+        // what makes a folder move safe and what makes migrations work in both.
+        let installed_dir = TempDir::new("schema-installed");
+        let portable_dir = TempDir::new("schema-portable");
+
+        let installed = Db::open(&installed_dir.path().join("arcscan.db")).unwrap();
+        let portable =
+            Db::open(&portable_dir.path().join("ArcScanData").join("arcscan.db")).unwrap();
+
+        assert_eq!(schema_version(&installed), SCHEMA_VERSION);
+        assert_eq!(schema_version(&portable), SCHEMA_VERSION);
+        assert_eq!(schema_of(&installed), schema_of(&portable));
+    }
+
+    #[test]
+    fn opening_creates_the_parent_directory_but_only_the_database() {
+        // ArcScanData is made by the portable preflight; Db::open makes whatever
+        // parent it is given, and nothing else. A database that created sibling
+        // directories would put files in a portable folder nobody documented.
+        let temp = TempDir::new("parents");
+        let data_root = temp.path().join("ArcScanData");
+        let db_path = data_root.join("arcscan.db");
+        assert!(!data_root.exists());
+
+        let db = Db::open(&db_path).unwrap();
+        drop(db);
+
+        assert!(db_path.is_file());
+        let entries: Vec<String> = std::fs::read_dir(&data_root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| !name.starts_with("arcscan.db"))
+            .collect();
+        assert!(entries.is_empty(), "unexpected files: {entries:?}");
+    }
+
+    #[test]
+    fn a_portable_database_carries_everything_through_a_folder_move() {
+        // The whole promise of the portable edition in one test: put the data in
+        // a folder, move the folder, and find all of it still there.
+        let first = TempDir::new("move-from");
+        let second = TempDir::new("move-to");
+
+        let from_root = first.path().join("ArcScan Portable").join("ArcScanData");
+        let saved_id;
+        let device_id;
+        {
+            let db = Db::open(&from_root.join("arcscan.db")).unwrap();
+            let saved = db.save_scan(&seeded_scan()).unwrap();
+            saved_id = saved.scan_id;
+
+            let devices = db.list_devices().unwrap();
+            device_id = devices
+                .iter()
+                .find(|d| d.mac.as_deref() == Some("AA:BB:CC:00:00:01"))
+                .expect("the NAS is in the inventory")
+                .id;
+
+            db.set_device_name(device_id, Some("Studio NAS".into()))
+                .unwrap();
+            db.set_device_notes(device_id, Some("Rack 2, shelf 3".into()))
+                .unwrap();
+            db.set_device_status(device_id, DeviceStatus::Trusted)
+                .unwrap();
+            db.set_device_type_override(device_id, Some("nas".into()))
+                .unwrap();
+
+            let scopes = db.list_network_scopes().unwrap();
+            db.rename_network_scope(scopes[0].id, "Studio".into())
+                .unwrap();
+        }
+
+        // Move the entire portable folder, as an operator would.
+        let to_root = second
+            .path()
+            .join("Tools")
+            .join("ArcScan")
+            .join("ArcScanData");
+        std::fs::create_dir_all(to_root.parent().unwrap()).unwrap();
+        std::fs::rename(&from_root, &to_root).unwrap();
+        assert!(!from_root.exists());
+
+        let db = Db::open(&to_root.join("arcscan.db")).unwrap();
+
+        // The device, with everything the operator put on it.
+        let detail = db.device_detail(device_id).unwrap();
+        assert_eq!(detail.device.custom_name.as_deref(), Some("Studio NAS"));
+        assert_eq!(detail.device.notes.as_deref(), Some("Rack 2, shelf 3"));
+        assert_eq!(detail.device.status, DeviceStatus::Trusted);
+        assert_eq!(detail.device.user_device_type.as_deref(), Some("nas"));
+
+        // The scan, the inventory, the scope name and the discovery evidence.
+        assert_eq!(db.list_scans().unwrap().len(), 1);
+        assert_eq!(db.get_scan(saved_id).unwrap().hosts.len(), 2);
+        assert_eq!(db.inventory().unwrap().rows.len(), 2);
+        assert_eq!(db.list_network_scopes().unwrap()[0].display_name, "Studio");
+        assert!(
+            db.device_detail(device_id).unwrap().discovery.is_some(),
+            "discovery evidence travelled with the folder"
+        );
+
+        // And it is still writable in its new home.
+        db.set_device_notes(device_id, Some("Moved to the van".into()))
+            .unwrap();
+        assert_eq!(
+            db.device_detail(device_id).unwrap().device.notes.as_deref(),
+            Some("Moved to the van")
+        );
+    }
+
+    #[test]
+    fn nothing_in_the_database_records_where_the_portable_folder_was() {
+        // A stored absolute path would make a moved folder wrong rather than
+        // merely relocated, so this looks for the old root in every text and
+        // blob column of every table rather than in the ones that seemed likely.
+        let temp = TempDir::new("nopaths");
+        let root = temp.path().join("ArcScan Portable");
+        let db = Db::open(&root.join("ArcScanData").join("arcscan.db")).unwrap();
+
+        let saved = db.save_scan(&seeded_scan()).unwrap();
+        let device = db.list_devices().unwrap()[0].id;
+        db.set_device_name(device, Some("Named".into())).unwrap();
+        db.set_device_notes(device, Some("Noted".into())).unwrap();
+        let _ = db.compare_scan(saved.scan_id);
+
+        let needles = [
+            root.to_string_lossy().to_string(),
+            temp.path().to_string_lossy().to_string(),
+            "ArcScanData".to_string(),
+        ];
+
+        let conn = db.conn.lock().unwrap();
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!tables.is_empty());
+
+        for table in tables {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                for index in 0..columns {
+                    let text: Option<String> = row.get(index).ok();
+                    let Some(text) = text else { continue };
+                    for needle in &needles {
+                        assert!(
+                            !text.contains(needle.as_str()),
+                            "{table} column {index} stores {needle}: {text}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reopening_the_same_portable_database_changes_nothing() {
+        let temp = TempDir::new("reopen");
+        let path = temp.path().join("ArcScanData").join("arcscan.db");
+
+        let scans;
+        let schema;
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_scan(&seeded_scan()).unwrap();
+            scans = db.list_scans().unwrap().len();
+            schema = schema_of(&db);
+        }
+
+        // Ten opens in a row: migrations are idempotent, and a portable copy
+        // that is launched and closed all day must not accumulate anything.
+        for _ in 0..10 {
+            let db = Db::open(&path).unwrap();
+            assert_eq!(schema_version(&db), SCHEMA_VERSION);
+            assert_eq!(db.list_scans().unwrap().len(), scans);
+            assert_eq!(schema_of(&db), schema);
+        }
+    }
+
+    #[test]
+    fn a_v183_database_migrates_in_place_when_a_portable_folder_carries_it_forward() {
+        // The upgrade path for a portable copy: the same database, opened by the
+        // next version, in a folder that moved in between.
+        let old = TempDir::new("upgrade-old");
+        let new = TempDir::new("upgrade-new");
+        let old_root = old.path().join("ArcScanData");
+
+        let device_id;
+        {
+            let db = Db::open(&old_root.join("arcscan.db")).unwrap();
+            db.save_scan(&seeded_scan()).unwrap();
+            device_id = db.list_devices().unwrap()[0].id;
+            db.set_device_name(device_id, Some("Before the upgrade".into()))
+                .unwrap();
+            // Pretend it was written by an older build that had not reached the
+            // current schema version, which is what a migration has to handle.
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE schema_meta SET value = '5' WHERE key = 'version'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let new_root = new.path().join("Tools").join("ArcScanData");
+        std::fs::create_dir_all(new_root.parent().unwrap()).unwrap();
+        std::fs::rename(&old_root, &new_root).unwrap();
+
+        let db = Db::open(&new_root.join("arcscan.db")).unwrap();
+        assert_eq!(schema_version(&db), SCHEMA_VERSION);
+        assert_eq!(
+            db.device_detail(device_id)
+                .unwrap()
+                .device
+                .custom_name
+                .as_deref(),
+            Some("Before the upgrade")
+        );
+        assert_eq!(db.list_scans().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_two_editions_never_read_each_others_data() {
+        // Same machine, both editions, one after the other. Neither finds the
+        // other's scans, devices, names or notes, because neither is looking.
+        let installed_dir = TempDir::new("coexist-installed");
+        let portable_dir = TempDir::new("coexist-portable");
+
+        let installed = Db::open(&installed_dir.path().join("arcscan.db")).unwrap();
+        installed.save_scan(&seeded_scan()).unwrap();
+        let installed_device = installed.list_devices().unwrap()[0].id;
+        installed
+            .set_device_name(installed_device, Some("The office NAS".into()))
+            .unwrap();
+
+        let portable =
+            Db::open(&portable_dir.path().join("ArcScanData").join("arcscan.db")).unwrap();
+        assert!(portable.list_scans().unwrap().is_empty());
+        assert!(portable.list_devices().unwrap().is_empty());
+        assert!(portable.inventory().unwrap().rows.is_empty());
+        assert!(portable.change_events().unwrap().events.is_empty());
+        assert!(portable.list_network_scopes().unwrap().is_empty());
+
+        // And a portable copy naming its own device does not rename the
+        // installed one, even though the identity key is the same.
+        portable.save_scan(&seeded_scan()).unwrap();
+        let portable_device = portable.list_devices().unwrap()[0].id;
+        portable
+            .set_device_name(portable_device, Some("A stranger's NAS".into()))
+            .unwrap();
+
+        assert_eq!(
+            installed
+                .device_detail(installed_device)
+                .unwrap()
+                .device
+                .custom_name
+                .as_deref(),
+            Some("The office NAS")
+        );
+        assert_eq!(
+            portable
+                .device_detail(portable_device)
+                .unwrap()
+                .device
+                .custom_name
+                .as_deref(),
+            Some("A stranger's NAS")
+        );
+    }
+
+    #[test]
+    fn two_portable_folders_never_read_each_others_data() {
+        let a = TempDir::new("iso-a");
+        let b = TempDir::new("iso-b");
+        let db_a = Db::open(&a.path().join("ArcScanData").join("arcscan.db")).unwrap();
+        let db_b = Db::open(&b.path().join("ArcScanData").join("arcscan.db")).unwrap();
+
+        db_a.save_scan(&seeded_scan()).unwrap();
+        assert_eq!(db_a.list_scans().unwrap().len(), 1);
+        assert!(db_b.list_scans().unwrap().is_empty());
+
+        let device = db_a.list_devices().unwrap()[0].id;
+        db_a.set_device_notes(device, Some("Folder A only".into()))
+            .unwrap();
+        assert!(db_b.list_devices().unwrap().is_empty());
+    }
+
+    // --- Storage that goes away (v1.8.4) -----------------------------------
+
+    #[test]
+    fn a_failed_write_is_reported_as_a_failure_and_never_as_a_success() {
+        // The USB-drive case. Every operation that persists something the
+        // operator typed or chose must return an error when the write cannot
+        // happen, because an interface that says "saved" over a disconnected
+        // drive is worse than one that says nothing.
+        let temp = TempDir::new("storage-loss");
+        let db = Db::open(&temp.path().join("ArcScanData").join("arcscan.db")).unwrap();
+        let saved = db.save_scan(&seeded_scan()).unwrap();
+        let device = db.list_devices().unwrap()[0].id;
+        let scope = db.list_network_scopes().unwrap()[0].id;
+        let events: Vec<i64> = db
+            .change_events()
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        db.simulate_storage_loss().unwrap();
+
+        // Each of these is a separate operator action with its own code path,
+        // so each is asserted separately rather than trusting one to stand in
+        // for the rest.
+        assert!(
+            db.set_device_name(device, Some("Renamed after the drive went".into()))
+                .is_err(),
+            "a rename reported success with no storage"
+        );
+        assert!(
+            db.set_device_notes(device, Some("A note nobody will read".into()))
+                .is_err(),
+            "a note reported success with no storage"
+        );
+        assert!(
+            db.set_device_status(device, DeviceStatus::Trusted).is_err(),
+            "a status change reported success with no storage"
+        );
+        assert!(
+            db.set_device_type_override(device, Some("nas".into()))
+                .is_err(),
+            "a type correction reported success with no storage"
+        );
+        assert!(
+            db.rename_network_scope(scope, "Renamed network".into())
+                .is_err(),
+            "a network rename reported success with no storage"
+        );
+        assert!(
+            db.save_scan(&seeded_scan()).is_err(),
+            "a scan save reported success with no storage"
+        );
+        if !events.is_empty() {
+            assert!(
+                db.set_change_state(&events, ChangeState::Acknowledged)
+                    .is_err(),
+                "acknowledging a change reported success with no storage"
+            );
+        }
+        assert!(
+            db.set_device_statuses(&[device], DeviceStatus::Ignored)
+                .is_err(),
+            "a bulk classification reported success with no storage"
+        );
+        assert!(
+            db.delete_scan(saved.scan_id).is_err(),
+            "deleting a scan reported success with no storage"
+        );
+        assert!(
+            db.prune_history(0).is_err(),
+            "pruning reported success with no storage"
+        );
+    }
+
+    #[test]
+    fn what_was_already_read_stays_readable_when_storage_goes() {
+        // Losing the drive must not take the screen with it. Reads that the
+        // page has already made keep working, so a scan on screen stays on
+        // screen while the operator is told that saving failed.
+        let temp = TempDir::new("storage-reads");
+        let db = Db::open(&temp.path().join("ArcScanData").join("arcscan.db")).unwrap();
+        let saved = db.save_scan(&seeded_scan()).unwrap();
+        let device = db.list_devices().unwrap()[0].id;
+
+        db.simulate_storage_loss().unwrap();
+
+        assert_eq!(db.list_scans().unwrap().len(), 1);
+        assert_eq!(db.get_scan(saved.scan_id).unwrap().hosts.len(), 2);
+        assert_eq!(db.inventory().unwrap().rows.len(), 2);
+        assert!(db.device_detail(device).unwrap().device.id == device);
+        assert_eq!(db.list_devices().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_stored_value_alone() {
+        // "Reported as a failure" is only half of it. The value in the database
+        // must still be the old one, so a retry after the drive is reconnected
+        // starts from the truth rather than from a half-applied change.
+        let temp = TempDir::new("storage-intact");
+        let path = temp.path().join("ArcScanData").join("arcscan.db");
+        let device;
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_scan(&seeded_scan()).unwrap();
+            device = db.list_devices().unwrap()[0].id;
+            db.set_device_name(device, Some("The name that stuck".into()))
+                .unwrap();
+
+            db.simulate_storage_loss().unwrap();
+            assert!(db
+                .set_device_name(device, Some("The name that did not".into()))
+                .is_err());
+        }
+
+        let db = Db::open(&path).unwrap();
+        assert_eq!(
+            db.device_detail(device)
+                .unwrap()
+                .device
+                .custom_name
+                .as_deref(),
+            Some("The name that stuck")
+        );
     }
 }

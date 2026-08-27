@@ -3,7 +3,96 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.3] - unreleased
+## [1.8.4] - unreleased
+
+A Windows Portable edition, for x64 and for ARM64. Unzip it to a folder or a USB
+drive and run it: no installer, no administrator rights, and ArcScan's own data
+kept beside the application rather than in the machine's application-data
+directory. A distribution release: the scanner is the 1.8.3 scanner, and the
+installed edition is untouched. Full notes:
+[docs/RELEASE-NOTES-1.8.4.md](docs/RELEASE-NOTES-1.8.4.md).
+
+### Added
+
+- **A Windows Portable edition**, as `ArcScan_1.8.4_windows-x64-portable.zip` and
+  `ArcScan_1.8.4_windows-arm64-portable.zip`. Each holds exactly `ArcScan.exe`
+  and `README-PORTABLE.txt`; `ArcScanData` appears beside them on the first
+  launch. The architecture in each ZIP is verified from the PE header at build
+  time, not from the filename.
+- **Both persistent stores travel, not just the database.** `ArcScanData` holds
+  `arcscan.db` and a `WebView` profile directory, so theme, default profile, port
+  specification, timeouts, concurrency, row density, hidden columns, optional
+  Inventory columns, sort order, history retention, the Public IP switch, the
+  update-check switch, the discovery switches, reduced motion and the first-run
+  flag all move with the folder. A build that isolated only the database would be
+  a portable ArcScan whose preferences came from an installed copy.
+- **The edition is compiled in**, decided by a Cargo feature and by nothing
+  observable at runtime. A marker file or an `ArcScanData` folder as the switch
+  would mean an installed ArcScan reading a different database because somebody
+  created a folder with an unlucky name, and a portable ArcScan reading the
+  installed one because the folder was deleted. Renaming or moving the executable
+  changes nothing; creating or deleting `ArcScanData` changes nothing.
+- **A startup preflight that refuses rather than falling back.** Portable ArcScan
+  resolves its folder from the executable (never the working directory), refuses
+  a UNC path or a drive Windows reports as remote, creates `ArcScanData`, proves
+  it is writable by writing and deleting a probe file, and takes an exclusive
+  lock, all before opening anything. **There is no fallback to the
+  application-data directory in any failure case.**
+- **A real same-folder lock.** An operating-system lock held for the life of the
+  process, so a second copy from the same folder is refused and a crash costs
+  nothing: the kernel releases the lock however the process ended, and the next
+  launch relocks the file left behind. A second copy from a *different* portable
+  folder is allowed, and portable and installed can run together.
+- **Portable Settings** names the edition, the architecture of the build actually
+  running, and the exact data path, with `Copy data path` and `Open data folder`.
+- **A portable update path.** A newer version is still reported; installing it is
+  four manual steps that keep `ArcScanData`. The portable build does not link the
+  updater plugin at all, so there is no installer-apply path in the binary rather
+  than a hidden button. The portable binary is about 1.6 MB smaller as a result.
+- **Website Installer and Portable choices** on both Windows download cards, with
+  strict per-architecture asset matching, and a first-party
+  [What's new in 1.8.4](https://kingnazz.github.io/ArcScan/whats-new-1.8.4.html)
+  page. macOS is unchanged and is not offered a portable download.
+- **`docs/PORTABLE.md`**, `docs/PORTABLE-ARCHITECTURE.md` and
+  `README-PORTABLE.txt` in the ZIP.
+
+### Changed
+
+- The main window is now created by ArcScan's own startup rather than by Tauri's
+  config pass (`app.windows[0].create` is `false`), because a WebView's data
+  directory has to be chosen before the WebView is created and there is no way to
+  move it afterwards. It is built with `WebviewWindowBuilder::from_config` and the
+  same config object Tauri itself would have used, so the installed window is
+  unchanged; the portable build adds one line to it.
+- Capabilities are split per edition. The portable set has no `updater:default`
+  and no `process:allow-restart`, because the portable build does not link those
+  plugins. Enabling both edition features is a compile error.
+- The minimum Rust version is 1.89, for `std::fs::File::try_lock`. That is the
+  whole locking implementation and it adds no dependency.
+- `verify-site.mjs` and `verify-ui.mjs` cover both editions; two site steps were
+  rewritten like-for-like from 1.8.3-specific copy to 1.8.4's equivalents.
+
+### Fixed
+
+- `gen-latest-json.mjs` now refuses any asset with "portable" in its name before
+  examining suffixes, and the release workflow checks the generated manifest
+  before publishing it. Portable ZIPs already had no signature and so could never
+  have been selected, but "it happens not to match the current suffix list" is a
+  coincidence rather than a guarantee, and this is the one file an installed
+  ArcScan downloads and acts on without a person looking at it.
+- Two clippy findings in `scanner.rs`, which current stable reports and which
+  `-D warnings` turns into a failing build.
+
+### Unchanged
+
+- The installed edition's data location, database, preferences, migrations,
+  updater, window and uninstaller.
+- The scanner, discovery, Inventory, Changes, History and the device panel.
+- Schema version 6, in both editions.
+- macOS distribution, with no portable build and no claim of one.
+- The Content Security Policy, which portable mode did not need broadened.
+
+## [1.8.3] - 2026-08-26
 
 Discovery tuning and user corrections. You can now correct the device type
 ArcScan detected without changing anything else about the device, older

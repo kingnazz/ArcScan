@@ -637,7 +637,7 @@ fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -1187,7 +1187,7 @@ impl Counters {
     /// 65k-address sweep does not push 65k messages through the event bridge.
     fn should_report(&self, done: usize, total: usize) -> bool {
         let step = (total / 100).max(1);
-        done == total || done % step == 0
+        done == total || done.is_multiple_of(step)
     }
 }
 

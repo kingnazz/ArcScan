@@ -26,11 +26,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
             bundles: msi nsis
+            portable_label: windows-x64
+            portable_arch: x64
             label: ArcScan-windows-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             rust_targets: aarch64-pc-windows-msvc
             bundles: msi nsis
+            portable_label: windows-arm64
+            portable_arch: ARM64
             label: ArcScan-windows-arm64
           # One universal Apple binary covers both Apple Silicon (arm64) and
           # Intel (x86_64) Macs.
@@ -64,6 +68,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Read the version from package.json
+        id: version
+        shell: bash
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Build installers
         run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
@@ -76,6 +85,72 @@ jobs:
             find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
           done
           ls -la artifacts
+
+      # ------------------------------------------------------------- portable
+      #
+      # A second, separate build into its own target directory. The portable
+      # edition is a different binary -- different Cargo features, no updater
+      # plugin linked -- so it cannot be produced by repackaging the installed
+      # one, and putting the installed executable in a ZIP is exactly what this
+      # release exists not to do. Its own target directory is what lets both
+      # binaries exist at once for the runtime verification below.
+      #
+      # Built with cargo rather than the Tauri CLI because the CLI has no
+      # --no-default-features, and turning the default features *off* is the
+      # whole point: `installed-updater` is a default feature, and leaving it on
+      # would produce a binary that reports portable while carrying an
+      # install-and-relaunch path. `custom-protocol` is what the CLI would have
+      # added, and is what embeds the frontend rather than pointing at a dev
+      # server. No bundling: the ZIP is this repository's own, not NSIS's.
+      #
+      # No continue-on-error anywhere below. A portable ZIP that failed to build
+      # or failed its own checks fails the job.
+      - name: Build the frontend for the portable executable
+        if: matrix.portable_label
+        run: npm run build
+
+      - name: Build the portable executable
+        if: matrix.portable_label
+        working-directory: src-tauri
+        env:
+          CARGO_TARGET_DIR: target-portable
+        run: >
+          cargo build --release
+          --target ${{ matrix.target }}
+          --no-default-features
+          --features portable,custom-protocol
+
+      - name: Package the portable ZIP
+        if: matrix.portable_label
+        run: >
+          node scripts/package-portable.mjs
+          --version ${{ steps.version.outputs.value }}
+          --target ${{ matrix.target }}
+          --binary src-tauri/target-portable/${{ matrix.target }}/release/arcscan.exe
+          --out artifacts
+
+      - name: Verify the portable ZIP
+        if: matrix.portable_label
+        run: >
+          node scripts/verify-portable-zip.mjs
+          --zip artifacts/ArcScan_${{ steps.version.outputs.value }}_${{ matrix.portable_label }}-portable.zip
+          --architecture ${{ matrix.portable_arch }}
+          --version ${{ steps.version.outputs.value }}
+
+      # Where the portable claims are actually checked: launch the executable
+      # that was just packaged and look at what appears on disk. Native
+      # architecture only -- an ARM64 binary does not run on an x64 runner, and
+      # a check that silently did nothing would be worse than an absent one.
+      - name: Verify the portable runtime
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          # A cold runner has to initialise WebView2 on the first launch, which
+          # the default 15 seconds can be tight for.
+          ARCSCAN_VERIFY_RUN_MS: 25000
+        run: >
+          node scripts/verify-portable-runtime.mjs
+          --portable src-tauri/target-portable/${{ matrix.target }}/release/arcscan.exe
+          --installed src-tauri/target/${{ matrix.target }}/release/arcscan.exe
 
       - name: Upload installers
         uses: actions/upload-artifact@v4

@@ -31,7 +31,7 @@ interface UpdateHandle {
  * public-IP lookup it stays on by default: an out-of-date network tool is a
  * problem in itself, and the request carries only the version being checked.
  */
-export function useUpdater(autoCheck = true) {
+export function useUpdater(autoCheck = true, mode: "installer" | "manual" = "installer") {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [version, setVersion] = useState<string | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
@@ -67,6 +67,11 @@ export function useUpdater(autoCheck = true) {
   }, [check, autoCheck]);
 
   const install = useCallback(async () => {
+    // The frontend half of the portable gate. The backend half is stronger --
+    // a portable build does not link tauri-plugin-updater at all, so the import
+    // below has nothing to talk to -- and this is here so the two layers agree
+    // rather than so one of them works.
+    if (mode === "manual") return;
     if (!handle) return;
     try {
       setStatus("downloading");
@@ -88,9 +93,9 @@ export function useUpdater(autoCheck = true) {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [handle]);
+  }, [handle, mode]);
 
   const dismiss = useCallback(() => setStatus("idle"), []);
 
-  return { status, version, notes, progress, error, check, install, dismiss };
+  return { status, version, notes, progress, error, check, install, dismiss, mode };
 }
