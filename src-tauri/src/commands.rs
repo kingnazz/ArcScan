@@ -14,7 +14,43 @@ use crate::db::{
 use crate::inventory::{ChangeState, Device, DeviceStatus, ScanComparison};
 use crate::netinfo::{self, LocalNetwork};
 use crate::ports;
+use crate::runtime::{RuntimeInfo, RuntimePaths};
 use crate::scanner::{self, ScanEvent, ScanOptions, ScanResult};
+use crate::startup;
+
+/// Which edition this is, and where it keeps its data.
+///
+/// Read straight out of the paths resolved during startup. The frontend cannot
+/// influence the answer and cannot derive another path from it: it gets the data
+/// root as a display string and nothing else, because every app-owned path
+/// decision is made in Rust.
+#[tauri::command]
+pub fn runtime_info(paths: State<RuntimePaths>) -> RuntimeInfo {
+    paths.info()
+}
+
+/// Open this edition's data folder in the system file manager.
+///
+/// Takes no argument on purpose. The folder is the one this process resolved at
+/// startup, which is the only folder ArcScan has any reason to reveal -- so this
+/// adds a single fixed destination rather than reintroducing a general
+/// path-opening capability the webview could aim anywhere.
+#[tauri::command]
+pub async fn open_data_folder(
+    app: tauri::AppHandle,
+    paths: State<'_, RuntimePaths>,
+) -> Result<(), String> {
+    let data_root = paths.data_root.clone();
+    startup::reveal_data_folder(&app, &data_root)
+}
+
+/// Open the download page in the system browser, for a portable operator who
+/// has been told a newer version exists. A fixed trusted destination, like the
+/// releases and privacy links beside it.
+#[tauri::command]
+pub async fn open_portable_downloads(app: tauri::AppHandle) -> Result<(), String> {
+    open_external(&app, "https://kingnazz.github.io/ArcScan/#download")
+}
 
 /// Reject anything that is not a bare, well-formed IPv4 address before it is
 /// ever handed to a shell/launcher, to avoid argument injection.

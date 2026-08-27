@@ -8,6 +8,7 @@ Everything ArcScan does, in one document. For a shorter overview see the
 
 - [Supported operating systems](#supported-operating-systems)
 - [Installation](#installation)
+- [The portable Windows edition](#the-portable-windows-edition)
 - [Your first scan](#your-first-scan)
 - [Targets](#targets)
 - [Scan profiles](#scan-profiles)
@@ -36,10 +37,14 @@ Everything ArcScan does, in one document. For a shorter overview see the
 
 ## Supported operating systems
 
-| System | Architectures | Installer |
-| --- | --- | --- |
-| Windows 10 and 11 | x64, ARM64 | NSIS setup (`.exe`) |
-| macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) |
+| System | Architectures | Installer | Portable |
+| --- | --- | --- | --- |
+| Windows 10 and 11 | x64, ARM64 | NSIS setup (`.exe`) | ZIP |
+| macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) | Not available |
+
+Windows needs the Microsoft Edge WebView2 Runtime, in both editions. It ships
+with Windows 11 and with current Windows 10, so it is almost certainly already
+present.
 
 Linux builds from source and the scanner works there, but no Linux installer is
 published and the platform is not part of the release testing.
@@ -64,6 +69,67 @@ are not notarised, so both systems warn on first launch:
 
 Every release publishes SHA-256 checksums if you want to verify a download before
 running it.
+
+## The portable Windows edition
+
+The portable ZIP runs ArcScan without installing it, and keeps ArcScan-owned
+persistent data beside the application rather than in the machine's
+application-data directory. It is a different build, not the installer's
+executable in a ZIP.
+
+**Getting started.** Extract the ZIP to a folder first, then run `ArcScan.exe`.
+Do not run it from inside the ZIP: Windows opens an archive in a temporary folder
+it deletes without warning, so anything ArcScan saved would go with it. A folder
+called `ArcScanData` appears beside the application on the first launch.
+
+```
+ArcScan Portable\
+├── ArcScan.exe
+├── README-PORTABLE.txt
+└── ArcScanData\
+    ├── arcscan.db     scan history, inventory, names, notes, statuses
+    ├── WebView\       theme, preferences, recent targets, columns
+    └── runtime.lock   held while ArcScan is running
+```
+
+Both stores travel, not just the database, so a portable copy carries its own
+settings as well as its own history. Settings shows the exact path, with a button
+to copy it.
+
+**Moving, backing up and removing.** Close ArcScan and move, copy or delete the
+whole folder. There is no installer, no service, no ArcScan registry setting and
+no Start-menu entry to leave behind.
+
+**Updating.** Portable ArcScan tells you when a newer version exists but does not
+install it. Close ArcScan, download the newer Portable ZIP for your architecture,
+extract it separately, copy `ArcScan.exe` and `README-PORTABLE.txt` over the old
+ones, and leave `ArcScanData` where it is.
+
+**Where it will refuse to run**, saying so rather than writing your data
+somewhere you did not choose:
+
+- a folder it cannot write to, which it establishes by actually writing a file
+  and deleting it again;
+- a network location, meaning a `\\server\share` path or a mapped drive Windows
+  reports as a network drive, because a database over a network share is not
+  reliable enough to keep a scan history in;
+- the same folder as an ArcScan that is already running, because two copies
+  sharing one `ArcScanData` would corrupt it. A second copy from a *different*
+  portable folder is fine, and so is running portable ArcScan alongside an
+  installed one.
+
+If a USB drive is removed while ArcScan is running, saving starts failing and
+ArcScan says so. It never reports a save that did not happen, and never writes
+your data elsewhere instead.
+
+**Installed and portable are independent.** Neither reads the other's history,
+names, notes, statuses or settings, and nothing is merged in either direction. A
+portable copy starts with its own empty history on purpose; to carry an installed
+copy's history over, close both and copy `arcscan.db` into `ArcScanData`
+yourself.
+
+The full reference, including the reasoning behind each of these decisions, is in
+[PORTABLE.md](PORTABLE.md).
 
 ## Your first scan
 
@@ -690,19 +756,30 @@ behind.
 
 ## Where your data lives
 
-| System | Path |
+| Edition | Path |
 | --- | --- |
-| Windows | `%APPDATA%\com.arcscan.app\arcscan.db` |
+| Windows, installed | `%APPDATA%\com.arcscan.app\arcscan.db` |
+| Windows, portable | `ArcScanData\arcscan.db`, beside `ArcScan.exe` |
 | macOS | `~/Library/Application Support/com.arcscan.app/arcscan.db` |
 
 It is an ordinary SQLite file. You can copy it, back it up, inspect it with any
-SQLite tool, or delete it to start over. Interface preferences are stored
-separately by the application window and are not in this file.
+SQLite tool, or delete it to start over.
+
+Interface preferences are stored separately by the application window. In the
+installed edition they sit wherever the platform's webview keeps them; in the
+portable edition they are in `ArcScanData\WebView\`, so they move with the
+folder like everything else. Settings names the data location for whichever
+edition you are running, with a button to copy the path.
 
 ## Upgrading
 
-Install v1.8.3 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
+Install v1.8.4 over v1.8.x, v1.7.x or v1.6.x without deleting anything. On first
 launch ArcScan migrates the database in place.
+
+v1.8.4 changes no schema and moves no installed data: it adds the portable
+Windows edition alongside the installer. A portable copy uses the same schema and
+the same migrations, so a portable folder carried forward from a later release
+upgrades in place exactly as an installed copy does.
 
 From v1.8.x the upgrade adds two tables for what devices announce about
 themselves, and rewrites nothing already stored. Every scan, device, name, note,
@@ -742,15 +819,21 @@ From v1.6.x or v1.7.0 the earlier migrations run first:
 Migrations are idempotent and transactional: opening the same database repeatedly
 changes nothing, and an interrupted upgrade leaves it exactly as it was.
 
-ArcScan checks for updates on launch and offers a one-click install. The update
-package is cryptographically signed and the signature is verified before
-installing. The check can be switched off in Settings.
+The installed edition checks for updates on launch and offers a one-click
+install. The update package is cryptographically signed and the signature is
+verified before installing. The check can be switched off in Settings.
+
+The portable edition checks too, and reports what it finds, but does not install
+anything: replacing the application files is a manual step, described above.
 
 ## Uninstalling
 
 Uninstall through Windows Settings or by deleting the application on macOS. The
 database is deliberately left behind, so a reinstall keeps your history, names and
 notes. To remove it, delete the file at the path above.
+
+The portable edition has nothing to uninstall. Close ArcScan and delete the
+portable folder: the application and its `ArcScanData` go together.
 
 ## Troubleshooting
 
@@ -826,6 +909,17 @@ is a broadcast, so it does not cross a router.
 - **TCP only for ports.** There is no UDP port scanning.
 - **The OS guess is a guess.** It comes from the reply TTL and is wrong for
   anything that changes its default TTL.
+- **The portable edition is Windows only.** There is no portable macOS build.
+- **Portable ArcScan does not update itself.** It reports a newer version and
+  leaves replacing the application files to you.
+- **Portable ArcScan will not run from a network location**, because a database
+  over a network share is not reliable enough to keep a scan history in.
+- **Windows keeps its own records.** The claim ArcScan makes about the portable
+  edition is that *ArcScan-owned persistent data* stays in `ArcScanData`.
+  Windows itself, and the WebView2 runtime, keep ordinary records of programs
+  that have run on a machine, and no application controls those.
+- **Installed and portable data never merge automatically**, in either
+  direction.
 - **No installers for Linux**, although it builds and runs there.
 - **MAC addresses need the local segment**, so routed scans identify devices less
   precisely.

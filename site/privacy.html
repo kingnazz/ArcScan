@@ -59,7 +59,7 @@
         <h1 class="page-title">What ArcScan sends, and what it keeps.</h1>
         <p class="lede">
           ArcScan is a local-first tool, and this page states precisely what that means rather than
-          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.3</span>
+          leaving it as a slogan. It covers the desktop application <span id="privacy-version">v1.8.4</span>
           and this website.
         </p>
 
@@ -87,6 +87,30 @@
           <code>%APPDATA%\com.arcscan.app\arcscan.db</code> on Windows and
           <code>~/Library/Application Support/com.arcscan.app/arcscan.db</code> on macOS. It is an
           ordinary SQLite file: you can copy it, back it up, inspect it or delete it.
+        </p>
+
+        <h3>The portable Windows edition</h3>
+        <p>
+          The portable Windows edition keeps ArcScan's database and application profile in an
+          <code>ArcScanData</code> folder beside the portable app instead of the normal ArcScan
+          application-data location. That is the only thing it changes: the same data, the same
+          amount of it, kept with the copy of ArcScan that collected it rather than with the
+          computer it ran on. Settings shows the exact path.
+        </p>
+        <p>
+          It is the same application otherwise. It scans only what you point it at, stores
+          everything locally and sends nothing anywhere, and the two optional requests below are
+          the same two, still off or still one press away exactly as described. A portable copy
+          will still check for updates if update checks are switched on, and that request goes to
+          GitHub and carries only the version being checked. It cannot install one: updating a
+          portable copy is a manual replacement of the application files.
+        </p>
+        <p>
+          Installed and portable ArcScan are independent. Neither reads the other's database or
+          preferences, and nothing is merged in either direction. To be precise about the claim:
+          this is about data ArcScan owns. Windows itself, and the Microsoft Edge WebView2
+          Runtime, keep ordinary records of programs that have run on a machine, and no
+          application controls those.
         </p>
 
         <h2>Requests the application makes</h2>
@@ -232,6 +256,11 @@
           Uninstalling ArcScan removes the application. It does not delete your database, so your
           history, device names and notes survive a reinstall or an upgrade. To remove them, delete
           the database file at the path listed above.
+        </p>
+        <p>
+          The portable Windows edition has nothing to uninstall. Close ArcScan and delete the
+          portable folder: the application and its <code>ArcScanData</code> go together, and no
+          installer, service, registry setting or Start-menu entry was created to leave behind.
         </p>
 
         <h2>Responsible use</h2>

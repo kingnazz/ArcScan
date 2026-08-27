@@ -31,11 +31,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
             bundles: nsis
+            portable_label: windows-x64
+            portable_arch: x64
             label: ArcScan-windows-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             rust_targets: aarch64-pc-windows-msvc
             bundles: nsis
+            portable_label: windows-arm64
+            portable_arch: ARM64
             label: ArcScan-windows-arm64
           - os: macos-latest
             target: universal-apple-darwin
@@ -57,6 +61,10 @@ jobs:
           key: ${{ matrix.target }}
       - name: Install frontend dependencies
         run: npm ci
+      - name: Read the version from package.json
+        id: version
+        shell: bash
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Build signed installers + updater artifacts
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -71,6 +79,36 @@ jobs:
             find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
           done
           ls -la artifacts
+      # The portable ZIPs. Deliberately *not* signed as updater artifacts and
+      # deliberately not built by the step above: a portable build is compiled
+      # without the updater plugin, and the ZIP is never an updater payload. See
+      # the comments in .github/workflows/build.yml for why cargo rather than
+      # the Tauri CLI.
+      - name: Build the portable executable
+        if: matrix.portable_label
+        working-directory: src-tauri
+        env:
+          CARGO_TARGET_DIR: target-portable
+        run: >
+          cargo build --release
+          --target ${{ matrix.target }}
+          --no-default-features
+          --features portable,custom-protocol
+      - name: Package the portable ZIP
+        if: matrix.portable_label
+        run: >
+          node scripts/package-portable.mjs
+          --version ${{ steps.version.outputs.value }}
+          --target ${{ matrix.target }}
+          --binary src-tauri/target-portable/${{ matrix.target }}/release/arcscan.exe
+          --out artifacts
+      - name: Verify the portable ZIP
+        if: matrix.portable_label
+        run: >
+          node scripts/verify-portable-zip.mjs
+          --zip artifacts/ArcScan_${{ steps.version.outputs.value }}_${{ matrix.portable_label }}-portable.zip
+          --architecture ${{ matrix.portable_arch }}
+          --version ${{ steps.version.outputs.value }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
@@ -103,6 +141,14 @@ jobs:
           ls -la dist
       - name: Generate latest.json (updater manifest)
         run: node scripts/gen-latest-json.mjs "${{ steps.ver.outputs.tag }}" "${{ github.repository }}" dist
+      # latest.json describes what an installed ArcScan may download and hand
+      # to the NSIS updater. A portable ZIP in it would be an update that cannot
+      # be applied, so this asserts on the real manifest that is about to be
+      # published rather than trusting that the generator's rules held.
+      - name: Check latest.json names only installed updater artifacts
+        run: node scripts/check-latest-json.mjs dist/latest.json
+      - name: List the assets about to be published
+        run: ls -la dist
       - name: Publish signed release + manifest
         uses: softprops/action-gh-release@v2
         with:
