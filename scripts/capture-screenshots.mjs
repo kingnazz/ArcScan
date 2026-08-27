@@ -312,14 +312,15 @@ await shot("history-light");
 
 // --- The portable edition -------------------------------------------------
 //
-// A second page, because the demo reports its edition from a query parameter
-// and that has to be set at load time. The parameter reaches the mock backend
-// and nothing else: the native app's edition is a compile-time constant.
-//
-// The path shown is the mock's fictional E:\Tools\ArcScan\ArcScanData, on a
-// drive letter no real user profile is on, so no published image of this panel
-// carries anybody's name.
-const portablePage = await context.newPage();
+// A separate browser profile mirrors the Portable backend's separate temporary
+// WebView directory. Nothing from the Installed/demo profile can leak into the
+// screenshot, and no disposable filesystem path is exposed by the interface.
+const portableContext = await browser.newContext({
+  viewport: WIDE,
+  deviceScaleFactor: SCALE,
+  reducedMotion: "reduce",
+});
+const portablePage = await portableContext.newPage();
 await portablePage.goto(`${URL}?edition=portable`, { waitUntil: "networkidle" });
 await portablePage.evaluate(() => {
   const raw = localStorage.getItem("arcscan-settings");
@@ -330,11 +331,20 @@ await portablePage.evaluate(() => {
 });
 await portablePage.reload({ waitUntil: "networkidle" });
 await portablePage.getByRole("button", { name: "Settings" }).click();
-await portablePage.getByTestId("data-root").waitFor({ timeout: 10_000 });
-await portablePage.getByTestId("data-root").scrollIntoViewIfNeeded();
+await portablePage.getByTestId("portable-session-storage").waitFor({ timeout: 10_000 });
+await portablePage.getByTestId("portable-session-storage").scrollIntoViewIfNeeded();
 await portablePage.waitForTimeout(400);
 await shot("settings-portable-dark", portablePage);
-await portablePage.close();
+await portablePage.keyboard.press("Escape");
+await portablePage.locator("#scan-target").fill("192.168.1.0/24");
+await portablePage.locator('form button[type="submit"]').click();
+await portablePage
+  .getByRole("button", { name: "Stop" })
+  .waitFor({ state: "detached", timeout: 30_000 });
+await portablePage.getByTestId("portable-session-notice").waitFor({ timeout: 5_000 });
+await portablePage.waitForTimeout(400);
+await shot("portable-session-reminder-dark", portablePage);
+await portableContext.close();
 
 await browser.close();
 

@@ -272,7 +272,7 @@ export default function App() {
         if (adopted > 0) {
           toast.info(
             `Brought across ${adopted} device ${adopted === 1 ? "name" : "names"} from your previous version.`,
-            { detail: "They are stored with the device inventory now, so they survive a reinstall." },
+            { detail: "They are stored with the device inventory now." },
           );
         }
       })
