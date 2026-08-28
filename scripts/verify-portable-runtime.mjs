@@ -16,7 +16,7 @@
 // binary can prove WebView2 profile placement or Windows file-lock behaviour.
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -67,10 +67,7 @@ const sessionsRoot = path.join(namespaceRoot, "sessions");
 const portableFolder = path.join(root, "read-only-portable-folder");
 const installedFolder = path.join(root, "installed-folder");
 const exportFolder = path.join(root, "exports-outside-the-session");
-// Never let a verification run touch the runner/operator's real Installed data.
-// Both editions see this controlled APPDATA root; only Installed may write to it.
-const installedAppDataRoot = path.join(root, "installed-appdata");
-const installedData = path.join(installedAppDataRoot, "com.arcscan.app");
+const installedAppIdentifier = "com.arcscan.app";
 const markerName = ".arcscan-portable-session";
 const lockName = ".arcscan-portable-session.lock";
 const exeName = "ArcScan.exe";
@@ -185,6 +182,71 @@ function currentSid() {
 
 const sid = currentSid();
 
+function roamingAppData() {
+  const result = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "[Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)",
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0 || !result.stdout.trim()) {
+    throw new Error(
+      `could not resolve Windows Roaming AppData: ${result.stderr || result.stdout}`,
+    );
+  }
+  return path.resolve(result.stdout.trim());
+}
+
+// Tauri resolves FOLDERID_RoamingAppData through the Windows known-folder API;
+// overriding APPDATA in a child environment does not redirect that API. The
+// native coexistence test therefore uses the real resolved location, but only
+// on a clean runner/profile where ArcScan's exact directory does not exist. A
+// private marker proves this harness created the directory before it removes it.
+const roamingData = roamingAppData();
+const installedData = path.join(roamingData, installedAppIdentifier);
+const installedFixtureMarker = path.join(installedData, ".arcscan-runtime-verifier");
+const installedFixtureRecord = `${JSON.stringify({
+  product: "ArcScan",
+  kind: "installed-runtime-verifier",
+  token: randomUUID(),
+})}\n`;
+
+function exactInstalledFixturePath() {
+  return (
+    path.basename(installedData).toLowerCase() === installedAppIdentifier &&
+    path.resolve(path.dirname(installedData)).toLowerCase() === roamingData.toLowerCase()
+  );
+}
+
+function prepareInstalledDataFixture() {
+  if (!exactInstalledFixturePath()) {
+    throw new Error(`refusing an unexpected Installed data path: ${installedData}`);
+  }
+  if (existsSync(installedData)) {
+    throw new Error(
+      `refusing to run over existing Installed ArcScan data: ${installedData}`,
+    );
+  }
+  mkdirSync(installedData);
+  writeFileSync(installedFixtureMarker, installedFixtureRecord);
+}
+
+function removeInstalledDataFixture() {
+  if (!existsSync(installedData)) return;
+  if (
+    !exactInstalledFixturePath() ||
+    !existsSync(installedFixtureMarker) ||
+    readFileSync(installedFixtureMarker, "utf8") !== installedFixtureRecord
+  ) {
+    throw new Error(`refusing to remove an unowned Installed data path: ${installedData}`);
+  }
+  rmSync(installedData, { recursive: true, force: true });
+}
+
 /**
  * Add an inheritable explicit write/delete deny while preserving read/execute.
  *
@@ -224,7 +286,6 @@ function launch(folder, label, environment = {}) {
     cwd: launchCwd,
     env: {
       ...process.env,
-      APPDATA: installedAppDataRoot,
       TEMP: systemTemp,
       TMP: systemTemp,
       ...environment,
@@ -384,7 +445,6 @@ mkdirSync(sessionsRoot, { recursive: true });
 mkdirSync(portableFolder, { recursive: true });
 mkdirSync(installedFolder, { recursive: true });
 mkdirSync(exportFolder, { recursive: true });
-mkdirSync(installedAppDataRoot, { recursive: true });
 copyFileSync(portableExe, path.join(portableFolder, exeName));
 copyFileSync(installedExe, path.join(installedFolder, exeName));
 
@@ -431,9 +491,10 @@ const ownedJunction = writeOwnershipFixture(ownedJunctionId, (session) => {
   symlinkSync(junctionTarget, path.join(session, "WebView"), "junction");
 });
 
-const appDataBeforePortable = treeSnapshot(installedData);
 const portableFolderBefore = treeSnapshot(portableFolder);
 denyWrites(portableFolder);
+prepareInstalledDataFixture();
+const appDataBeforePortable = treeSnapshot(installedData);
 
 let portableA;
 let portableB;
@@ -445,6 +506,7 @@ try {
   console.log("Portable disposable-session runtime verification (Windows x64)");
   console.log(`  isolated system temp: ${systemTemp}`);
   console.log(`  read-only executable folder: ${portableFolder}`);
+  console.log(`  clean Installed data fixture: ${installedData}`);
 
   console.log("\n1. Two concurrent launches from the same read-only extracted folder");
   portableA = await launchPortable("Portable A");
@@ -607,6 +669,13 @@ try {
   for (const child of [...children]) forceStop(child);
   await sleep(750);
   for (const folder of [...writeDenied]) restoreWrites(folder);
+
+  try {
+    removeInstalledDataFixture();
+    check(true, "the verifier removes only its marker-owned Installed data fixture");
+  } catch (error) {
+    check(false, "the verifier safely removes its Installed data fixture", error.message);
+  }
 
   rmSync(root, { recursive: true, force: true });
 }
