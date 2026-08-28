@@ -18,7 +18,7 @@ export type View = "results" | "inventory" | "changes" | "history";
 export interface AppHeaderProps {
   view: View;
   onViewChange: (view: View) => void;
-  /** Devices in the persistent inventory. */
+  /** Devices in the current edition's inventory. */
   inventoryCount: number;
   /** Unreviewed entries in the Changes inbox. */
   unreviewedChanges: number;
@@ -27,6 +27,7 @@ export interface AppHeaderProps {
   onOpenSettings: () => void;
   settingsOpen: boolean;
   onCheckUpdates: () => void;
+  updateActionLabel: string;
   updateBusy: boolean;
 }
 
@@ -40,6 +41,7 @@ export function AppHeader({
   onOpenSettings,
   settingsOpen,
   onCheckUpdates,
+  updateActionLabel,
   updateBusy,
 }: AppHeaderProps) {
   // Four views, none of them ever disabled: Inventory and Changes explain their
@@ -94,7 +96,7 @@ export function AppHeader({
       <div className="min-w-0 flex-1" data-tauri-drag-region />
 
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label="Check for updates" onClick={onCheckUpdates} size="sm">
+        <IconButton label={updateActionLabel} onClick={onCheckUpdates} size="sm">
           <DownloadCloud className={`h-4 w-4 ${updateBusy ? "animate-pulse" : ""}`} />
         </IconButton>
         <IconButton

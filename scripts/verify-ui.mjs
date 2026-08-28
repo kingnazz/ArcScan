@@ -1841,6 +1841,7 @@ await step("the installed edition names itself and its data location", async () 
   const edition = await p.getByTestId("edition-label").innerText();
   const root = await p.getByTestId("data-root").innerText();
   const text = await p.getByRole("complementary", { name: "Settings" }).innerText();
+  const installedUpdateAction = await p.getByRole("button", { name: "Check for updates" }).count();
   await p.context().close();
 
   if (!/^Installed edition · /.test(edition)) throw new Error(`edition reads "${edition}"`);
@@ -1851,6 +1852,7 @@ await step("the installed edition names itself and its data location", async () 
   for (const pattern of [/temporary portable session/i, /finish this session/i]) {
     if (pattern.test(text)) throw new Error(`installed Settings shows portable copy: ${pattern}`);
   }
+  if (installedUpdateAction !== 1) throw new Error("Installed header lost its update check action");
   return `${edition}, ${root}`;
 });
 
@@ -1863,6 +1865,9 @@ await step("the portable edition explains its temporary session without exposing
   const copyCount = await p.getByRole("button", { name: "Copy data path" }).count();
   const openCount = await p.getByRole("button", { name: "Open data folder" }).count();
   const updateToggle = await p.locator("#settings-updates").count();
+  const portableUpdateAction = await p
+    .getByRole("button", { name: "Portable downloads", exact: true })
+    .count();
   await p.context().close();
 
   if (edition !== "Portable edition · Windows x64") throw new Error(`edition reads "${edition}"`);
@@ -1882,6 +1887,7 @@ await step("the portable edition explains its temporary session without exposing
     throw new Error("Portable exposes its internal session as a data folder");
   }
   if (updateToggle) throw new Error("Portable offers the Installed launch update check");
+  if (portableUpdateAction !== 1) throw new Error("Portable header still describes an update check");
   return `${edition}, temporary and export-only`;
 });
 

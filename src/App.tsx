@@ -994,6 +994,9 @@ export default function App() {
           else if (runtime.updater_mode === "manual") void api.openPortableDownloads();
           else void updater.check(true);
         }}
+        updateActionLabel={
+          runtime?.updater_mode === "manual" ? "Portable downloads" : "Check for updates"
+        }
         updateBusy={updater.status === "checking"}
       />
 
