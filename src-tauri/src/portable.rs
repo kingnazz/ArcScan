@@ -8,6 +8,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -65,7 +66,7 @@ impl OwnershipMarker {
 #[derive(Debug)]
 pub struct PortableSession {
     pub layout: PortableLayout,
-    _active_lock: File,
+    _active_lock: Arc<Mutex<Option<File>>>,
 }
 
 impl PortableSession {
@@ -95,22 +96,35 @@ impl PortableSession {
     pub fn cleanup_handle(&self) -> PortableCleanup {
         PortableCleanup {
             layout: self.layout.clone(),
+            active_lock: Arc::clone(&self._active_lock),
         }
     }
 }
 
-/// Path-only cleanup token retained outside Tauri until every managed resource
-/// and WebView has been torn down.
+/// Cleanup token retained outside Tauri until every managed resource and
+/// WebView has been torn down. It shares only the active lease, not an app or
+/// WebView handle, so cleanup can release the lease after `run_return` even if
+/// Tauri still has internal manager references awaiting process exit.
 #[derive(Debug, Clone)]
 #[cfg(any(feature = "portable", test))]
 pub struct PortableCleanup {
     layout: PortableLayout,
+    active_lock: Arc<Mutex<Option<File>>>,
 }
 
 #[cfg(any(feature = "portable", test))]
 impl PortableCleanup {
     pub fn cleanup(&self) -> Result<bool, String> {
+        // Hold the namespace lock across lease release and deletion. No other
+        // Portable startup can classify this session as stale in the narrow
+        // interval after our active lock is released.
         let _namespace = prepare_namespace(&self.layout).map_err(|e| e.to_string())?;
+        let mut active_lock = self
+            .active_lock
+            .lock()
+            .map_err(|_| "active Portable session lock is poisoned".to_string())?;
+        drop(active_lock.take());
+        drop(active_lock);
         match remove_owned_session(&self.layout.sessions_root, &self.layout.session_root) {
             CleanupDisposition::Removed => Ok(true),
             CleanupDisposition::Active => Ok(false),
@@ -258,7 +272,7 @@ fn create_session(roots: &PortableLayout) -> Result<PortableSession, PortableErr
             Ok(active_lock) => {
                 return Ok(PortableSession {
                     layout,
-                    _active_lock: active_lock,
+                    _active_lock: Arc::new(Mutex::new(Some(active_lock))),
                 });
             }
             Err(error) => {
@@ -629,7 +643,8 @@ mod tests {
         fs::write(session.layout.webview_data_path.join("prefs"), b"dark").unwrap();
         let root = session.layout.session_root.clone();
         let cleanup = session.cleanup_handle();
-        drop(session);
+        // The Tauri state wrapper can still exist after its event loop returns.
+        // Cleanup must release the shared lease itself under the namespace lock.
         assert!(cleanup.cleanup().unwrap());
         assert!(!root.exists());
     }

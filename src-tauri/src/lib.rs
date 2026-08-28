@@ -155,10 +155,10 @@ pub fn run() {
 
     #[cfg(feature = "portable")]
     {
-        // Unlike App::run, run_return lets every Tauri-managed state value and
-        // WebView close before the owned profile directory is removed. SQLite
-        // is shut down on Exit; WebView cleanup then happens inside Tauri; only
-        // after both boundaries does the marker-validated filesystem cleanup run.
+        // Unlike App::run, run_return gives us a boundary after the native
+        // event loop and WebView teardown. SQLite is shut down on Exit. The
+        // cleanup token then takes the shared active lease under the namespace
+        // lock before marker-validated filesystem cleanup begins.
         let exit_code = app.run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 scanner::request_cancel();

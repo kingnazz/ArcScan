@@ -117,7 +117,12 @@ WebView cache.
 
 The session path stays owned by Rust and is not offered as a place for the user
 to save records. Tauri and the WebView are fully torn down before filesystem
-cleanup is attempted.
+cleanup is attempted. A cleanup token retained outside Tauri shares the active
+session lease but no app or WebView handle. After the event loop returns, it
+takes the namespace lock, releases that lease and performs the validated
+deletion while still holding the namespace lock. This prevents normal cleanup
+from mistaking its own session for another active process and prevents a new
+Portable startup from racing the lease-release interval.
 
 ## 6. Ownership marker
 
