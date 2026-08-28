@@ -443,6 +443,27 @@ function portableFolderIsUntouched(before) {
   return JSON.stringify(treeSnapshot(portableFolder)) === JSON.stringify(before);
 }
 
+function cleanupDiagnostics(running, error) {
+  const marker = parseOwnedMarker(running.session.id);
+  const processes = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process -Filter \"Name = 'ArcScan.exe'\" | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+    ],
+    { encoding: "utf8" },
+  );
+  return [
+    error.message,
+    `remaining entries: ${JSON.stringify(list(running.session.root))}`,
+    `ownership marker: ${JSON.stringify(marker)}`,
+    `ArcScan processes: ${(processes.stdout || processes.stderr || "unavailable").trim()}`,
+    `captured output: ${running.child.arcscan.state.output.slice(-2000) || "(none)"}`,
+  ].join("\n        ");
+}
+
 mkdirSync(launchCwd, { recursive: true });
 mkdirSync(systemTemp, { recursive: true });
 mkdirSync(sessionsRoot, { recursive: true });
@@ -654,7 +675,11 @@ try {
         await waitFor(`${running.child.arcscan.label}'s session cleanup`, () => !existsSync(running.session.root));
         check(true, `${running.child.arcscan.label}'s owned session is removed`);
       } catch (error) {
-        check(false, `${running.child.arcscan.label}'s owned session is removed`, error.message);
+        check(
+          false,
+          `${running.child.arcscan.label}'s owned session is removed`,
+          cleanupDiagnostics(running, error),
+        );
       }
     }
   }

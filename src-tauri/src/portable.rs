@@ -35,6 +35,8 @@ const CLEANUP_HELPER_DELETE_ATTEMPTS: usize = 200;
 const CLEANUP_HELPER_ACTIVE_DELAY: Duration = Duration::from_millis(250);
 #[cfg(any(all(feature = "portable", windows), test))]
 const CLEANUP_HELPER_DELETE_DELAY: Duration = Duration::from_millis(100);
+#[cfg(all(feature = "portable", windows))]
+const CLEANUP_TRACE_ENV: &str = "ARCSCAN_PORTABLE_CLEANUP_TRACE";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,7 +156,10 @@ impl PortableCleanup {
             .arg(process_id.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // Preserve stderr when a caller intentionally captures it. The
+            // monitor is normally silent; the native release verifier enables
+            // its environment-gated trace so cleanup failures remain visible.
+            .stderr(Stdio::inherit())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map(|_| ())
@@ -201,13 +206,25 @@ pub(crate) fn run_cleanup_helper_if_requested() -> bool {
         }
 
         #[cfg(windows)]
-        cleanup_helper_session(&std::env::temp_dir(), &session_id, process_id).map(|_| ())
+        {
+            cleanup_helper_trace(format!(
+                "monitor started for {session_id} (creator {process_id})"
+            ));
+            cleanup_helper_session(&std::env::temp_dir(), &session_id, process_id).map(|_| ())
+        }
     })();
 
     if let Err(error) = result {
         eprintln!("ArcScan Portable cleanup helper: {error}");
     }
     true
+}
+
+#[cfg(all(feature = "portable", windows))]
+fn cleanup_helper_trace(message: impl AsRef<str>) {
+    if std::env::var_os(CLEANUP_TRACE_ENV).is_some() {
+        eprintln!("ArcScan Portable cleanup trace: {}", message.as_ref());
+    }
 }
 
 #[cfg(any(all(feature = "portable", windows), test))]
@@ -223,6 +240,8 @@ fn cleanup_helper_session(
     let roots = namespace_layout(system_temp);
     let candidate = roots.sessions_root.join(session_id);
     let mut delete_failures = 0;
+    #[cfg(all(feature = "portable", windows))]
+    let mut active_polls = 0_u64;
     loop {
         let namespace = match prepare_namespace(&roots) {
             Ok(namespace) => namespace,
@@ -255,12 +274,27 @@ fn cleanup_helper_session(
                 // loop and may remain here for the entire ArcScan session.
                 // Activity is not a failed deletion attempt.
                 delete_failures = 0;
+                #[cfg(all(feature = "portable", windows))]
+                {
+                    active_polls += 1;
+                    if active_polls == 1 || active_polls % 40 == 0 {
+                        cleanup_helper_trace(format!(
+                            "{session_id} remains active after {active_polls} lock poll(s)"
+                        ));
+                    }
+                }
                 drop(namespace);
                 thread::sleep(CLEANUP_HELPER_ACTIVE_DELAY);
                 continue;
             }
             CleanupDisposition::Failed(reason) => {
                 delete_failures += 1;
+                #[cfg(all(feature = "portable", windows))]
+                if delete_failures == 1 || delete_failures % 50 == 0 {
+                    cleanup_helper_trace(format!(
+                        "{session_id} deletion attempt {delete_failures} failed: {reason}"
+                    ));
+                }
                 if delete_failures >= CLEANUP_HELPER_DELETE_ATTEMPTS {
                     return Err(reason);
                 }
