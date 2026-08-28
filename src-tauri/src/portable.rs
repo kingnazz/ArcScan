@@ -539,7 +539,12 @@ fn remove_owned_session(sessions_root: &Path, candidate: &Path) -> CleanupDispos
     }
     let payloads = match validated_payloads(&layout) {
         Ok(payloads) => payloads,
-        Err(reason) => return CleanupDisposition::Ignored(reason),
+        Err(PayloadValidationError::Unsafe(reason)) => {
+            return CleanupDisposition::Ignored(reason);
+        }
+        Err(PayloadValidationError::Retryable(reason)) => {
+            return CleanupDisposition::Failed(reason);
+        }
     };
 
     for payload in payloads {
@@ -632,50 +637,116 @@ struct Payload {
     is_dir: bool,
 }
 
-fn validated_payloads(layout: &PortableLayout) -> Result<Vec<Payload>, String> {
+/// An unsafe validation result permanently withholds deletion authority. An I/O
+/// failure is different: WebView2 legitimately removes volatile profile files
+/// while its process is exiting, so a path enumerated a moment earlier can be
+/// gone by the time metadata is requested. Retrying that entire validation is
+/// safe; treating it as an unsafe layout would strand an otherwise owned
+/// session after a normal close.
+#[derive(Debug, PartialEq, Eq)]
+enum PayloadValidationError {
+    Unsafe(String),
+    Retryable(String),
+}
+
+impl PayloadValidationError {
+    fn io(path: &Path, error: std::io::Error) -> Self {
+        PayloadValidationError::Retryable(format!("{}: {error}", path.display()))
+    }
+}
+
+fn validated_payloads(layout: &PortableLayout) -> Result<Vec<Payload>, PayloadValidationError> {
     let mut payloads = Vec::new();
-    for entry in fs::read_dir(&layout.session_root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
+    let entries = fs::read_dir(&layout.session_root)
+        .map_err(|error| PayloadValidationError::io(&layout.session_root, error))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| PayloadValidationError::io(&layout.session_root, error))?;
         let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or("session entry name is not valid UTF-8")?;
+        let name = name.to_str().ok_or_else(|| {
+            PayloadValidationError::Unsafe("session entry name is not valid UTF-8".to_string())
+        })?;
         let path = entry.path();
         match name {
             OWNERSHIP_MARKER_FILE | ACTIVE_LOCK_FILE => continue,
             DATABASE_FILE | "arcscan.db-wal" | "arcscan.db-shm" | "arcscan.db-journal" => {
-                validate_plain_file(&path)?;
+                validate_payload_plain_file(&path)?;
                 payloads.push(Payload {
                     path,
                     is_dir: false,
                 });
             }
             WEBVIEW_DIR => {
-                validate_plain_directory(&path)?;
+                validate_payload_plain_directory(&path)?;
                 validate_tree_without_links(&path)?;
                 payloads.push(Payload { path, is_dir: true });
             }
-            _ => return Err(format!("unknown session entry {name}")),
+            _ => {
+                return Err(PayloadValidationError::Unsafe(format!(
+                    "unknown session entry {name}"
+                )));
+            }
         }
     }
     Ok(payloads)
 }
 
-fn validate_tree_without_links(root: &Path) -> Result<(), String> {
+fn validate_payload_plain_directory(path: &Path) -> Result<(), PayloadValidationError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| PayloadValidationError::io(path, error))?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&metadata)
+    {
+        return Err(PayloadValidationError::Unsafe(
+            "expected an ordinary directory, not a link or reparse point".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_payload_plain_file(path: &Path) -> Result<(), PayloadValidationError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| PayloadValidationError::io(path, error))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&metadata)
+    {
+        return Err(PayloadValidationError::Unsafe(
+            "expected an ordinary file, not a link or reparse point".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tree_without_links(root: &Path) -> Result<(), PayloadValidationError> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
-        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| PayloadValidationError::io(&path, error))?;
         if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
-            return Err(format!("{} is a link or reparse point", path.display()));
+            return Err(PayloadValidationError::Unsafe(format!(
+                "{} is a link or reparse point",
+                path.display()
+            )));
         }
         if metadata.is_file() {
             continue;
         }
         if !metadata.is_dir() {
-            return Err(format!("{} has an unexpected file type", path.display()));
+            return Err(PayloadValidationError::Unsafe(format!(
+                "{} has an unexpected file type",
+                path.display()
+            )));
         }
-        for entry in fs::read_dir(&path).map_err(|error| error.to_string())? {
-            stack.push(entry.map_err(|error| error.to_string())?.path());
+        let entries =
+            fs::read_dir(&path).map_err(|error| PayloadValidationError::io(&path, error))?;
+        for entry in entries {
+            stack.push(
+                entry
+                    .map_err(|error| PayloadValidationError::io(&path, error))?
+                    .path(),
+            );
         }
     }
     Ok(())
@@ -868,6 +939,16 @@ mod tests {
 
         assert!(cleanup_helper_session(temp.path(), &session_id, wrong_process_id).is_err());
         assert!(root.exists());
+    }
+
+    #[test]
+    fn volatile_payload_io_is_retryable_but_never_authorizes_deletion() {
+        let temp = TempDir::new("payload-race");
+        let vanished = temp.path().join("vanished-webview-entry");
+        let result = validate_payload_plain_file(&vanished);
+
+        assert!(matches!(result, Err(PayloadValidationError::Retryable(_))));
+        assert!(temp.path().exists());
     }
 
     #[test]
