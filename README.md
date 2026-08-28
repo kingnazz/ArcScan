@@ -79,11 +79,15 @@ Download from the
 | macOS 11 or later | Universal (Apple Silicon and Intel) | Disk image (`.dmg`) | Not available |
 
 The installer is the right choice for a computer you use regularly. The
-**portable** ZIP runs ArcScan without installing it, keeping ArcScan-owned
-persistent data in an `ArcScanData` folder beside the application, which makes it
-suitable for a USB drive or a technician toolkit. Extract the ZIP before running
-ArcScan, and see [docs/PORTABLE.md](docs/PORTABLE.md) for the full reference,
-including where portable ArcScan will refuse to run and how updating works.
+**portable** ZIP is a disposable field tool: extract it, launch ArcScan without
+installing, scan and review the results for that session, export anything you
+want to keep, then close it. Each launch receives a fresh private session under
+the system temporary directory; the scan database, Inventory, History, Changes,
+names, notes, discovery evidence and WebView-backed preferences are not
+intentionally retained. Nothing is written beside `ArcScan.exe`, so the
+extracted folder may be read-only. See
+[docs/PORTABLE.md](docs/PORTABLE.md) for the full reference, including safe
+session cleanup and manual updates.
 
 The Microsoft Edge WebView2 Runtime is required on Windows in both editions.
 Current Windows 10 and Windows 11 already have it.
@@ -101,10 +105,12 @@ Scanning is entirely local. Scan results, the device inventory, your names and
 your notes are written to a SQLite file on your computer and are never sent
 anywhere.
 
-ArcScan makes exactly two optional outbound requests:
+Installed ArcScan can make one optional request on its own, and both editions
+offer one operator-triggered lookup:
 
-- **Update check**, on launch, against GitHub. It sends only the version being
-  checked. Switchable off in Settings.
+- **Installed update check**, on launch, against GitHub. It sends only the
+  version being checked and is switchable off in Settings. Portable does not run
+  the Installer update check; Portable updates are manual.
 - **Public IP lookup**, which **only runs when you press Check** on the Scan
   screen. It contacts `api64.ipify.org`, then `icanhazip.com`, sends nothing but
   the request, and keeps the answer in memory for the session only. It is never
