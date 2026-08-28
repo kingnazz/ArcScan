@@ -119,7 +119,7 @@ check(
  * which it must never be. Debug symbols and sources are not something to ship
  * to users. And a pre-created database or ArcScanData folder would mean every
  * download shared one starting state -- and would put somebody's test data in
- * everybody's portable copy.
+ * everybody's otherwise fresh temporary session.
  */
 const FORBIDDEN = [
   [/\.msi$/i, "MSI installer"],
@@ -198,8 +198,22 @@ if (existsSync(readme)) {
   check(text.includes(architecture), `the README names ${architecture}`);
   check(!text.includes("__VERSION__") && !text.includes("__ARCH__"), "no placeholder is left in it");
   check(
-    text.includes("ArcScan-owned persistent data stays in ArcScanData"),
-    "it states the data claim precisely",
+    /Every Portable process creates its own private session/i.test(text),
+    "it states that each launch uses a fresh temporary session",
+  );
+  check(
+    /next (?:Portable )?launch starts fresh/i.test(text),
+    "it states that the next Portable launch starts fresh",
+  );
+  check(/CSV, JSON (?:and|or) XML exports/i.test(text), "it names every intentional export format");
+  check(
+    /export.{0,40}anything you want to keep/i.test(text),
+    "it tells the operator to export anything they want to retain",
+  );
+  check(/read-only/i.test(text), "it permits an extracted read-only executable folder");
+  check(
+    !/ArcScan-owned persistent data|ArcScanData appears/i.test(text),
+    "it carries no obsolete persistent-folder instructions",
   );
   check(text.includes("WebView2"), "it states the WebView2 requirement");
   check(

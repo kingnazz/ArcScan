@@ -53,8 +53,9 @@
 //! repeatedly, or opening an already-current database, changes nothing.
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -123,7 +124,29 @@ pub const LEGACY_COVERAGE_REASON: &str = "This scan was recorded by an earlier v
 const DEVICE_HISTORY_LIMIT: i64 = 50;
 
 pub struct Db {
-    conn: Mutex<Connection>,
+    conn: Mutex<Option<Connection>>,
+}
+
+struct DbConnectionGuard<'a> {
+    guard: MutexGuard<'a, Option<Connection>>,
+}
+
+impl Deref for DbConnectionGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard
+            .as_ref()
+            .expect("DbConnectionGuard is only constructed for an open database")
+    }
+}
+
+impl DerefMut for DbConnectionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard
+            .as_mut()
+            .expect("DbConnectionGuard is only constructed for an open database")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,23 +528,8 @@ impl Db {
         let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
         migrate(&mut conn)?;
         Ok(Db {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Some(conn)),
         })
-    }
-
-    /// Make every subsequent write fail, the way a read-only medium does.
-    ///
-    /// Test-only. `PRAGMA query_only` makes SQLite refuse writes with
-    /// `SQLITE_READONLY` -- the same error a write-protected drive, a
-    /// read-only mount and a removed USB stick produce -- which is what makes
-    /// "a failed write is reported as a failure" testable deterministically,
-    /// on any machine, without needing a filesystem that can be made
-    /// unwritable to the user running the suite.
-    #[cfg(test)]
-    pub fn simulate_storage_loss(&self) -> Result<(), String> {
-        let conn = self.lock()?;
-        conn.pragma_update(None, "query_only", true)
-            .map_err(|e| e.to_string())
     }
 
     /// Open an in-memory database. Used by the migration and inventory tests.
@@ -530,14 +538,48 @@ impl Db {
         let mut conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         migrate(&mut conn)?;
         Ok(Db {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Some(conn)),
         })
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        self.conn
+    fn lock(&self) -> Result<DbConnectionGuard<'_>, String> {
+        let guard = self
+            .conn
             .lock()
-            .map_err(|_| "The scan database is unavailable because a previous write failed.".into())
+            .map_err(|_| "The scan database is unavailable because a previous write failed.")?;
+        if guard.is_none() {
+            return Err("The scan database is closed because ArcScan is shutting down.".into());
+        }
+        Ok(DbConnectionGuard { guard })
+    }
+
+    /// Stop new database work, checkpoint WAL state and close SQLite.
+    ///
+    /// Portable calls this on Tauri's Exit event before the WebView is torn
+    /// down. Taking the option waits for any in-flight command holding the
+    /// mutex, then makes every later command fail instead of reopening or
+    /// writing while the owned session is being removed.
+    #[cfg(any(feature = "portable", test))]
+    pub fn shutdown(&self) -> Result<(), String> {
+        let mut slot = self
+            .conn
+            .lock()
+            .map_err(|_| "The scan database could not be closed cleanly.")?;
+        let Some(connection) = slot.take() else {
+            return Ok(());
+        };
+
+        if let Err(error) = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            *slot = Some(connection);
+            return Err(format!("Could not checkpoint the scan database: {error}"));
+        }
+        match connection.close() {
+            Ok(()) => Ok(()),
+            Err((connection, error)) => {
+                *slot = Some(connection);
+                Err(format!("Could not close the scan database: {error}"))
+            }
+        }
     }
 
     /// Persist a scan, fold its hosts into the device inventory, and compare it
@@ -4095,7 +4137,7 @@ mod tests {
     }
 
     fn discovery_types(db: &Db) -> Vec<(String, String, String)> {
-        let conn = db.conn.lock().unwrap();
+        let conn = db.lock().unwrap();
         let mut stmt = conn
             .prepare(
                 "SELECT COALESCE(detected_name, ''), device_type, type_confidence
@@ -5926,7 +5968,7 @@ mod tests {
 
         // Re-record the identical comparison, the way a retried save would.
         {
-            let mut conn = db.conn.lock().unwrap();
+            let mut conn = db.lock().unwrap();
             let tx = conn.transaction().unwrap();
             let baseline = BaselineScan {
                 id: saved.comparison.baseline_scan_id.unwrap(),
@@ -6969,7 +7011,7 @@ mod tests {
 
         let before = db.device_detail(id).unwrap();
         let before_evidence = {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             conn.query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| {
                 r.get::<_, i64>(0)
             })
@@ -7004,7 +7046,7 @@ mod tests {
         assert_eq!(db.inventory().unwrap().rows.len(), 1);
         // Discovery evidence and the detected answer are untouched.
         let after_evidence = {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             conn.query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| {
                 r.get::<_, i64>(0)
             })
@@ -7052,7 +7094,7 @@ mod tests {
 
     /// The miss count on one device's service claims, lowest first.
     fn evidence_misses(db: &Db, device_id: i64) -> Vec<i64> {
-        let conn = db.conn.lock().unwrap();
+        let conn = db.lock().unwrap();
         let mut stmt = conn
             .prepare(
                 "SELECT misses FROM discovery_evidence
@@ -7293,7 +7335,7 @@ mod tests {
         }
 
         let misses: Vec<i64> = {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             let mut stmt = conn
                 .prepare(
                     "SELECT misses FROM discovery_evidence
@@ -7452,7 +7494,7 @@ mod tests {
         // Stand the stored record back down to the generation v1.8.2 wrote,
         // which is exactly what an upgraded database looks like.
         {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             conn.execute(
                 "UPDATE device_discovery SET naming_rules_version = 0 WHERE device_id = ?1",
                 [id],
@@ -7552,7 +7594,7 @@ mod tests {
         let (before_rows, before_evidence, before_events, before_identity) = {
             let db = Db::open(&path).unwrap();
             let rows = db.inventory().unwrap().rows;
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             let evidence: i64 = conn
                 .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
                 .unwrap();
@@ -7596,7 +7638,7 @@ mod tests {
             assert_eq!(&db.device_detail(*id).unwrap().device.identity_key, key);
         }
         {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             let evidence: i64 = conn
                 .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
                 .unwrap();
@@ -7625,7 +7667,7 @@ mod tests {
             before_events
         );
         let version: String = {
-            let conn = reopened.conn.lock().unwrap();
+            let conn = reopened.lock().unwrap();
             conn.query_row(
                 "SELECT value FROM schema_meta WHERE key = 'version'",
                 [],
@@ -7875,15 +7917,13 @@ mod tests {
         ));
 
         let count = |db: &Db| -> i64 {
-            db.conn
-                .lock()
+            db.lock()
                 .unwrap()
                 .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
                 .unwrap()
         };
         let first_seen = |db: &Db| -> String {
-            db.conn
-                .lock()
+            db.lock()
                 .unwrap()
                 .query_row(
                     "SELECT first_seen FROM discovery_evidence WHERE kind = 'service'",
@@ -8328,7 +8368,7 @@ mod tests {
         let evidence_before = discovery_types(&db);
 
         {
-            let mut conn = db.conn.lock().unwrap();
+            let mut conn = db.lock().unwrap();
             for _ in 0..3 {
                 migrate(&mut conn).unwrap();
                 migrate_v5(&mut conn).unwrap();
@@ -8360,7 +8400,7 @@ mod tests {
 
         db.delete_scan(saved.scan_id).unwrap();
         {
-            let conn = db.conn.lock().unwrap();
+            let conn = db.lock().unwrap();
             conn.execute("DELETE FROM devices", []).unwrap();
         }
         assert!(
@@ -8368,7 +8408,6 @@ mod tests {
             "no orphaned discovery rows"
         );
         let orphans: i64 = db
-            .conn
             .lock()
             .unwrap()
             .query_row("SELECT COUNT(*) FROM discovery_evidence", [], |r| r.get(0))
@@ -8376,7 +8415,7 @@ mod tests {
         assert_eq!(orphans, 0);
     }
 
-    // --- Portable and installed databases (v1.8.4) -------------------------
+    // --- Disposable Portable database sessions ----------------------------
 
     /// A temporary directory that removes itself.
     struct TempDir(std::path::PathBuf);
@@ -8394,6 +8433,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }
+
         fn path(&self) -> &Path {
             &self.0
         }
@@ -8407,39 +8447,39 @@ mod tests {
 
     /// Every table, index and column a database has, as one comparable string.
     fn schema_of(db: &Db) -> Vec<String> {
-        let conn = db.conn.lock().unwrap();
+        let conn = db.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+            .prepare(
+                "SELECT type, name, sql FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%'
+                 ORDER BY type, name",
+            )
             .unwrap();
-        let rows: Vec<String> = stmt
-            .query_map([], |row| {
-                let kind: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let sql: Option<String> = row.get(2)?;
-                Ok(format!("{kind} {name}: {}", sql.unwrap_or_default()))
-            })
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        rows
+        stmt.query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let sql: Option<String> = row.get(2)?;
+            Ok(format!("{kind} {name}: {}", sql.unwrap_or_default()))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
     }
 
     fn schema_version(db: &Db) -> i64 {
-        db.conn
-            .lock()
+        db.lock()
             .unwrap()
             .query_row(
                 "SELECT value FROM schema_meta WHERE key = 'version'",
                 [],
-                |r| r.get::<_, String>(0),
+                |row| row.get::<_, String>(0),
             )
             .unwrap()
             .parse()
             .unwrap()
     }
 
-    /// A scan with enough shape to exercise every kind of persisted state:
-    /// devices, discovery evidence, a scope, and a comparison baseline.
+    /// A scan with devices, discovery evidence, a scope and comparison data.
     fn seeded_scan() -> ScanResult {
         let mut nas = host(
             "192.168.1.10",
@@ -8467,17 +8507,32 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn the_two_editions_use_exactly_the_same_schema() {
-        // The portable database is not a variant, a subset or a newer shape. It
-        // is the same schema at the same version in a different folder, which is
-        // what makes a folder move safe and what makes migrations work in both.
-        let installed_dir = TempDir::new("schema-installed");
-        let portable_dir = TempDir::new("schema-portable");
+    fn portable_session_db_path(temp: &TempDir, session_id: &str) -> std::path::PathBuf {
+        temp.path()
+            .join("ArcScanPortable")
+            .join("sessions")
+            .join(session_id)
+            .join("arcscan.db")
+    }
 
-        let installed = Db::open(&installed_dir.path().join("arcscan.db")).unwrap();
-        let portable =
-            Db::open(&portable_dir.path().join("ArcScanData").join("arcscan.db")).unwrap();
+    fn device_id_by_mac(db: &Db, mac: &str) -> i64 {
+        db.list_devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.mac.as_deref() == Some(mac))
+            .expect("the seeded device is in this session")
+            .id
+    }
+
+    #[test]
+    fn disposable_installed_and_session_databases_have_identical_schema() {
+        let temp = TempDir::new("disposable-schema");
+        let installed = Db::open(&temp.path().join("installed").join("arcscan.db")).unwrap();
+        let portable = Db::open(&portable_session_db_path(
+            &temp,
+            "00000000000040008000000000000001",
+        ))
+        .unwrap();
 
         assert_eq!(schema_version(&installed), SCHEMA_VERSION);
         assert_eq!(schema_version(&portable), SCHEMA_VERSION);
@@ -8485,410 +8540,232 @@ mod tests {
     }
 
     #[test]
-    fn opening_creates_the_parent_directory_but_only_the_database() {
-        // ArcScanData is made by the portable preflight; Db::open makes whatever
-        // parent it is given, and nothing else. A database that created sibling
-        // directories would put files in a portable folder nobody documented.
-        let temp = TempDir::new("parents");
-        let data_root = temp.path().join("ArcScanData");
-        let db_path = data_root.join("arcscan.db");
-        assert!(!data_root.exists());
+    fn disposable_session_supports_the_complete_database_workflow() {
+        let temp = TempDir::new("disposable-workflow");
+        let db = Db::open(&portable_session_db_path(
+            &temp,
+            "00000000000040008000000000000002",
+        ))
+        .unwrap();
 
-        let db = Db::open(&db_path).unwrap();
-        drop(db);
+        let first = db.save_scan(&seeded_scan()).unwrap();
+        let nas_id = device_id_by_mac(&db, "AA:BB:CC:00:00:01");
+        db.set_device_name(nas_id, Some("Studio NAS".into()))
+            .unwrap();
+        db.set_device_notes(nas_id, Some("Rack 2, shelf 3".into()))
+            .unwrap();
+        db.set_device_status(nas_id, DeviceStatus::Trusted).unwrap();
+        db.set_device_type_override(nas_id, Some("nas".into()))
+            .unwrap();
 
-        assert!(db_path.is_file());
-        let entries: Vec<String> = std::fs::read_dir(&data_root)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .filter(|name| !name.starts_with("arcscan.db"))
-            .collect();
-        assert!(entries.is_empty(), "unexpected files: {entries:?}");
-    }
+        let scope_id = db.list_network_scopes().unwrap()[0].id;
+        db.rename_network_scope(scope_id, "Studio".into()).unwrap();
 
-    #[test]
-    fn a_portable_database_carries_everything_through_a_folder_move() {
-        // The whole promise of the portable edition in one test: put the data in
-        // a folder, move the folder, and find all of it still there.
-        let first = TempDir::new("move-from");
-        let second = TempDir::new("move-to");
+        let mut next_scan = seeded_scan();
+        next_scan.hosts[0].open_ports.push(443);
+        next_scan.hosts.remove(1);
+        let second = db.save_scan(&next_scan).unwrap();
 
-        let from_root = first.path().join("ArcScan Portable").join("ArcScanData");
-        let saved_id;
-        let device_id;
-        {
-            let db = Db::open(&from_root.join("arcscan.db")).unwrap();
-            let saved = db.save_scan(&seeded_scan()).unwrap();
-            saved_id = saved.scan_id;
+        assert_eq!(second.comparison.baseline_scan_id, Some(first.scan_id));
+        assert!(
+            change_count(&second.comparison) > 0,
+            "the second scan should produce comparison changes"
+        );
 
-            let devices = db.list_devices().unwrap();
-            device_id = devices
-                .iter()
-                .find(|d| d.mac.as_deref() == Some("AA:BB:CC:00:00:01"))
-                .expect("the NAS is in the inventory")
-                .id;
+        let history = db.list_scans().unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(db.get_scan(first.scan_id).unwrap().hosts.len(), 2);
+        assert_eq!(db.get_scan(second.scan_id).unwrap().hosts.len(), 1);
 
-            db.set_device_name(device_id, Some("Studio NAS".into()))
-                .unwrap();
-            db.set_device_notes(device_id, Some("Rack 2, shelf 3".into()))
-                .unwrap();
-            db.set_device_status(device_id, DeviceStatus::Trusted)
-                .unwrap();
-            db.set_device_type_override(device_id, Some("nas".into()))
-                .unwrap();
+        let inventory = db.inventory().unwrap();
+        assert_eq!(inventory.rows.len(), 2);
+        let nas = inventory
+            .rows
+            .iter()
+            .find(|row| row.device_id == nas_id)
+            .unwrap();
+        assert_eq!(nas.custom_name.as_deref(), Some("Studio NAS"));
+        assert!(nas.notes_present);
+        assert!(nas.discovery.is_some());
 
-            let scopes = db.list_network_scopes().unwrap();
-            db.rename_network_scope(scopes[0].id, "Studio".into())
-                .unwrap();
-        }
+        let changes = db.change_events().unwrap();
+        assert!(changes.total > 0);
+        assert!(!changes.events.is_empty());
 
-        // Move the entire portable folder, as an operator would.
-        let to_root = second
-            .path()
-            .join("Tools")
-            .join("ArcScan")
-            .join("ArcScanData");
-        std::fs::create_dir_all(to_root.parent().unwrap()).unwrap();
-        std::fs::rename(&from_root, &to_root).unwrap();
-        assert!(!from_root.exists());
-
-        let db = Db::open(&to_root.join("arcscan.db")).unwrap();
-
-        // The device, with everything the operator put on it.
-        let detail = db.device_detail(device_id).unwrap();
+        let detail = db.device_detail(nas_id).unwrap();
         assert_eq!(detail.device.custom_name.as_deref(), Some("Studio NAS"));
         assert_eq!(detail.device.notes.as_deref(), Some("Rack 2, shelf 3"));
         assert_eq!(detail.device.status, DeviceStatus::Trusted);
         assert_eq!(detail.device.user_device_type.as_deref(), Some("nas"));
-
-        // The scan, the inventory, the scope name and the discovery evidence.
-        assert_eq!(db.list_scans().unwrap().len(), 1);
-        assert_eq!(db.get_scan(saved_id).unwrap().hosts.len(), 2);
-        assert_eq!(db.inventory().unwrap().rows.len(), 2);
+        assert!(detail.discovery.is_some());
         assert_eq!(db.list_network_scopes().unwrap()[0].display_name, "Studio");
-        assert!(
-            db.device_detail(device_id).unwrap().discovery.is_some(),
-            "discovery evidence travelled with the folder"
-        );
+    }
 
-        // And it is still writable in its new home.
-        db.set_device_notes(device_id, Some("Moved to the van".into()))
+    #[test]
+    fn disposable_fresh_session_starts_empty() {
+        let temp = TempDir::new("disposable-fresh");
+        let first = Db::open(&portable_session_db_path(
+            &temp,
+            "00000000000040008000000000000003",
+        ))
+        .unwrap();
+        first.save_scan(&seeded_scan()).unwrap();
+        let device_id = device_id_by_mac(&first, "AA:BB:CC:00:00:01");
+        first
+            .set_device_name(device_id, Some("Session one".into()))
             .unwrap();
-        assert_eq!(
-            db.device_detail(device_id).unwrap().device.notes.as_deref(),
-            Some("Moved to the van")
-        );
-    }
-
-    #[test]
-    fn nothing_in_the_database_records_where_the_portable_folder_was() {
-        // A stored absolute path would make a moved folder wrong rather than
-        // merely relocated, so this looks for the old root in every text and
-        // blob column of every table rather than in the ones that seemed likely.
-        let temp = TempDir::new("nopaths");
-        let root = temp.path().join("ArcScan Portable");
-        let db = Db::open(&root.join("ArcScanData").join("arcscan.db")).unwrap();
-
-        let saved = db.save_scan(&seeded_scan()).unwrap();
-        let device = db.list_devices().unwrap()[0].id;
-        db.set_device_name(device, Some("Named".into())).unwrap();
-        db.set_device_notes(device, Some("Noted".into())).unwrap();
-        let _ = db.compare_scan(saved.scan_id);
-
-        let needles = [
-            root.to_string_lossy().to_string(),
-            temp.path().to_string_lossy().to_string(),
-            "ArcScanData".to_string(),
-        ];
-
-        let conn = db.conn.lock().unwrap();
-        let tables: Vec<String> = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            )
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        assert!(!tables.is_empty());
-
-        for table in tables {
-            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
-            let columns = stmt.column_count();
-            let mut rows = stmt.query([]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                for index in 0..columns {
-                    let text: Option<String> = row.get(index).ok();
-                    let Some(text) = text else { continue };
-                    for needle in &needles {
-                        assert!(
-                            !text.contains(needle.as_str()),
-                            "{table} column {index} stores {needle}: {text}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn reopening_the_same_portable_database_changes_nothing() {
-        let temp = TempDir::new("reopen");
-        let path = temp.path().join("ArcScanData").join("arcscan.db");
-
-        let scans;
-        let schema;
-        {
-            let db = Db::open(&path).unwrap();
-            db.save_scan(&seeded_scan()).unwrap();
-            scans = db.list_scans().unwrap().len();
-            schema = schema_of(&db);
-        }
-
-        // Ten opens in a row: migrations are idempotent, and a portable copy
-        // that is launched and closed all day must not accumulate anything.
-        for _ in 0..10 {
-            let db = Db::open(&path).unwrap();
-            assert_eq!(schema_version(&db), SCHEMA_VERSION);
-            assert_eq!(db.list_scans().unwrap().len(), scans);
-            assert_eq!(schema_of(&db), schema);
-        }
-    }
-
-    #[test]
-    fn a_v183_database_migrates_in_place_when_a_portable_folder_carries_it_forward() {
-        // The upgrade path for a portable copy: the same database, opened by the
-        // next version, in a folder that moved in between.
-        let old = TempDir::new("upgrade-old");
-        let new = TempDir::new("upgrade-new");
-        let old_root = old.path().join("ArcScanData");
-
-        let device_id;
-        {
-            let db = Db::open(&old_root.join("arcscan.db")).unwrap();
-            db.save_scan(&seeded_scan()).unwrap();
-            device_id = db.list_devices().unwrap()[0].id;
-            db.set_device_name(device_id, Some("Before the upgrade".into()))
-                .unwrap();
-            // Pretend it was written by an older build that had not reached the
-            // current schema version, which is what a migration has to handle.
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "UPDATE schema_meta SET value = '5' WHERE key = 'version'",
-                [],
-            )
+        first
+            .set_device_notes(device_id, Some("Discard with session one".into()))
             .unwrap();
-        }
+        first.shutdown().unwrap();
 
-        let new_root = new.path().join("Tools").join("ArcScanData");
-        std::fs::create_dir_all(new_root.parent().unwrap()).unwrap();
-        std::fs::rename(&old_root, &new_root).unwrap();
+        let fresh = Db::open(&portable_session_db_path(
+            &temp,
+            "00000000000040008000000000000004",
+        ))
+        .unwrap();
 
-        let db = Db::open(&new_root.join("arcscan.db")).unwrap();
-        assert_eq!(schema_version(&db), SCHEMA_VERSION);
+        assert_eq!(schema_version(&fresh), SCHEMA_VERSION);
+        assert!(fresh.list_scans().unwrap().is_empty());
+        assert!(fresh.list_devices().unwrap().is_empty());
+        assert!(fresh.inventory().unwrap().rows.is_empty());
+        assert!(fresh.change_events().unwrap().events.is_empty());
+        assert!(fresh.list_network_scopes().unwrap().is_empty());
+        let discovery_rows: i64 = fresh
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM device_discovery", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(discovery_rows, 0);
+    }
+
+    #[test]
+    fn disposable_simultaneous_sessions_are_isolated() {
+        let temp = TempDir::new("disposable-concurrent");
+        let path_a = portable_session_db_path(&temp, "00000000000040008000000000000005");
+        let path_b = portable_session_db_path(&temp, "00000000000040008000000000000006");
+        let session_a = Db::open(&path_a).unwrap();
+        let session_b = Db::open(&path_b).unwrap();
+
+        session_a.save_scan(&seeded_scan()).unwrap();
+        let device_a = device_id_by_mac(&session_a, "AA:BB:CC:00:00:01");
+        session_a
+            .set_device_name(device_a, Some("Session A NAS".into()))
+            .unwrap();
+
+        assert!(session_b.list_scans().unwrap().is_empty());
+        assert!(session_b.list_devices().unwrap().is_empty());
+
+        session_b.save_scan(&seeded_scan()).unwrap();
+        let device_b = device_id_by_mac(&session_b, "AA:BB:CC:00:00:01");
+        session_b
+            .set_device_name(device_b, Some("Session B NAS".into()))
+            .unwrap();
+
+        assert_ne!(path_a, path_b);
+        assert_eq!(session_a.list_scans().unwrap().len(), 1);
+        assert_eq!(session_b.list_scans().unwrap().len(), 1);
         assert_eq!(
-            db.device_detail(device_id)
+            session_a
+                .device_detail(device_a)
                 .unwrap()
                 .device
                 .custom_name
                 .as_deref(),
-            Some("Before the upgrade")
+            Some("Session A NAS")
         );
-        assert_eq!(db.list_scans().unwrap().len(), 1);
+        assert_eq!(
+            session_b
+                .device_detail(device_b)
+                .unwrap()
+                .device
+                .custom_name
+                .as_deref(),
+            Some("Session B NAS")
+        );
     }
 
     #[test]
-    fn the_two_editions_never_read_each_others_data() {
-        // Same machine, both editions, one after the other. Neither finds the
-        // other's scans, devices, names or notes, because neither is looking.
-        let installed_dir = TempDir::new("coexist-installed");
-        let portable_dir = TempDir::new("coexist-portable");
+    fn disposable_installed_and_portable_databases_are_isolated() {
+        let temp = TempDir::new("disposable-editions");
+        let installed = Db::open(&temp.path().join("installed").join("arcscan.db")).unwrap();
+        let portable = Db::open(&portable_session_db_path(
+            &temp,
+            "00000000000040008000000000000007",
+        ))
+        .unwrap();
 
-        let installed = Db::open(&installed_dir.path().join("arcscan.db")).unwrap();
         installed.save_scan(&seeded_scan()).unwrap();
-        let installed_device = installed.list_devices().unwrap()[0].id;
+        let installed_device = device_id_by_mac(&installed, "AA:BB:CC:00:00:01");
         installed
-            .set_device_name(installed_device, Some("The office NAS".into()))
+            .set_device_name(installed_device, Some("Installed NAS".into()))
+            .unwrap();
+        installed
+            .set_device_notes(installed_device, Some("Installed only".into()))
             .unwrap();
 
-        let portable =
-            Db::open(&portable_dir.path().join("ArcScanData").join("arcscan.db")).unwrap();
         assert!(portable.list_scans().unwrap().is_empty());
         assert!(portable.list_devices().unwrap().is_empty());
-        assert!(portable.inventory().unwrap().rows.is_empty());
-        assert!(portable.change_events().unwrap().events.is_empty());
-        assert!(portable.list_network_scopes().unwrap().is_empty());
 
-        // And a portable copy naming its own device does not rename the
-        // installed one, even though the identity key is the same.
         portable.save_scan(&seeded_scan()).unwrap();
-        let portable_device = portable.list_devices().unwrap()[0].id;
+        let portable_device = device_id_by_mac(&portable, "AA:BB:CC:00:00:01");
         portable
-            .set_device_name(portable_device, Some("A stranger's NAS".into()))
+            .set_device_name(portable_device, Some("Portable NAS".into()))
+            .unwrap();
+        portable
+            .set_device_notes(portable_device, Some("Portable session only".into()))
             .unwrap();
 
+        let installed_detail = installed.device_detail(installed_device).unwrap();
+        let portable_detail = portable.device_detail(portable_device).unwrap();
         assert_eq!(
-            installed
-                .device_detail(installed_device)
-                .unwrap()
-                .device
-                .custom_name
-                .as_deref(),
-            Some("The office NAS")
+            installed_detail.device.custom_name.as_deref(),
+            Some("Installed NAS")
         );
         assert_eq!(
-            portable
-                .device_detail(portable_device)
-                .unwrap()
-                .device
-                .custom_name
-                .as_deref(),
-            Some("A stranger's NAS")
+            installed_detail.device.notes.as_deref(),
+            Some("Installed only")
         );
-    }
-
-    #[test]
-    fn two_portable_folders_never_read_each_others_data() {
-        let a = TempDir::new("iso-a");
-        let b = TempDir::new("iso-b");
-        let db_a = Db::open(&a.path().join("ArcScanData").join("arcscan.db")).unwrap();
-        let db_b = Db::open(&b.path().join("ArcScanData").join("arcscan.db")).unwrap();
-
-        db_a.save_scan(&seeded_scan()).unwrap();
-        assert_eq!(db_a.list_scans().unwrap().len(), 1);
-        assert!(db_b.list_scans().unwrap().is_empty());
-
-        let device = db_a.list_devices().unwrap()[0].id;
-        db_a.set_device_notes(device, Some("Folder A only".into()))
-            .unwrap();
-        assert!(db_b.list_devices().unwrap().is_empty());
-    }
-
-    // --- Storage that goes away (v1.8.4) -----------------------------------
-
-    #[test]
-    fn a_failed_write_is_reported_as_a_failure_and_never_as_a_success() {
-        // The USB-drive case. Every operation that persists something the
-        // operator typed or chose must return an error when the write cannot
-        // happen, because an interface that says "saved" over a disconnected
-        // drive is worse than one that says nothing.
-        let temp = TempDir::new("storage-loss");
-        let db = Db::open(&temp.path().join("ArcScanData").join("arcscan.db")).unwrap();
-        let saved = db.save_scan(&seeded_scan()).unwrap();
-        let device = db.list_devices().unwrap()[0].id;
-        let scope = db.list_network_scopes().unwrap()[0].id;
-        let events: Vec<i64> = db
-            .change_events()
-            .unwrap()
-            .events
-            .iter()
-            .map(|e| e.id)
-            .collect();
-
-        db.simulate_storage_loss().unwrap();
-
-        // Each of these is a separate operator action with its own code path,
-        // so each is asserted separately rather than trusting one to stand in
-        // for the rest.
-        assert!(
-            db.set_device_name(device, Some("Renamed after the drive went".into()))
-                .is_err(),
-            "a rename reported success with no storage"
-        );
-        assert!(
-            db.set_device_notes(device, Some("A note nobody will read".into()))
-                .is_err(),
-            "a note reported success with no storage"
-        );
-        assert!(
-            db.set_device_status(device, DeviceStatus::Trusted).is_err(),
-            "a status change reported success with no storage"
-        );
-        assert!(
-            db.set_device_type_override(device, Some("nas".into()))
-                .is_err(),
-            "a type correction reported success with no storage"
-        );
-        assert!(
-            db.rename_network_scope(scope, "Renamed network".into())
-                .is_err(),
-            "a network rename reported success with no storage"
-        );
-        assert!(
-            db.save_scan(&seeded_scan()).is_err(),
-            "a scan save reported success with no storage"
-        );
-        if !events.is_empty() {
-            assert!(
-                db.set_change_state(&events, ChangeState::Acknowledged)
-                    .is_err(),
-                "acknowledging a change reported success with no storage"
-            );
-        }
-        assert!(
-            db.set_device_statuses(&[device], DeviceStatus::Ignored)
-                .is_err(),
-            "a bulk classification reported success with no storage"
-        );
-        assert!(
-            db.delete_scan(saved.scan_id).is_err(),
-            "deleting a scan reported success with no storage"
-        );
-        assert!(
-            db.prune_history(0).is_err(),
-            "pruning reported success with no storage"
-        );
-    }
-
-    #[test]
-    fn what_was_already_read_stays_readable_when_storage_goes() {
-        // Losing the drive must not take the screen with it. Reads that the
-        // page has already made keep working, so a scan on screen stays on
-        // screen while the operator is told that saving failed.
-        let temp = TempDir::new("storage-reads");
-        let db = Db::open(&temp.path().join("ArcScanData").join("arcscan.db")).unwrap();
-        let saved = db.save_scan(&seeded_scan()).unwrap();
-        let device = db.list_devices().unwrap()[0].id;
-
-        db.simulate_storage_loss().unwrap();
-
-        assert_eq!(db.list_scans().unwrap().len(), 1);
-        assert_eq!(db.get_scan(saved.scan_id).unwrap().hosts.len(), 2);
-        assert_eq!(db.inventory().unwrap().rows.len(), 2);
-        assert!(db.device_detail(device).unwrap().device.id == device);
-        assert_eq!(db.list_devices().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn a_failed_write_leaves_the_stored_value_alone() {
-        // "Reported as a failure" is only half of it. The value in the database
-        // must still be the old one, so a retry after the drive is reconnected
-        // starts from the truth rather than from a half-applied change.
-        let temp = TempDir::new("storage-intact");
-        let path = temp.path().join("ArcScanData").join("arcscan.db");
-        let device;
-        {
-            let db = Db::open(&path).unwrap();
-            db.save_scan(&seeded_scan()).unwrap();
-            device = db.list_devices().unwrap()[0].id;
-            db.set_device_name(device, Some("The name that stuck".into()))
-                .unwrap();
-
-            db.simulate_storage_loss().unwrap();
-            assert!(db
-                .set_device_name(device, Some("The name that did not".into()))
-                .is_err());
-        }
-
-        let db = Db::open(&path).unwrap();
         assert_eq!(
-            db.device_detail(device)
-                .unwrap()
-                .device
-                .custom_name
-                .as_deref(),
-            Some("The name that stuck")
+            portable_detail.device.custom_name.as_deref(),
+            Some("Portable NAS")
+        );
+        assert_eq!(
+            portable_detail.device.notes.as_deref(),
+            Some("Portable session only")
+        );
+    }
+
+    #[test]
+    fn disposable_shutdown_is_idempotent_and_releases_the_session_database() {
+        let temp = TempDir::new("disposable-shutdown");
+        let db_path = portable_session_db_path(&temp, "00000000000040008000000000000008");
+        let session_root = db_path.parent().unwrap().to_path_buf();
+        let db = Db::open(&db_path).unwrap();
+        db.save_scan(&seeded_scan()).unwrap();
+
+        db.shutdown().unwrap();
+        db.shutdown().unwrap();
+
+        assert!(
+            db.lock().is_err(),
+            "shutdown must remove the connection handle"
+        );
+        let read_error = db
+            .list_scans()
+            .expect_err("database reads after shutdown must fail");
+        let write_error = db
+            .save_scan(&seeded_scan())
+            .expect_err("database writes after shutdown must fail");
+        assert!(read_error.contains("closed"), "{read_error}");
+        assert!(write_error.contains("closed"), "{write_error}");
+
+        std::fs::remove_dir_all(&session_root).unwrap();
+        assert!(
+            !session_root.exists(),
+            "SQLite must release the session database and sidecar files"
         );
     }
 }

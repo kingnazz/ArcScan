@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ArcScan site build: v1.8.2 -->
+<!-- ArcScan site build: v1.8.4 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -69,7 +69,7 @@
         "applicationSubCategory": "Network Scanner",
         "operatingSystem": "Windows 10, Windows 11, macOS 11 or later",
         "processorRequirements": "x64, ARM64, Apple Silicon",
-        "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps a persistent inventory of them on your own computer, and lists the changes found in later scans.",
+        "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps an inventory and lists the changes found in later scans. The Installed edition retains its inventory; Windows Portable uses a disposable session with explicit exports.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
         "softwareVersion": "1.8.4",
@@ -80,7 +80,7 @@
           "Local network device discovery over ICMP, TCP and ARP",
           "Open service and port detection",
           "MAC address and manufacturer identification",
-          "Persistent device inventory with names and notes",
+          "Persistent Installed inventory and disposable Portable sessions with exports",
           "Network-scoped device inventory for multiple sites",
           "Change detection between scans",
           "Scan history and comparison",
@@ -109,7 +109,7 @@
             "name": "Does ArcScan upload my network data?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Scan results, the device inventory, your names and your notes are stored in a SQLite database on your own computer and are never sent anywhere. ArcScan makes two optional outbound requests: an update check against GitHub, which sends only the version being checked and can be switched off, and a public IP lookup that is off by default and only runs when you press the button."
+              "text": "No. Scan results, the device inventory, your names and your notes stay on your computer and are never sent anywhere. Installed ArcScan can make an optional update check against GitHub, which sends only the version being checked and can be switched off. Both editions offer a public IP lookup that only runs when you press the button. Portable updates are manual."
             }
           },
           {
@@ -181,7 +181,7 @@
             "name": "Does the inventory keep devices between scans?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. Every device ArcScan finds is kept in a persistent inventory with the name you give it, your notes, the addresses it has held, when it was first seen and how many scans have seen it. Devices are matched by MAC address where one is visible, so a new DHCP lease does not create a duplicate. Deleting a scan from the history does not remove devices from the inventory."
+              "text": "Yes. Every device ArcScan finds is kept in the inventory with the name you give it, your notes, the addresses it has held, when it was first seen and how many scans have seen it. Installed ArcScan retains that inventory across launches. Portable keeps it only for the current session, so export anything you need before closing. Devices are matched by MAC address where one is visible, and deleting a scan does not remove them from the current inventory."
             }
           },
           {
@@ -794,7 +794,7 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.2 -->
+      <!-- ====================================================== new in 1.8.4 -->
       <!--
         Sits directly above the downloads, so what changed is in front of the
         person about to install it. Divided columns rather than another card
@@ -805,45 +805,43 @@
         <div class="wrap">
           <div class="section-head">
             <p class="eyebrow">New in 1.8.4</p>
-            <h2>ArcScan can travel with you.</h2>
+            <h2>A fresh field session, wherever you need it.</h2>
             <p>
-              1.8.4 adds a Windows Portable edition for x64 and ARM64: unzip it to a folder or a USB
-              drive and run it, with no installer and no administrator rights. It is a separate
-              build rather than the installer&rsquo;s executable in a ZIP, and it keeps
-              ArcScan&rsquo;s own data with that copy of ArcScan. Everything the scanner does is
-              unchanged.
+              1.8.4 adds disposable Windows Portable ZIPs for x64 and ARM64. Extract one, launch
+              without installing, scan and investigate with the normal ArcScan tools, export
+              anything you want to keep, then close it. The next Portable launch starts fresh.
+              Everything the scanner does is unchanged.
               <a href="whats-new-1.8.4.html">What&rsquo;s new in 1.8.4</a>
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>A portable build, meant literally</h3>
+              <h3>One private temporary session</h3>
               <p>
-                ArcScan-owned persistent data stays in an <code>ArcScanData</code> folder beside the
-                portable app: the scan history, the inventory, the names, the notes, and the
-                settings too, not just the database. Move the folder to another drive or another
-                machine and all of it comes with you. Settings names the exact path.
+                Every Portable process gets a unique SQLite database and WebView profile under the
+                system temporary directory. Inventory, Changes, History, discovery, device details
+                and preferences work for the session, then ArcScan safely removes the state it owns.
               </p>
             </article>
 
             <article>
-              <h3>Independent of an installed copy</h3>
+              <h3>Export what should survive</h3>
               <p>
-                Installed and portable ArcScan can live on one computer without either knowing about
-                the other, and so can two portable folders. Separate databases, separate settings,
-                nothing merged in either direction. Two copies running out of the same portable
-                folder is refused rather than allowed to corrupt it.
+                CSV, JSON and XML exports are the intentional persistence mechanism. Save them
+                outside the temporary session and they remain after ArcScan closes. Inventory,
+                History, Changes, names, notes, discovery evidence and preferences otherwise start
+                empty next time.
               </p>
             </article>
 
             <article>
-              <h3>It never falls back somewhere else</h3>
+              <h3>Independent, concurrent and safe</h3>
               <p>
-                If the folder cannot be written to, or is on a network share, portable ArcScan says
-                so and stops instead of quietly using the normal Windows application-data location.
-                Updating is a deliberate manual replacement of the application files; the installed
-                edition&rsquo;s automatic updater is unchanged.
+                Two Portable processes receive separate sessions and can run together, even from
+                the same extracted folder. Installed ArcScan remains fully separate. Cleanup requires
+                validated ArcScan ownership, and Portable never falls back to Installed AppData or
+                writes a data folder beside the executable.
               </p>
             </article>
           </div>
@@ -856,13 +854,13 @@
               sizes="(max-width: 820px) 100vw, 44rem"
               width="1440"
               height="900"
-              alt="The ArcScan Settings panel. An About section reads ArcScan v1.8.4, then Portable edition, Windows x64. Under a Data location heading is the path E:\Tools\ArcScan\ArcScanData, followed by a line saying ArcScan-owned persistent data stays in this folder, a Copy data path button, and a note that portable ArcScan does not install updates."
+              alt="The ArcScan Settings panel. About identifies Portable edition, Windows x64. Session storage reads Temporary, followed by a reminder that this launch starts fresh and to export CSV, JSON or XML before closing. The update note says to finish the session, close ArcScan, then download the latest Portable ZIP."
               loading="lazy"
               decoding="async"
             />
             <figcaption>
-              A portable copy names its own data folder, so the folder to move is never a guess. The
-              path shown is a fictional one.
+              Portable Settings makes the temporary lifetime and export boundary explicit without
+              exposing the internal session path as a place to save files.
             </figcaption>
           </figure>
         </div>
@@ -906,7 +904,7 @@
 
               <div class="dl-option">
                 <h4>Portable ZIP</h4>
-                <p>No installation required.</p>
+                <p>No installation. Fresh temporary session on every launch.</p>
                 <dl class="dl-meta">
                   <dt>Size</dt>
                   <dd data-field="portable-size">See the release page</dd>
@@ -949,7 +947,7 @@
 
               <div class="dl-option">
                 <h4>Portable ZIP</h4>
-                <p>No installation required.</p>
+                <p>No installation. Fresh temporary session on every launch.</p>
                 <dl class="dl-meta">
                   <dt>Size</dt>
                   <dd data-field="portable-size">See the release page</dd>
@@ -1011,17 +1009,18 @@
                 It puts ArcScan in the Start menu and keeps itself up to date.
               </p>
               <p>
-                The <strong>Portable ZIP</strong> runs ArcScan without installing it. ArcScan-owned
-                persistent data stays in an <code>ArcScanData</code> folder beside the portable app,
-                making it suitable for a USB drive or a technician toolkit. Extract the ZIP before
-                running ArcScan. Portable copies are updated by hand: download the newer ZIP,
-                replace the application files, and keep the <code>ArcScanData</code> folder. It
-                needs the Microsoft Edge WebView2 Runtime, which current Windows already has.
+                The <strong>Portable ZIP</strong> is a disposable field tool. Extract it, run a scan
+                and investigate with the normal ArcScan features, export CSV, JSON or XML for
+                anything you want to retain, then close it. Every process receives a private
+                temporary database and WebView profile; the next launch starts fresh. The folder
+                containing <code>ArcScan.exe</code> does not need to be writable.
               </p>
               <p>
-                Installed and portable ArcScan are independent. They keep separate databases and
-                separate settings, nothing is merged in either direction, and both can be used on
-                the same computer. Portable ArcScan is Windows only.
+                Portable copies are updated manually: export anything worth keeping, finish and
+                close the session, then download and extract the latest Portable ZIP. Installed and
+                Portable ArcScan remain independent and may run together; two Portable processes
+                also receive separate sessions. The Installed updater is unchanged, and Portable is
+                Windows only. Microsoft Edge WebView2 is still required.
                 <a href="whats-new-1.8.4.html">What&rsquo;s new in 1.8.4</a>
               </p>
             </div>
@@ -1109,10 +1108,10 @@
                 SQLite database on your own computer and are never sent anywhere.
               </p>
               <p>
-                ArcScan makes two optional outbound requests, both described on the
-                <a href="privacy.html">privacy page</a>: an update check against GitHub, which sends
-                only the version being checked and can be switched off, and a public IP lookup that
-                is off by default and only runs when you press the button.
+                Installed ArcScan can make an optional update check against GitHub, which sends only
+                the version being checked and can be switched off. Portable updates are manual. Both
+                editions offer the public IP lookup described on the
+                <a href="privacy.html">privacy page</a>; it only runs when you press the button.
               </p>
             </details>
 
@@ -1206,11 +1205,12 @@
             <details>
               <summary>Does the inventory keep devices between scans?</summary>
               <p>
-                Yes. Every device ArcScan finds is kept in a persistent inventory with the name you
-                give it, your notes, the addresses it has held, when it was first seen and how many
-                scans have seen it. Devices are matched by MAC address where one is visible, so a
-                new DHCP lease does not create a duplicate. Deleting a scan from the history does
-                not remove devices from the inventory.
+                Yes. Every device ArcScan finds is kept in the inventory with the name you give it,
+                your notes, the addresses it has held, when it was first seen and how many scans
+                have seen it. Installed ArcScan retains that inventory across launches. Portable
+                keeps it for the current session only, so export anything you need before closing.
+                Devices are matched by MAC address where one is visible, and deleting a scan does
+                not remove them from the current inventory.
               </p>
             </details>
 

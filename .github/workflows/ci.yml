@@ -143,9 +143,9 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    # An advisory can be published against a dependency at any moment, so a new
-    # one must not block an unrelated pull request. The job still reports it.
-    continue-on-error: true
+    # High/critical npm advisories and Rust security advisories are release
+    # blockers. `cargo audit` still leaves its informational warning categories
+    # informational; only actionable security advisories fail its default run.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

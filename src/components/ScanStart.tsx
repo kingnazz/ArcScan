@@ -132,7 +132,7 @@ export function ScanStart({
               </li>
               <li>
                 It never tries a password, never sends an exploit, and never uploads your results.
-                Everything stays in a database on this computer.
+                Everything stays on this computer.
               </li>
               <li>
                 No administrator or root privileges are needed, because it uses ordinary operating

@@ -1,4 +1,4 @@
-//! Startup: the portable preflight, the fatal-error report, and the one window.
+//! Startup: the Portable temp session, fatal-error report, and the one window.
 //!
 //! This module is the seam between "which edition am I" and the rest of the
 //! application. Everything edition-specific about starting up happens here and
@@ -9,16 +9,15 @@ use std::path::Path;
 
 use tauri::{AppHandle, WebviewWindowBuilder};
 
-use crate::portable::{self, PortableGuard};
-use crate::runtime::{Edition, PortableError, PortableLayout, RuntimePaths, SystemDriveType};
+use crate::portable::PortableSession;
+use crate::runtime::{Edition, PortableError, RuntimePaths};
 
-/// A portable copy that has passed its preflight and holds its data root.
+/// A Portable copy holding its unique session lock for the process lifetime.
 ///
 /// Kept in Tauri's application state for the life of the process: the lock
-/// inside `_guard` is the claim on the folder, and dropping this releases it.
+/// inside `session` is the claim on the folder, and dropping this releases it.
 pub struct PortableStartup {
-    pub layout: PortableLayout,
-    _guard: PortableGuard,
+    pub session: PortableSession,
 }
 
 /// Run whatever startup this edition needs before Tauri exists.
@@ -27,21 +26,15 @@ pub struct PortableStartup {
 /// they have always taken, with the application-data directory resolved later
 /// from the app handle exactly as before.
 ///
-/// Portable builds resolve their folder from `current_exe()`, prove it works,
-/// and claim it. A failure here is fatal by design: the alternative is a
-/// portable ArcScan quietly writing somewhere else.
+/// Portable builds create and lock a fresh system-temp session. A failure here
+/// is fatal by design: there is no AppData or executable-folder fallback.
 pub fn portable_startup() -> Result<Option<PortableStartup>, PortableError> {
     if !Edition::current().is_portable() {
         return Ok(None);
     }
 
-    let exe = std::env::current_exe().map_err(|_| PortableError::NoExecutableDirectory)?;
-    let layout = PortableLayout::for_executable(&exe)?;
-    let guard = portable::preflight(&layout, &SystemDriveType)?;
-
     Ok(Some(PortableStartup {
-        layout,
-        _guard: guard,
+        session: PortableSession::start()?,
     }))
 }
 

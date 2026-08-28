@@ -13,15 +13,21 @@ import { useUpdater } from "./useUpdater";
  */
 const downloadAndInstall = vi.fn(async () => {});
 const relaunch = vi.fn(async () => {});
+const checkForUpdate = vi.fn(async () => ({
+  version: "1.8.5",
+  body: "notes",
+  downloadAndInstall,
+}));
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
-  check: async () => ({ version: "1.8.5", body: "notes", downloadAndInstall }),
+  check: checkForUpdate,
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }));
 
 beforeEach(() => {
   downloadAndInstall.mockClear();
   relaunch.mockClear();
+  checkForUpdate.mockClear();
   // useUpdater no-ops outside Tauri, so the tests have to look like it.
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
 });
@@ -42,16 +48,21 @@ describe("useUpdater in installer mode", () => {
 });
 
 describe("useUpdater in manual mode", () => {
-  it("still reports the newer version, so the interface can say so", async () => {
+  it("never calls the installer update feed on launch or on a manual check", async () => {
     const { result } = renderHook(() => useUpdater(true, "manual"));
-    await waitFor(() => expect(result.current.status).toBe("available"));
-    expect(result.current.version).toBe("1.8.5");
+    expect(result.current.status).toBe("idle");
     expect(result.current.mode).toBe("manual");
+
+    await act(async () => {
+      await result.current.check(true);
+    });
+
+    expect(checkForUpdate).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("idle");
   });
 
   it("never downloads, never installs and never relaunches", async () => {
     const { result } = renderHook(() => useUpdater(true, "manual"));
-    await waitFor(() => expect(result.current.status).toBe("available"));
 
     await act(async () => {
       await result.current.install();
@@ -60,6 +71,6 @@ describe("useUpdater in manual mode", () => {
     expect(downloadAndInstall).not.toHaveBeenCalled();
     expect(relaunch).not.toHaveBeenCalled();
     // And it does not pretend to be doing something either.
-    expect(result.current.status).toBe("available");
+    expect(result.current.status).toBe("idle");
   });
 });

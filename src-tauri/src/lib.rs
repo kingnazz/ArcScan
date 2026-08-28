@@ -28,13 +28,18 @@ compile_error!(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The Windows cleanup helper is the same Portable executable, but it must
+    // never create a Tauri app, database, WebView or second session. Intercept
+    // its private, path-free invocation before ordinary Portable startup.
+    #[cfg(feature = "portable")]
+    if portable::run_cleanup_helper_if_requested() {
+        return;
+    }
+
     // Portable startup happens before Tauri does.
     //
-    // Everything the portable preflight needs comes from `current_exe()`, so
-    // none of it requires an app handle -- and doing it first means a folder
-    // that cannot hold ArcScan's data never gets a window, a WebView profile or
-    // a database created in it. On failure this reports the problem natively
-    // and exits; there is no path from here to the application-data directory.
+    // The Portable temp session needs no app handle, and creating it first
+    // means failure never reaches a window, WebView, database or AppData path.
     let portable = match startup::portable_startup() {
         Ok(portable) => portable,
         Err(error) => {
@@ -42,6 +47,12 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    #[cfg(feature = "portable")]
+    let portable_cleanup = portable
+        .as_ref()
+        .expect("a Portable build always creates a Portable session")
+        .session
+        .cleanup_handle();
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -58,13 +69,13 @@ pub fn run() {
             .plugin(tauri_plugin_process::init());
     }
 
-    builder
+    let app = builder
         .setup(move |app| {
             // Where this edition keeps its data. The installed edition resolves
             // the same application-data directory it always has; the portable
-            // edition uses the layout its preflight already proved works.
+            // edition uses the unique temp layout startup already claimed.
             let paths = match &portable {
-                Some(portable) => RuntimePaths::portable(&portable.layout),
+                Some(portable) => RuntimePaths::portable(&portable.session.layout),
                 None => RuntimePaths::installed(
                     app.path()
                         .app_data_dir()
@@ -78,7 +89,7 @@ pub fn run() {
                 // still not a reason to try somewhere else.
                 if let Some(portable) = &portable {
                     let error = runtime::PortableError::DatabaseUnavailable {
-                        path: portable.layout.database_path.display().to_string(),
+                        path: portable.session.layout.database_path.display().to_string(),
                         detail: e.clone(),
                     };
                     startup::report_fatal(&error);
@@ -147,6 +158,53 @@ pub fn run() {
             commands::open_rdp,
             commands::open_ssh,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ArcScan");
+        .build(tauri::generate_context!())
+        .expect("error while building ArcScan");
+
+    #[cfg(feature = "portable")]
+    {
+        // Unlike App::run, run_return gives us a boundary after the native
+        // event loop. On Windows, start the no-window cleanup monitor while
+        // this process and its exact active-session lock are definitely alive.
+        // It cannot delete while that lock is held; after process exit it uses
+        // the same strict marker and payload validation with bounded deletion
+        // retries. Starting here avoids late-shutdown and PID-reuse races. No
+        // extra helper is packaged.
+        #[cfg(windows)]
+        if let Err(error) = portable_cleanup.spawn_cleanup_monitor() {
+            eprintln!(
+                "ArcScan Portable could not start its cleanup monitor; the session will be retried on the next launch: {error}"
+            );
+        }
+
+        // SQLite is closed on Exit before the monitor can observe the active
+        // lock being released by process termination.
+        let exit_code = app.run_return(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                scanner::request_cancel();
+                if let Some(database) = app.try_state::<db::Db>() {
+                    if let Err(error) = database.shutdown() {
+                        eprintln!("ArcScan Portable database shutdown: {error}");
+                    }
+                }
+            }
+        });
+
+        // Portable is Windows-only in release builds. Keeping direct cleanup
+        // here makes feature builds and tests on other hosts deterministic.
+        #[cfg(not(windows))]
+        match portable_cleanup.cleanup() {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "ArcScan Portable left its active temporary session for stale cleanup."
+            ),
+            Err(error) => eprintln!(
+                "ArcScan Portable could not remove its temporary session; it will be retried on the next launch: {error}"
+            ),
+        }
+        std::process::exit(exit_code);
+    }
+
+    #[cfg(not(feature = "portable"))]
+    app.run(|_, _| {});
 }

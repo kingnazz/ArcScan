@@ -32,6 +32,7 @@ export interface SettingsPanelProps {
   /** Which edition this is, or null until the backend has answered. */
   runtime: RuntimeInfo | null;
   onOpenDataFolder: () => void;
+  onOpenPortableDownloads: () => void;
   publicIp: PublicIpState;
   onClearPublicIp: () => void;
   onOpenPrivacy: () => void;
@@ -44,6 +45,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, onChange } = props;
   const [confirmReset, setConfirmReset] = useState(false);
   const portCheck = parsePorts(settings.portSpec);
+  const portable = props.runtime?.edition === "portable";
 
   return (
     <>
@@ -263,7 +265,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
             />
             <p className="mt-1 text-xs leading-relaxed text-text-muted">
               Older scans are removed after each new one. Device names, notes and first-seen dates
-              are kept whatever happens to the scans that recorded them.
+              are kept whatever happens to the scans that recorded them
+              {portable ? " during this session." : "."}
             </p>
             <Toggle
               id="settings-notify"
@@ -342,7 +345,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             <SectionHeading>Network requests</SectionHeading>
             <p className="mb-3 text-xs leading-relaxed text-text-secondary">
               Scanning is entirely local. ArcScan never sends your targets, results, device names,
-              MAC addresses or notes anywhere. These two switches control the only requests it makes
+              MAC addresses or notes anywhere. These controls cover the only requests it makes
               beyond your own network.
             </p>
 
@@ -374,14 +377,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
               </div>
             ) : null}
 
-            <Toggle
-              id="settings-updates"
-              className="mt-3"
-              label="Check for updates on launch"
-              description="Asks GitHub whether a newer signed release exists. Only the version being checked is sent."
-              checked={settings.checkForUpdates}
-              onChange={(checkForUpdates) => onChange({ checkForUpdates })}
-            />
+            {props.runtime?.updater_mode === "installer" ? (
+              <Toggle
+                id="settings-updates"
+                className="mt-3"
+                label="Check for updates on launch"
+                description="Asks GitHub whether a newer signed release exists. Only the version being checked is sent."
+                checked={settings.checkForUpdates}
+                onChange={(checkForUpdates) => onChange({ checkForUpdates })}
+              />
+            ) : null}
 
             <Button
               size="sm"
@@ -396,7 +401,14 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
           <div className="divider" />
 
-          {props.runtime ? <AboutSection runtime={props.runtime} onOpenDataFolder={props.onOpenDataFolder} native={props.native} /> : null}
+          {props.runtime ? (
+            <AboutSection
+              runtime={props.runtime}
+              onOpenDataFolder={props.onOpenDataFolder}
+              onOpenPortableDownloads={props.onOpenPortableDownloads}
+              native={props.native}
+            />
+          ) : null}
 
           <section>
             <SectionHeading>Getting started</SectionHeading>
@@ -414,7 +426,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <ConfirmDialog
         open={confirmReset}
         title="Reset all settings?"
-        description="Every preference goes back to its default. Your scan history, device names and notes are not touched."
+        description={
+          portable
+            ? "Every preference goes back to its default. Inventory, History, Changes, names and notes in this session are not touched."
+            : "Every preference goes back to its default. Your scan history, device names and notes are not touched."
+        }
         confirmLabel="Reset settings"
         onCancel={() => setConfirmReset(false)}
         onConfirm={() => {
@@ -427,32 +443,29 @@ export function SettingsPanel(props: SettingsPanelProps) {
 }
 
 /**
- * Which edition this is, and where it keeps its data.
+ * Which edition this is, and whether it keeps data after this process.
  *
  * Deliberately understated. An installed ArcScan has always kept its data
- * somewhere the operator never had to think about, and it still does -- so this
- * says so once and gets out of the way. A portable copy is the case where the
- * answer matters: it is a folder somebody chose, they may have several, and if
- * they are about to move one they need to know what to take with it.
- *
- * The path is the one Rust resolved at startup, printed verbatim. Copy data path
- * puts it on the clipboard, and Open data folder asks the backend to reveal that
- * same root -- neither takes a path from here, so neither is a way to reach
- * anywhere else.
+ * somewhere the operator never had to think about, and it still does. Portable
+ * deliberately withholds its internal temp path: showing it would invite an
+ * export into a directory ArcScan is required to remove on exit.
  */
 function AboutSection({
   runtime,
   native,
   onOpenDataFolder,
+  onOpenPortableDownloads,
 }: {
   runtime: RuntimeInfo;
   native: boolean;
   onOpenDataFolder: () => void;
+  onOpenPortableDownloads: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const portable = runtime.edition === "portable";
 
   const copy = async () => {
+    if (!runtime.data_root) return;
     try {
       await navigator.clipboard.writeText(runtime.data_root);
       setCopied(true);
@@ -472,50 +485,67 @@ function AboutSection({
           {editionLabel(runtime)}
         </p>
 
-        <div className="mt-3">
-          <p className="text-[11px] uppercase tracking-wide text-text-muted">Data location</p>
-          <p
-            className="mono mt-1 break-all rounded-md border border-border bg-surface-sunken px-2.5 py-2 text-[12px] text-text"
-            data-testid="data-root"
-          >
-            {runtime.data_root}
-          </p>
-          {portable ? (
-            <p className="mt-1.5 text-[12px] text-text-secondary">
-              ArcScan-owned persistent data stays in this folder. Keep it beside ArcScan.exe to keep
-              this copy&apos;s history, names, notes and settings.
+        {portable ? (
+          <div className="mt-3" data-testid="portable-session-storage">
+            <p className="text-[11px] uppercase tracking-wide text-text-muted">Session storage</p>
+            <p className="mt-1 text-[13px] font-medium text-text">Temporary</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-text-secondary">
+              This launch starts fresh. Inventory, History, Changes, names, notes, discovery
+              evidence and preferences are removed when ArcScan closes. Export CSV, JSON or XML
+              outside ArcScan if you want to keep it.
             </p>
-          ) : null}
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={
-                copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />
-              }
-              onClick={() => void copy()}
+          </div>
+        ) : runtime.data_root ? (
+          <div className="mt-3">
+            <p className="text-[11px] uppercase tracking-wide text-text-muted">Data location</p>
+            <p
+              className="mono mt-1 break-all rounded-md border border-border bg-surface-sunken px-2.5 py-2 text-[12px] text-text"
+              data-testid="data-root"
             >
-              {copied ? "Copied" : "Copy data path"}
-            </Button>
-            {native ? (
+              {runtime.data_root}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
               <Button
                 size="sm"
                 variant="ghost"
-                icon={<FolderOpen className="h-3.5 w-3.5" />}
-                onClick={onOpenDataFolder}
+                icon={
+                  copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />
+                }
+                onClick={() => void copy()}
               >
-                Open data folder
+                {copied ? "Copied" : "Copy data path"}
               </Button>
-            ) : null}
+              {native ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<FolderOpen className="h-3.5 w-3.5" />}
+                  onClick={onOpenDataFolder}
+                >
+                  Open data folder
+                </Button>
+              ) : null}
+            </div>
           </div>
-        </div>
+        ) : null}
 
         {portable ? (
-          <p className="mt-3 text-[12px] text-text-secondary">
-            Portable ArcScan does not install updates. When a newer version is released, download
-            the Portable ZIP, close ArcScan, replace the application files, and keep the
-            ArcScanData folder.
-          </p>
+          <div className="mt-3">
+            <p className="text-[12px] leading-relaxed text-text-secondary">
+              Portable ArcScan cannot apply the Installer update. Export anything you want to keep,
+              finish this session and close ArcScan, then download and extract the latest Portable
+              ZIP.
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="mt-2"
+              icon={<ExternalLink className="h-3.5 w-3.5" />}
+              onClick={onOpenPortableDownloads}
+            >
+              View Portable downloads
+            </Button>
+          </div>
         ) : null}
       </section>
 

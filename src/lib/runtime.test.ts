@@ -6,8 +6,8 @@ const installed: RuntimeInfo = {
   version: "1.8.4",
   platform: "Windows",
   architecture: "x64",
+  storage_mode: "persistent",
   data_root: "C:\\Users\\Operator\\AppData\\Roaming\\com.arcscan.app",
-  writable: true,
   updater_mode: "installer",
 };
 
@@ -16,8 +16,8 @@ const portable: RuntimeInfo = {
   version: "1.8.4",
   platform: "Windows",
   architecture: "ARM64",
-  data_root: "E:\\Tools\\ArcScan\\ArcScanData",
-  writable: true,
+  storage_mode: "temporary",
+  data_root: null,
   updater_mode: "manual",
 };
 
@@ -52,9 +52,11 @@ describe("editionLabel", () => {
 describe("the portable update wording", () => {
   it("says what to do and what to keep, and never offers to install", () => {
     expect(PORTABLE_UPDATE_STEPS).toContain("Portable ZIP");
+    expect(PORTABLE_UPDATE_STEPS).toContain("Export anything");
+    expect(PORTABLE_UPDATE_STEPS).toContain("finish");
     expect(PORTABLE_UPDATE_STEPS).toContain("close ArcScan");
-    expect(PORTABLE_UPDATE_STEPS).toContain("ArcScanData");
     expect(PORTABLE_UPDATE_STEPS.toLowerCase()).not.toContain("update now");
     expect(PORTABLE_UPDATE_STEPS.toLowerCase()).not.toContain("install");
+    expect(PORTABLE_UPDATE_STEPS).not.toContain("ArcScanData");
   });
 });
