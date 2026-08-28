@@ -166,8 +166,9 @@ pub fn run() {
         // Unlike App::run, run_return gives us a boundary after the native
         // event loop. SQLite is shut down on Exit. On Windows, WebView2 can
         // retain profile handles until this process is fully gone, so a
-        // no-window copy of this same executable waits for our PID to exit and
-        // then performs marker-validated cleanup. No extra helper is packaged.
+        // no-window copy of this same executable polls our exact active-session
+        // lock until process exit, then performs marker-validated cleanup. The
+        // lock avoids PID-reuse races. No extra helper is packaged.
         let exit_code = app.run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 scanner::request_cancel();

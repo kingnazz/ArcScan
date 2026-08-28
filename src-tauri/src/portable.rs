@@ -30,7 +30,7 @@ const NAMESPACE_LOCK_DELAY: Duration = Duration::from_millis(10);
 #[cfg(feature = "portable")]
 const CLEANUP_HELPER_ARG: &str = "--arcscan-portable-cleanup";
 #[cfg(any(all(feature = "portable", windows), test))]
-const CLEANUP_HELPER_ATTEMPTS: usize = 50;
+const CLEANUP_HELPER_ATTEMPTS: usize = 200;
 #[cfg(any(all(feature = "portable", windows), test))]
 const CLEANUP_HELPER_DELAY: Duration = Duration::from_millis(100);
 
@@ -107,7 +107,8 @@ impl PortableSession {
 
 /// Path-only cleanup token retained outside Tauri until the event loop returns.
 /// On Windows it starts the same executable in a narrow internal helper mode;
-/// that helper waits for this process to exit before touching WebView2 files.
+/// that helper waits for this process's active lock to be released before
+/// touching WebView2 files.
 #[derive(Debug, Clone)]
 #[cfg(any(feature = "portable", test))]
 pub struct PortableCleanup {
@@ -116,6 +117,7 @@ pub struct PortableCleanup {
 
 #[cfg(any(feature = "portable", test))]
 impl PortableCleanup {
+    #[cfg(any(not(windows), test))]
     pub fn cleanup(&self) -> Result<bool, String> {
         let _namespace = prepare_namespace(&self.layout).map_err(|e| e.to_string())?;
         match remove_owned_session(&self.layout.sessions_root, &self.layout.session_root) {
@@ -125,8 +127,9 @@ impl PortableCleanup {
         }
     }
 
-    /// Start a no-window copy of this Portable executable that waits for the
-    /// current process to exit, then cleans only this exact owned session.
+    /// Start a no-window copy of this Portable executable that polls the exact
+    /// owned session until the current process releases its active lock, then
+    /// cleans only that session.
     #[cfg(all(feature = "portable", windows))]
     pub fn spawn_after_process_exit(&self) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
@@ -187,11 +190,9 @@ pub(crate) fn run_cleanup_helper_if_requested() -> bool {
             return Err("cleanup helper received unexpected arguments".into());
         }
 
-        #[cfg(windows)]
-        wait_for_parent_exit(process_id)?;
         #[cfg(not(windows))]
         {
-            let _ = process_id;
+            let _ = (&session_id, process_id);
             Err("Portable cleanup helper mode is Windows-only".into())
         }
 
@@ -203,42 +204,6 @@ pub(crate) fn run_cleanup_helper_if_requested() -> bool {
         eprintln!("ArcScan Portable cleanup helper: {error}");
     }
     true
-}
-
-#[cfg(all(feature = "portable", windows))]
-fn wait_for_parent_exit(process_id: u32) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-    };
-
-    // ERROR_INVALID_PARAMETER means the parent exited before the helper opened
-    // its handle. Any other OpenProcess failure is not authority to delete.
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
-    if handle.is_null() {
-        let error = std::io::Error::last_os_error();
-        return if error.raw_os_error() == Some(87) {
-            Ok(())
-        } else {
-            Err(format!(
-                "could not wait for parent process {process_id}: {error}"
-            ))
-        };
-    }
-
-    let wait = unsafe { WaitForSingleObject(handle, 30_000) };
-    unsafe {
-        CloseHandle(handle);
-    }
-    match wait {
-        WAIT_OBJECT_0 => Ok(()),
-        WAIT_TIMEOUT => Err(format!(
-            "parent process {process_id} did not exit within 30 seconds"
-        )),
-        value => Err(format!(
-            "waiting for parent process {process_id} failed with {value}"
-        )),
-    }
 }
 
 #[cfg(any(all(feature = "portable", windows), test))]
@@ -810,6 +775,26 @@ mod tests {
         drop(session);
 
         assert!(cleanup_helper_session(temp.path(), &session_id, process_id).unwrap());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn cleanup_helper_waits_on_the_exact_active_lock_then_removes_the_session() {
+        let temp = TempDir::new("helper-active");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let session_id = session.layout.session_id.clone();
+        let root = session.layout.session_root.clone();
+        let process_id = std::process::id();
+        let temp_path = temp.path().to_path_buf();
+
+        let helper = thread::spawn(move || {
+            cleanup_helper_session(&temp_path, &session_id, process_id).unwrap()
+        });
+        thread::sleep(Duration::from_millis(150));
+        assert!(root.exists(), "the active lock must prevent early deletion");
+        drop(session);
+
+        assert!(helper.join().unwrap());
         assert!(!root.exists());
     }
 
