@@ -8,7 +8,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -28,6 +27,12 @@ const MARKER_FORMAT: u32 = 1;
 const MAX_MARKER_BYTES: u64 = 4096;
 const NAMESPACE_LOCK_ATTEMPTS: usize = 200;
 const NAMESPACE_LOCK_DELAY: Duration = Duration::from_millis(10);
+#[cfg(any(feature = "portable", test))]
+const CLEANUP_HELPER_ARG: &str = "--arcscan-portable-cleanup";
+#[cfg(any(windows, test))]
+const CLEANUP_HELPER_ATTEMPTS: usize = 50;
+#[cfg(any(windows, test))]
+const CLEANUP_HELPER_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,7 +71,7 @@ impl OwnershipMarker {
 #[derive(Debug)]
 pub struct PortableSession {
     pub layout: PortableLayout,
-    _active_lock: Arc<Mutex<Option<File>>>,
+    _active_lock: File,
 }
 
 impl PortableSession {
@@ -96,41 +101,188 @@ impl PortableSession {
     pub fn cleanup_handle(&self) -> PortableCleanup {
         PortableCleanup {
             layout: self.layout.clone(),
-            active_lock: Arc::clone(&self._active_lock),
         }
     }
 }
 
-/// Cleanup token retained outside Tauri until every managed resource and
-/// WebView has been torn down. It shares only the active lease, not an app or
-/// WebView handle, so cleanup can release the lease after `run_return` even if
-/// Tauri still has internal manager references awaiting process exit.
+/// Path-only cleanup token retained outside Tauri until the event loop returns.
+/// On Windows it starts the same executable in a narrow internal helper mode;
+/// that helper waits for this process to exit before touching WebView2 files.
 #[derive(Debug, Clone)]
 #[cfg(any(feature = "portable", test))]
 pub struct PortableCleanup {
     layout: PortableLayout,
-    active_lock: Arc<Mutex<Option<File>>>,
 }
 
 #[cfg(any(feature = "portable", test))]
 impl PortableCleanup {
     pub fn cleanup(&self) -> Result<bool, String> {
-        // Hold the namespace lock across lease release and deletion. No other
-        // Portable startup can classify this session as stale in the narrow
-        // interval after our active lock is released.
         let _namespace = prepare_namespace(&self.layout).map_err(|e| e.to_string())?;
-        let mut active_lock = self
-            .active_lock
-            .lock()
-            .map_err(|_| "active Portable session lock is poisoned".to_string())?;
-        drop(active_lock.take());
-        drop(active_lock);
         match remove_owned_session(&self.layout.sessions_root, &self.layout.session_root) {
             CleanupDisposition::Removed => Ok(true),
             CleanupDisposition::Active => Ok(false),
             CleanupDisposition::Ignored(reason) | CleanupDisposition::Failed(reason) => Err(reason),
         }
     }
+
+    /// Start a no-window copy of this Portable executable that waits for the
+    /// current process to exit, then cleans only this exact owned session.
+    #[cfg(all(feature = "portable", windows))]
+    pub fn spawn_after_process_exit(&self) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        let process_id = std::process::id();
+        let marker = read_marker(&self.layout.ownership_marker_path)?;
+        if !marker.is_valid_for(&self.layout.session_id) || marker.process_id != process_id {
+            return Err("the active session marker does not belong to this process".into());
+        }
+
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("could not resolve the Portable executable: {error}"))?;
+        Command::new(executable)
+            .arg(CLEANUP_HELPER_ARG)
+            .arg(&self.layout.session_id)
+            .arg(process_id.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("could not start the Portable cleanup helper: {error}"))
+    }
+}
+
+/// Intercept the private cleanup-helper invocation before Portable startup can
+/// create another session. The helper accepts no path: only a compact session
+/// id beneath this process's system-temp namespace and the creator PID recorded
+/// in that session's marker.
+#[cfg(feature = "portable")]
+pub(crate) fn run_cleanup_helper_if_requested() -> bool {
+    let mut args = std::env::args_os().skip(1);
+    let Some(mode) = args.next() else {
+        return false;
+    };
+    if mode != std::ffi::OsStr::new(CLEANUP_HELPER_ARG) {
+        return false;
+    }
+
+    let result = (|| -> Result<(), String> {
+        let session_id = args
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .ok_or("cleanup helper is missing a UTF-8 session id")?;
+        if !valid_session_id(&session_id) {
+            return Err("cleanup helper session id is not a compact UUID".into());
+        }
+        let process_id = args
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value != 0)
+            .ok_or("cleanup helper creator PID is invalid")?;
+        if args.next().is_some() {
+            return Err("cleanup helper received unexpected arguments".into());
+        }
+
+        #[cfg(windows)]
+        wait_for_parent_exit(process_id)?;
+        #[cfg(not(windows))]
+        {
+            let _ = process_id;
+            Err("Portable cleanup helper mode is Windows-only".into())
+        }
+
+        #[cfg(windows)]
+        cleanup_helper_session(&std::env::temp_dir(), &session_id, process_id).map(|_| ())
+    })();
+
+    if let Err(error) = result {
+        eprintln!("ArcScan Portable cleanup helper: {error}");
+    }
+    true
+}
+
+#[cfg(all(feature = "portable", windows))]
+fn wait_for_parent_exit(process_id: u32) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    // ERROR_INVALID_PARAMETER means the parent exited before the helper opened
+    // its handle. Any other OpenProcess failure is not authority to delete.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(87) {
+            Ok(())
+        } else {
+            Err(format!(
+                "could not wait for parent process {process_id}: {error}"
+            ))
+        };
+    }
+
+    let wait = unsafe { WaitForSingleObject(handle, 30_000) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    match wait {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(format!(
+            "parent process {process_id} did not exit within 30 seconds"
+        )),
+        value => Err(format!(
+            "waiting for parent process {process_id} failed with {value}"
+        )),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn cleanup_helper_session(
+    system_temp: &Path,
+    session_id: &str,
+    expected_process_id: u32,
+) -> Result<bool, String> {
+    if !valid_session_id(session_id) || expected_process_id == 0 {
+        return Err("cleanup helper ownership arguments are invalid".into());
+    }
+
+    let roots = namespace_layout(system_temp);
+    let candidate = roots.sessions_root.join(session_id);
+    let mut last_failure = None;
+    for attempt in 0..CLEANUP_HELPER_ATTEMPTS {
+        let namespace = prepare_namespace(&roots).map_err(|error| error.to_string())?;
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(error) => return Err(error.to_string()),
+            Ok(_) => {}
+        }
+
+        let layout = validate_owned_candidate(&roots.sessions_root, &candidate)?;
+        let marker = read_marker(&layout.ownership_marker_path)?;
+        if marker.process_id != expected_process_id {
+            return Err("cleanup helper creator PID does not match the ownership marker".into());
+        }
+
+        match remove_owned_session(&roots.sessions_root, &candidate) {
+            CleanupDisposition::Removed => return Ok(true),
+            CleanupDisposition::Ignored(reason) => return Err(reason),
+            CleanupDisposition::Active => {
+                last_failure = Some("the session is still active".to_string())
+            }
+            CleanupDisposition::Failed(reason) => last_failure = Some(reason),
+        }
+        drop(namespace);
+        if attempt + 1 < CLEANUP_HELPER_ATTEMPTS {
+            thread::sleep(CLEANUP_HELPER_DELAY);
+        }
+    }
+
+    Err(last_failure.unwrap_or_else(|| "cleanup helper exhausted its retries".into()))
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +424,7 @@ fn create_session(roots: &PortableLayout) -> Result<PortableSession, PortableErr
             Ok(active_lock) => {
                 return Ok(PortableSession {
                     layout,
-                    _active_lock: Arc::new(Mutex::new(Some(active_lock))),
+                    _active_lock: active_lock,
                 });
             }
             Err(error) => {
@@ -643,10 +795,39 @@ mod tests {
         fs::write(session.layout.webview_data_path.join("prefs"), b"dark").unwrap();
         let root = session.layout.session_root.clone();
         let cleanup = session.cleanup_handle();
-        // The Tauri state wrapper can still exist after its event loop returns.
-        // Cleanup must release the shared lease itself under the namespace lock.
+        drop(session);
         assert!(cleanup.cleanup().unwrap());
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn cleanup_helper_requires_the_marker_creator_and_removes_only_that_session() {
+        let temp = TempDir::new("helper");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let session_id = session.layout.session_id.clone();
+        let root = session.layout.session_root.clone();
+        let process_id = std::process::id();
+        drop(session);
+
+        assert!(cleanup_helper_session(temp.path(), &session_id, process_id).unwrap());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn cleanup_helper_refuses_a_creator_pid_that_does_not_match_the_marker() {
+        let temp = TempDir::new("helper-pid");
+        let session = PortableSession::start_in(temp.path()).unwrap();
+        let session_id = session.layout.session_id.clone();
+        let root = session.layout.session_root.clone();
+        let wrong_process_id = if std::process::id() == 1 {
+            2
+        } else {
+            std::process::id() - 1
+        };
+        drop(session);
+
+        assert!(cleanup_helper_session(temp.path(), &session_id, wrong_process_id).is_err());
+        assert!(root.exists());
     }
 
     #[test]

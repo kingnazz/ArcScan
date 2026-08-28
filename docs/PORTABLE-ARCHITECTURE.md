@@ -117,12 +117,14 @@ WebView cache.
 
 The session path stays owned by Rust and is not offered as a place for the user
 to save records. Tauri and the WebView are fully torn down before filesystem
-cleanup is attempted. A cleanup token retained outside Tauri shares the active
-session lease but no app or WebView handle. After the event loop returns, it
-takes the namespace lock, releases that lease and performs the validated
-deletion while still holding the namespace lock. This prevents normal cleanup
-from mistaking its own session for another active process and prevents a new
-Portable startup from racing the lease-release interval.
+cleanup is attempted. Windows WebView2 can retain profile handles until the
+owning process has fully exited, so normal shutdown starts the same Portable
+executable in a private no-window cleanup mode. That helper accepts no path. It
+receives only the compact session identifier and the creator PID already stored
+in the marker, waits on the parent process handle, reconstructs the fixed
+system-temp namespace, revalidates marker and PID, and performs the same strict
+cleanup with bounded retries. The ZIP still contains only `ArcScan.exe` and the
+Portable readme; there is no separate helper executable or persistent service.
 
 ## 6. Ownership marker
 

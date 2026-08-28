@@ -28,6 +28,14 @@ compile_error!(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The Windows cleanup helper is the same Portable executable, but it must
+    // never create a Tauri app, database, WebView or second session. Intercept
+    // its private, path-free invocation before ordinary Portable startup.
+    #[cfg(feature = "portable")]
+    if portable::run_cleanup_helper_if_requested() {
+        return;
+    }
+
     // Portable startup happens before Tauri does.
     //
     // The Portable temp session needs no app handle, and creating it first
@@ -156,9 +164,10 @@ pub fn run() {
     #[cfg(feature = "portable")]
     {
         // Unlike App::run, run_return gives us a boundary after the native
-        // event loop and WebView teardown. SQLite is shut down on Exit. The
-        // cleanup token then takes the shared active lease under the namespace
-        // lock before marker-validated filesystem cleanup begins.
+        // event loop. SQLite is shut down on Exit. On Windows, WebView2 can
+        // retain profile handles until this process is fully gone, so a
+        // no-window copy of this same executable waits for our PID to exit and
+        // then performs marker-validated cleanup. No extra helper is packaged.
         let exit_code = app.run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 scanner::request_cancel();
@@ -169,6 +178,17 @@ pub fn run() {
                 }
             }
         });
+
+        #[cfg(windows)]
+        if let Err(error) = portable_cleanup.spawn_after_process_exit() {
+            eprintln!(
+                "ArcScan Portable could not start its cleanup helper; the session will be retried on the next launch: {error}"
+            );
+        }
+
+        // Portable is Windows-only in release builds. Keeping direct cleanup
+        // here makes feature builds and tests on other hosts deterministic.
+        #[cfg(not(windows))]
         match portable_cleanup.cleanup() {
             Ok(true) => {}
             Ok(false) => eprintln!(
