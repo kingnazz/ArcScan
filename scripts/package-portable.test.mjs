@@ -166,8 +166,15 @@ describe("packaging a portable ZIP", () => {
     expect(readme).toContain("ArcScan 1.8.4 - Portable Edition for Windows ARM64");
     expect(readme).not.toContain("__VERSION__");
     expect(readme).not.toContain("__ARCH__");
-    // The claims the release must not overstate.
-    expect(readme).toContain("ArcScan-owned persistent data stays in ArcScanData");
+    // The disposable-session contract is part of the shipped payload, not only
+    // the website. A stale README would otherwise tell operators to preserve a
+    // directory the new architecture intentionally deletes.
+    expect(readme).toMatch(/Every Portable process creates its own private session/i);
+    expect(readme).toMatch(/next (?:Portable )?launch starts fresh/i);
+    expect(readme).toMatch(/CSV, JSON (?:and|or) XML exports/i);
+    expect(readme).toMatch(/export.{0,40}anything you want to keep/i);
+    expect(readme).toMatch(/read-only/i);
+    expect(readme).not.toMatch(/ArcScan-owned persistent data|ArcScanData appears/i);
     expect(readme).toContain("WebView2");
     expect(readme.toLowerCase()).not.toContain("zero dependencies");
   });

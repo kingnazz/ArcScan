@@ -28,6 +28,7 @@ jobs:
             bundles: msi nsis
             portable_label: windows-x64
             portable_arch: x64
+            installer_suffix: _x64-setup.exe
             label: ArcScan-windows-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
@@ -35,6 +36,7 @@ jobs:
             bundles: msi nsis
             portable_label: windows-arm64
             portable_arch: ARM64
+            installer_suffix: _arm64-setup.exe
             label: ArcScan-windows-arm64
           # One universal Apple binary covers both Apple Silicon (arm64) and
           # Intel (x86_64) Macs.
@@ -42,6 +44,7 @@ jobs:
             target: universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             bundles: dmg
+            installer_suffix: _universal.dmg
             label: ArcScan-macos-universal
 
     steps:
@@ -85,6 +88,17 @@ jobs:
             find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
           done
           ls -la artifacts
+
+      - name: Require the expected installer
+        shell: bash
+        run: |
+          required="artifacts/ArcScan_${{ steps.version.outputs.value }}${{ matrix.installer_suffix }}"
+          if [[ ! -f "$required" ]]; then
+            echo "Required installer missing: $required"
+            find artifacts -maxdepth 1 -type f -print
+            exit 1
+          fi
+          echo "Required installer present: $required"
 
       # ------------------------------------------------------------- portable
       #

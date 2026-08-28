@@ -19,8 +19,10 @@ const RELEASE = [
   "ArcScan_1.8.4_arm64-setup.exe",
   "ArcScan_1.8.4_arm64-setup.exe.sig",
   "ArcScan_1.8.4_universal.dmg",
-  "ArcScan_1.8.4_universal.app.tar.gz",
-  "ArcScan_1.8.4_universal.app.tar.gz.sig",
+  // Tauri names the universal macOS updater payload independently of the DMG;
+  // the release tag in its URL binds it to this version.
+  "ArcScan.app.tar.gz",
+  "ArcScan.app.tar.gz.sig",
   "ArcScan_1.8.4_windows-x64-portable.zip",
   "ArcScan_1.8.4_windows-arm64-portable.zip",
 ];
@@ -31,7 +33,7 @@ describe("platformsFor", () => {
   it("maps the installer artifacts to their platforms", () => {
     expect(platformsFor("ArcScan_1.8.4_x64-setup.exe")).toEqual(["windows-x86_64"]);
     expect(platformsFor("ArcScan_1.8.4_arm64-setup.exe")).toEqual(["windows-aarch64"]);
-    expect(platformsFor("ArcScan_1.8.4_universal.app.tar.gz")).toEqual([
+    expect(platformsFor("ArcScan.app.tar.gz")).toEqual([
       "darwin-x86_64",
       "darwin-aarch64",
     ]);
