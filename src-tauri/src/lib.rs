@@ -164,11 +164,21 @@ pub fn run() {
     #[cfg(feature = "portable")]
     {
         // Unlike App::run, run_return gives us a boundary after the native
-        // event loop. SQLite is shut down on Exit. On Windows, WebView2 can
-        // retain profile handles until this process is fully gone, so a
-        // no-window copy of this same executable polls our exact active-session
-        // lock until process exit, then performs marker-validated cleanup. The
-        // lock avoids PID-reuse races. No extra helper is packaged.
+        // event loop. On Windows, start the no-window cleanup monitor while
+        // this process and its exact active-session lock are definitely alive.
+        // It cannot delete while that lock is held; after process exit it uses
+        // the same strict marker and payload validation with bounded deletion
+        // retries. Starting here avoids late-shutdown and PID-reuse races. No
+        // extra helper is packaged.
+        #[cfg(windows)]
+        if let Err(error) = portable_cleanup.spawn_cleanup_monitor() {
+            eprintln!(
+                "ArcScan Portable could not start its cleanup monitor; the session will be retried on the next launch: {error}"
+            );
+        }
+
+        // SQLite is closed on Exit before the monitor can observe the active
+        // lock being released by process termination.
         let exit_code = app.run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 scanner::request_cancel();
@@ -179,13 +189,6 @@ pub fn run() {
                 }
             }
         });
-
-        #[cfg(windows)]
-        if let Err(error) = portable_cleanup.spawn_after_process_exit() {
-            eprintln!(
-                "ArcScan Portable could not start its cleanup helper; the session will be retried on the next launch: {error}"
-            );
-        }
 
         // Portable is Windows-only in release builds. Keeping direct cleanup
         // here makes feature builds and tests on other hosts deterministic.

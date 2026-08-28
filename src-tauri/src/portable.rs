@@ -30,9 +30,11 @@ const NAMESPACE_LOCK_DELAY: Duration = Duration::from_millis(10);
 #[cfg(feature = "portable")]
 const CLEANUP_HELPER_ARG: &str = "--arcscan-portable-cleanup";
 #[cfg(any(all(feature = "portable", windows), test))]
-const CLEANUP_HELPER_ATTEMPTS: usize = 200;
+const CLEANUP_HELPER_DELETE_ATTEMPTS: usize = 200;
 #[cfg(any(all(feature = "portable", windows), test))]
-const CLEANUP_HELPER_DELAY: Duration = Duration::from_millis(100);
+const CLEANUP_HELPER_ACTIVE_DELAY: Duration = Duration::from_millis(250);
+#[cfg(any(all(feature = "portable", windows), test))]
+const CLEANUP_HELPER_DELETE_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,10 +107,10 @@ impl PortableSession {
     }
 }
 
-/// Path-only cleanup token retained outside Tauri until the event loop returns.
-/// On Windows it starts the same executable in a narrow internal helper mode;
-/// that helper waits for this process's active lock to be released before
-/// touching WebView2 files.
+/// Path-only cleanup token retained outside Tauri. On Windows it starts the
+/// same executable in a narrow internal monitor mode before the event loop;
+/// that process waits for this session's exact active lock to be released
+/// before touching WebView2 files.
 #[derive(Debug, Clone)]
 #[cfg(any(feature = "portable", test))]
 pub struct PortableCleanup {
@@ -127,11 +129,13 @@ impl PortableCleanup {
         }
     }
 
-    /// Start a no-window copy of this Portable executable that polls the exact
-    /// owned session until the current process releases its active lock, then
-    /// cleans only that session.
+    /// Start a no-window copy of this Portable executable while the active
+    /// session is known to exist. Starting the monitor before the event loop
+    /// avoids relying on process creation during native shutdown. The monitor
+    /// polls only this owned session's lock and cleans only that session after
+    /// the lock is released.
     #[cfg(all(feature = "portable", windows))]
-    pub fn spawn_after_process_exit(&self) -> Result<(), String> {
+    pub fn spawn_cleanup_monitor(&self) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
         use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -218,9 +222,19 @@ fn cleanup_helper_session(
 
     let roots = namespace_layout(system_temp);
     let candidate = roots.sessions_root.join(session_id);
-    let mut last_failure = None;
-    for attempt in 0..CLEANUP_HELPER_ATTEMPTS {
-        let namespace = prepare_namespace(&roots).map_err(|error| error.to_string())?;
+    let mut delete_failures = 0;
+    loop {
+        let namespace = match prepare_namespace(&roots) {
+            Ok(namespace) => namespace,
+            Err(error) => {
+                delete_failures += 1;
+                if delete_failures >= CLEANUP_HELPER_DELETE_ATTEMPTS {
+                    return Err(error.to_string());
+                }
+                thread::sleep(CLEANUP_HELPER_DELETE_DELAY);
+                continue;
+            }
+        };
         match fs::symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
             Err(error) => return Err(error.to_string()),
@@ -237,17 +251,24 @@ fn cleanup_helper_session(
             CleanupDisposition::Removed => return Ok(true),
             CleanupDisposition::Ignored(reason) => return Err(reason),
             CleanupDisposition::Active => {
-                last_failure = Some("the session is still active".to_string())
+                // The monitor is intentionally started before the UI event
+                // loop and may remain here for the entire ArcScan session.
+                // Activity is not a failed deletion attempt.
+                delete_failures = 0;
+                drop(namespace);
+                thread::sleep(CLEANUP_HELPER_ACTIVE_DELAY);
+                continue;
             }
-            CleanupDisposition::Failed(reason) => last_failure = Some(reason),
+            CleanupDisposition::Failed(reason) => {
+                delete_failures += 1;
+                if delete_failures >= CLEANUP_HELPER_DELETE_ATTEMPTS {
+                    return Err(reason);
+                }
+            }
         }
         drop(namespace);
-        if attempt + 1 < CLEANUP_HELPER_ATTEMPTS {
-            thread::sleep(CLEANUP_HELPER_DELAY);
-        }
+        thread::sleep(CLEANUP_HELPER_DELETE_DELAY);
     }
-
-    Err(last_failure.unwrap_or_else(|| "cleanup helper exhausted its retries".into()))
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
