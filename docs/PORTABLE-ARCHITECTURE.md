@@ -121,10 +121,12 @@ cleanup is attempted. Windows WebView2 can retain profile handles until the
 owning process has fully exited, so normal shutdown starts the same Portable
 executable in a private no-window cleanup mode. That helper accepts no path. It
 receives only the compact session identifier and the creator PID already stored
-in the marker, waits on the parent process handle, reconstructs the fixed
-system-temp namespace, revalidates marker and PID, and performs the same strict
-cleanup with bounded retries. The ZIP still contains only `ArcScan.exe` and the
-Portable readme; there is no separate helper executable or persistent service.
+in the marker, reconstructs the fixed system-temp namespace, revalidates marker
+and PID, and polls the exact session's exclusive active lock before performing
+the same strict cleanup with bounded retries. Using the lock instead of opening
+the creator PID avoids a process-identifier reuse race. The ZIP still contains
+only `ArcScan.exe` and the Portable readme; there is no separate helper
+executable or persistent service.
 
 ## 6. Ownership marker
 
@@ -198,7 +200,9 @@ Portable uses Tauri's returning run loop so teardown order is explicit:
 1. request scanner cancellation at application exit;
 2. shut down the managed SQLite connection;
 3. let Tauri destroy the window and WebView;
-4. after Tauri returns, revalidate and remove the owned session;
+4. after Tauri returns, start the private no-window mode, which waits for the
+   exact active lock to be released at process exit and then revalidates and
+   removes the owned session;
 5. return the original process exit code.
 
 If the session still appears active or a payload file cannot be removed, ArcScan
