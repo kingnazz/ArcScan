@@ -185,11 +185,18 @@ function currentSid() {
 
 const sid = currentSid();
 
-/** Add an inheritable explicit write deny while preserving read/execute access. */
+/**
+ * Add an inheritable explicit write/delete deny while preserving read/execute.
+ *
+ * Do not use icacls' `(W)` shorthand here. Windows expands generic write to a
+ * mask that includes SYNCHRONIZE, which is also needed when CreateProcess maps
+ * an executable. Denying only the concrete mutation rights makes the fixture
+ * genuinely non-writable without accidentally making ArcScan.exe unlaunchable.
+ */
 function denyWrites(folder) {
   const result = spawnSync(
     "icacls",
-    [folder, "/deny", `${sid}:(OI)(CI)(W)`, "/T", "/C", "/Q"],
+    [folder, "/deny", `${sid}:(OI)(CI)(WD,AD,WEA,WA,DC,DE)`, "/T", "/C", "/Q"],
     { encoding: "utf8" },
   );
   if (result.status !== 0) {
