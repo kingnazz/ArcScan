@@ -1,9 +1,9 @@
 // Local preferences.
 //
-// Persisted in localStorage, which survives in both the native WebView and the
-// browser demo with no backend involvement. Device names, notes and status moved
-// into the database in v1.7 (they are inventory data, not preferences); what
-// stays here is genuinely per-installation UI state.
+// Persisted in the current WebView profile with no backend involvement.
+// Installed ArcScan keeps that profile between launches. Portable ArcScan puts
+// it inside the disposable session, so these preferences last only until that
+// Portable process closes. Device names, notes and status live in SQLite.
 //
 // Every read is defensive: a preferences blob written by a newer build, or
 // corrupted on disk, must never stop the app from starting.

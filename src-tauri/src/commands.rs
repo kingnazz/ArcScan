@@ -40,6 +40,12 @@ pub async fn open_data_folder(
     app: tauri::AppHandle,
     paths: State<'_, RuntimePaths>,
 ) -> Result<(), String> {
+    if paths.edition.is_portable() {
+        return Err(
+            "ArcScan Portable session storage is temporary and is not exposed as a data folder."
+                .into(),
+        );
+    }
     let data_root = paths.data_root.clone();
     startup::reveal_data_folder(&app, &data_root)
 }
@@ -414,12 +420,27 @@ fn validate_export_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_export_destination(path: &str, runtime: &RuntimePaths) -> Result<(), String> {
+    if runtime.export_is_inside_temporary_session(std::path::Path::new(path)) {
+        return Err(
+            "Choose an export location outside ArcScan Portable's temporary session so the file is kept after ArcScan closes."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Write already-formatted export text (CSV/JSON/XML, built on the frontend) to
 /// an operator-chosen path from the native save dialog. The path is validated
 /// to look like an export destination before anything touches the disk.
 #[tauri::command]
-pub fn save_text(path: String, contents: String) -> Result<(), String> {
+pub fn save_text(
+    path: String,
+    contents: String,
+    runtime: State<'_, RuntimePaths>,
+) -> Result<(), String> {
     validate_export_path(&path)?;
+    validate_export_destination(&path, &runtime)?;
     if contents.len() > MAX_EXPORT_BYTES {
         return Err("This export is unreasonably large and was not written.".into());
     }
@@ -667,5 +688,26 @@ mod tests {
         assert!(validate_export_path(&format!("{root}scan.exe")).is_err());
         assert!(validate_export_path(&format!("{root}scan.sh")).is_err());
         assert!(validate_export_path(&format!("{root}.bashrc")).is_err());
+    }
+
+    #[test]
+    fn portable_exports_must_leave_the_disposable_session() {
+        let layout = crate::runtime::PortableLayout::for_session(
+            std::path::Path::new("/system/temp"),
+            "0123456789ab4def8123456789abcdef",
+        );
+        let portable = RuntimePaths::portable(&layout);
+        let inside = layout.session_root.join("keep.csv");
+        let outside = if cfg!(windows) {
+            "C:\\Users\\Operator\\Documents\\keep.csv"
+        } else {
+            "/Users/operator/Documents/keep.csv"
+        };
+
+        assert!(validate_export_destination(&inside.to_string_lossy(), &portable).is_err());
+        assert!(validate_export_destination(outside, &portable).is_ok());
+
+        let installed = RuntimePaths::installed(std::path::PathBuf::from("/app/data"));
+        assert!(validate_export_destination(&inside.to_string_lossy(), &installed).is_ok());
     }
 }

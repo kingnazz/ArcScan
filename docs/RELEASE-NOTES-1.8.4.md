@@ -1,228 +1,152 @@
-# ArcScan 1.8.4
+# ArcScan 1.8.4 release notes
 
-**ArcScan can travel with you.**
+ArcScan 1.8.4 adds disposable Windows Portable ZIPs for x64 and ARM64. Portable
+is a field session, not a persistent USB installation: extract it, launch without
+installing, scan and investigate, export anything worth keeping, then close it.
+The next Portable launch starts fresh.
 
-v1.8.4 adds a Windows **Portable edition**, for x64 and for ARM64. Unzip it to a
-folder or a USB drive and run it: no installer, no administrator rights, and
-ArcScan's own data kept beside the application rather than in the machine's
-application-data directory.
+The scanner and discovery behavior are unchanged from 1.8.3. Installed ArcScan,
+its updater and the macOS universal build are also unchanged.
 
-This is a distribution release. The scanner is the v1.8.3 scanner. No new
-protocol, no new probe, no new outbound request, no new view, and no change to
-how anything is discovered, identified, compared or stored.
+## The Portable workflow
 
-The installed edition is untouched: same application-data location, same
-database, same preferences, same migrations, same updater, same window. Install
-over 1.8.x, 1.7.x or 1.6.x without losing anything.
+1. Download the Portable ZIP that matches the Windows architecture.
+2. Extract it to any suitable folder.
+3. Run `ArcScan.exe`; no installer or administrator rights are required.
+4. Use Inventory, Changes, History, discovery, device details and ports normally
+   during the session.
+5. Export CSV, JSON or XML for anything that should survive.
+6. Close ArcScan and let it clean its temporary session.
+7. Start from empty Portable state next time.
 
-Reference documentation: [PORTABLE.md](PORTABLE.md). Design and reasoning:
-[PORTABLE-ARCHITECTURE.md](PORTABLE-ARCHITECTURE.md).
+The extracted folder contains only `ArcScan.exe` and
+`README-PORTABLE.txt`. ArcScan does not create a persistent database or WebView
+profile beside the executable, and that folder does not need to be writable.
 
----
+## Isolated temporary sessions
 
-## What is new
+Every Portable process creates its own directory at:
 
-### A portable build, meant literally
-
-Plenty of tools call a ZIP portable while still writing their database into the
-user's application data. Move the folder and the history stays behind; take it
-to another machine and it starts empty.
-
-ArcScan's portable edition is a **different build**, not the installer's
-executable in a ZIP. It works out which folder it is running from, from the
-executable itself, and keeps its data there:
-
-```
-ArcScan Portable\
-├── ArcScan.exe
-├── README-PORTABLE.txt
-└── ArcScanData\               created on the first successful launch
-    ├── arcscan.db             scan history, inventory, names, notes, statuses
-    ├── WebView\               theme, preferences, recent targets, columns
-    └── runtime.lock           held while ArcScan is running
+```text
+<system temp>/ArcScanPortable/sessions/<unique-session-id>/
 ```
 
-**Both stores travel, not just the database.** The `WebView` directory is the
-half that is easy to forget and just as important: theme, default profile, port
-specification, timeouts, concurrency, row density, hidden table columns,
-optional Inventory columns, sort order, history retention, the Public IP switch,
-the update-check switch, the discovery switches, reduced motion and the
-first-run flag. A build that isolated only the database would be a portable
-ArcScan whose preferences came from an installed copy.
+That directory may contain the regular `arcscan.db`, a dedicated `WebView/`
+profile and validated ownership metadata. The existing SQLite architecture is
+used so normal ArcScan features continue to work within the session.
 
-**Said precisely:** *ArcScan-owned persistent data stays in `ArcScanData`.* That
-is the claim in full. Windows itself, and the WebView2 runtime, keep ordinary
-records of programs that have run on a machine, and no application controls
-those. ArcScan does not write its database, its preferences or its cache
-anywhere except the folder above.
+The WebView profile is selected before the window is created. Portable therefore
+cannot inherit Installed ArcScan's theme, recent targets, scan defaults, column
+layout or other WebView-backed preferences. Two Portable processes also receive
+different profiles and databases, even if both were launched from the same
+extracted copy.
 
-### The edition is decided when the binary is built
+Installed ArcScan continues to use its existing application-data database and
+default WebView profile. Installed and Portable may run at the same time without
+sharing scan state, names, notes, discovery evidence or preferences.
 
-Not by what is in the folder. A marker file or an `ArcScanData` directory as the
-switch would mean an installed ArcScan reading a different database because
-somebody created a folder with an unlucky name, and a portable ArcScan reading
-the installed one because the folder was deleted or quarantined. Both are silent
-data-location changes, which is the one thing a persistence design must never
-make.
+## Cleanup designed to refuse unsafe targets
 
-So the installed binary is installed whatever surrounds it, the portable binary
-is portable, renaming or moving the executable changes nothing, and creating or
-deleting `ArcScanData` changes nothing.
+On normal shutdown ArcScan closes SQLite, tears down the WebView and then removes
+its owned session. A later Portable startup examines the sessions namespace and
+cleans validated stale sessions left by a crash, power loss or failed shutdown.
+Active sessions remain untouched.
 
-### Settings says which edition, and where
+Recursive cleanup requires all of the following before any payload is removed:
 
-```
-ArcScan 1.8.4
-Portable edition · Windows x64
+- an exact direct child of the fixed Portable sessions namespace;
+- a compact lowercase UUID v4 with the RFC variant bits;
+- a bounded ownership marker with the ArcScan product, marker kind, format,
+  matching session identifier, timestamp and process identifier;
+- an inactive operating-system session lock;
+- only the known database, SQLite sidecars and link-free WebView tree.
 
-Data location
-E:\Tools\ArcScan\ArcScanData
-```
+Malformed, missing, oversized or mismatched markers are refused. Unknown files,
+symlinks, reparse points, active locks and arbitrary temporary directories are
+also refused. Cleanup removes the ownership marker last and preserves it for a
+later retry whenever possible; any orphan whose ownership can no longer be
+proved is refused rather than deleted.
 
-With `Copy data path`, and `Open data folder` in the desktop app. The
-architecture comes from the build rather than from the machine, so an ARM64 copy
-says ARM64 and an x64 copy running on an ARM64 machine says x64.
+## Exports intentionally survive
 
-For an installed copy this is deliberately understated: its data has always
-lived somewhere nobody had to think about, and it still does.
+CSV, JSON and XML exports are the persistence mechanism. Choose a destination
+outside the temporary session and the exported file survives session cleanup.
+Portable refuses an export path inside its own session so a successful-looking
+export cannot disappear when the app closes.
 
-### Installed and portable are independent
+Portable does not intentionally retain its database, Inventory, History,
+Changes, device names, notes, trust states, type corrections, discovery evidence,
+recent targets or WebView-backed preferences between launches.
 
-Both can be on one computer and in use at the same time. Neither reads the
-other's history, names, notes, statuses or settings, and two portable folders
-are equally independent of each other.
+## Portable updates are manual
 
-**Nothing is merged, in either direction.** A portable copy starts with its own
-empty history rather than importing the installed one, and the installed app
-never goes looking for a portable folder. Moving data between them is a
-deliberate act: close both, copy `arcscan.db`.
+Portable does not contain the NSIS installer updater and cannot apply an
+Installed ArcScan update. To update:
 
-### It refuses rather than falling back
+1. export anything you want to keep;
+2. finish the session and close ArcScan;
+3. download the latest Portable ZIP for the same architecture;
+4. extract it and start a new session.
 
-Portable ArcScan proves it can keep its data before it opens any, and says so
-clearly when it cannot. **There is no fallback to the application-data
-directory in any of these cases.**
-
-**A folder it cannot write to.** Checked by creating a file, writing to it,
-flushing it to the device and deleting it again. Reading a read-only attribute
-would be cheaper and would be wrong: a directory permission, a full disk, a
-write-protect switch and media that has already been pulled all report a
-writable folder right up until something is written to it.
-
-> ArcScan Portable cannot save data in this folder.
->
-> Move the ArcScan Portable folder to a writable local folder or USB drive and
-> try again.
-
-**A network location.** A UNC path, or a drive letter Windows reports as a
-network drive. SQLite's advisory locking over SMB is unreliable and a WebView
-profile over a share is worse, so this is refused rather than risked.
-
-> ArcScan Portable is running from a network location.
->
-> Copy the ArcScan Portable folder to a local or removable drive and run it
-> again.
-
-**A second copy from the same folder.** Two ArcScans sharing one `ArcScanData`
-would corrupt it.
-
-> ArcScan Portable is already running from this folder.
->
-> Close the other ArcScan window before starting another copy from the same
-> portable folder.
-
-The lock behind that last one is a real operating-system lock held for the life
-of the process, not a "does this file exist" test. A crash therefore costs
-nothing: the kernel releases the lock however the process ended, and the next
-launch relocks the file that was left behind. A file-existence lock would have
-blocked every future launch until somebody found and deleted a file they had
-never heard of.
-
-### A drive that disappears fails honestly
-
-If a USB drive is removed while ArcScan is running, database writes start
-failing, and ArcScan reports them as failures. A rename, a note, a status change
-or a saved scan that could not be written is reported as not written; ArcScan
-never says a save succeeded when it did not. Scan results already in memory stay
-on screen where they can. No second database appears anywhere, nothing falls
-back, and no automatic repair is attempted.
-
-### Updating a portable copy
-
-Portable ArcScan still tells you when a newer version exists, because an
-out-of-date network tool is a problem in itself. It does not install it, and the
-portable build **does not contain the installer updater at all** rather than
-merely hiding its button.
-
-1. Close ArcScan.
-2. Download the newer Windows Portable ZIP for your architecture.
-3. Extract it somewhere separate.
-4. Copy `ArcScan.exe` and `README-PORTABLE.txt` over the old ones.
-5. Leave `ArcScanData` exactly where it is.
-6. Launch ArcScan. It upgrades its own database if the new version needs to.
+There is no Portable database or profile to carry forward. `latest.json` remains
+an Installed-updater-only manifest, and the Installed updater continues to check,
+verify, install and restart exactly as before.
 
 ## Release assets
 
-```
-ArcScan_1.8.4_x64-setup.exe                    Windows x64 installer
-ArcScan_1.8.4_arm64-setup.exe                  Windows ARM64 installer
-ArcScan_1.8.4_universal.dmg                    macOS universal
-ArcScan_1.8.4_windows-x64-portable.zip         Windows x64 portable
-ArcScan_1.8.4_windows-arm64-portable.zip       Windows ARM64 portable
-```
+Windows releases continue to include both editions for both architectures:
 
-Each portable ZIP contains exactly `ArcScan.exe` and `README-PORTABLE.txt`. No
-installer, no updater manifest, no signature, no debug symbols, no source, and
-no pre-created database. The architecture inside each one is verified from its
-PE header at build time, not from its filename.
+- Windows x64 Installer;
+- Windows x64 Portable ZIP;
+- Windows ARM64 Installer;
+- Windows ARM64 Portable ZIP.
 
-`latest.json`, which the installed updater reads, continues to name only
-installed, signed, updater-applicable artifacts. A portable ZIP is never an
-updater payload.
+Portable packaging verifies the exact PE architecture and accepts only the two
+minimal ZIP members. It excludes the installer, database, WebView profile,
+updater manifest, source and debug files.
+
+The website now presents Installer and Portable choices for Windows and explains
+that Portable sessions are temporary. macOS remains the universal DMG with no
+Portable choice.
+
+## Storage-media behavior
+
+The folder containing `ArcScan.exe` is not used as a data root. Portable can
+therefore launch by design when that folder is read-only, provided Windows
+temporary storage is available and writable. If a temporary session cannot be
+created, ArcScan stops with a specific error and never falls back to Installed
+AppData or the Installed WebView profile.
+
+Launching from USB stores live SQLite and WebView state on the machine's local
+temporary volume, not on removable media. The USB drive should still remain
+connected until ArcScan exits because Windows or the runtime may need executable
+resources. Real removal, read-only-media, network-policy and endpoint-security
+behavior requires verification on representative Windows hardware.
 
 ## What did not change
 
-- **The installed edition.** Same `%APPDATA%\com.arcscan.app\arcscan.db`, same
-  preferences, same migrations, same updater, same window, same uninstaller.
-- **The scanner.** Same read-only ICMP and TCP discovery, same ARP read, same
-  profiles, same concurrency, same timeouts.
-- **Discovery.** Same mDNS and SSDP, same URL guard, same bounds, same
-  classification, same evidence aging, same `Copy discovery details`.
-- **Inventory, Changes, History and the device panel.** Unchanged.
-- **The database schema.** Version 6, the same as v1.8.3, in both editions.
-- **Privacy.** Local only. No account, no cloud service, no telemetry, no
-  analytics. The same two optional outbound requests, both listed in Settings:
-  the update check, and the public-IP lookup that never runs without a press.
-- **macOS.** No portable build, and no change to the DMG or its updater
-  artifacts.
-- **The Content Security Policy.** Not broadened. Portable mode needed no new
-  origin and no new script source.
+- network scanning, ports, discovery and classification;
+- Inventory, Changes, History and device-detail behavior within a session;
+- the SQLite schema and migrations;
+- Installed ArcScan's data location, WebView profile, updater and uninstaller;
+- the Content Security Policy and privacy model;
+- macOS packaging and behavior;
+- the absence of telemetry, accounts and cloud storage.
+
+For operational details, see [PORTABLE.md](PORTABLE.md). For the path audit,
+marker format and cleanup invariants, see
+[PORTABLE-ARCHITECTURE.md](PORTABLE-ARCHITECTURE.md).
 
 ## Known limitations
 
-1. Portable is Windows only in 1.8.4.
-2. The Microsoft Edge WebView2 Runtime is required, so "no dependencies" is not
-   a claim ArcScan makes. If the runtime is absent, the failure happens before
-   ArcScan has an interface to explain it in.
-3. Portable self-update is not implemented.
-4. Network-share execution is refused.
-5. Removing a USB drive while ArcScan is running interrupts database writes.
-6. Two portable instances from the same folder are blocked.
-7. ArcScan is still not code-signed with a paid publisher certificate, so
-   SmartScreen warns on first launch.
-8. Windows and WebView2 keep OS-level runtime records outside the portable
-   folder.
-9. Installed and portable data never merge automatically.
-
-## Upgrading
-
-**Installed.** Run the installer over any 1.6.x, 1.7.x or 1.8.x version. Nothing
-moves and nothing is rewritten.
-
-**Portable, from an installed copy.** The portable edition starts empty by
-design. To carry your existing history over, close both, and copy
-`%APPDATA%\com.arcscan.app\arcscan.db` into the portable `ArcScanData` folder
-yourself. Preferences do not transfer; set them again in the portable copy.
-
-**Portable, from an earlier portable copy.** There is no earlier portable copy:
-1.8.4 is the first release with one.
+- Portable is Windows-only.
+- WebView2 is still required and is not bundled in the ZIP.
+- Portable state is deliberately not recoverable after successful cleanup; use
+  an export before closing.
+- A crash may leave an ownership-marked session until a later Portable startup
+  can safely remove it.
+- ArcScan is not currently signed with a paid Windows publisher certificate, so
+  SmartScreen may warn on first launch.
+- Final confidence in executable-folder permissions, USB removal, network-share
+  launch, endpoint-security interaction and native ARM64 behavior requires real
+  Windows runtime testing.

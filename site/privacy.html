@@ -66,14 +66,16 @@
         <h2>The short version</h2>
         <p>
           Your scan results, device inventory, names and notes never leave your computer. The
-          application makes exactly two kinds of outbound request, both optional and both described
-          below: an update check, and a public IP lookup that is off until you turn it on.
+          Installed edition can make an optional update check. Both editions offer a public IP
+          lookup that only runs when you press <strong>Check</strong>. Portable updates are manual.
         </p>
 
         <h2>What stays on your computer</h2>
         <p>
-          Everything ArcScan discovers is written to a SQLite database in your operating system's
-          application data directory. Nothing in it is transmitted anywhere.
+          Everything ArcScan discovers is written to a local SQLite database. Installed ArcScan
+          keeps that database in the operating system's application-data directory. Portable uses
+          a fresh private database for the current process and removes it during safe session
+          cleanup. Nothing in either database is transmitted anywhere.
         </p>
         <ul>
           <li>Scan results: addresses, hostnames, MAC addresses, manufacturers and open services.</li>
@@ -83,7 +85,7 @@
           <li>Your preferences, which are stored separately by the application window.</li>
         </ul>
         <p>
-          The database lives at
+          The Installed database lives at
           <code>%APPDATA%\com.arcscan.app\arcscan.db</code> on Windows and
           <code>~/Library/Application Support/com.arcscan.app/arcscan.db</code> on macOS. It is an
           ordinary SQLite file: you can copy it, back it up, inspect it or delete it.
@@ -91,42 +93,48 @@
 
         <h3>The portable Windows edition</h3>
         <p>
-          The portable Windows edition keeps ArcScan's database and application profile in an
-          <code>ArcScanData</code> folder beside the portable app instead of the normal ArcScan
-          application-data location. That is the only thing it changes: the same data, the same
-          amount of it, kept with the copy of ArcScan that collected it rather than with the
-          computer it ran on. Settings shows the exact path.
+          The Portable Windows edition is disposable. Every process creates a unique session under
+          <code>&lt;system temp&gt;/ArcScanPortable/sessions/&lt;unique-session-id&gt;/</code>.
+          The session contains the regular SQLite database, a dedicated WebView profile and
+          validated ArcScan ownership metadata. Inventory, History, Changes, device edits,
+          discovery and preferences work normally while the process is open.
         </p>
         <p>
-          It is the same application otherwise. It scans only what you point it at, stores
-          everything locally and sends nothing anywhere, and the two optional requests below are
-          the same two, still off or still one press away exactly as described. A portable copy
-          will still check for updates if update checks are switched on, and that request goes to
-          GitHub and carries only the version being checked. It cannot install one: updating a
-          portable copy is a manual replacement of the application files.
+          On normal shutdown ArcScan closes SQLite and the WebView, then removes the validated
+          session it owns. A later Portable launch removes stale owned sessions left by a crash or
+          failed cleanup. This deletion is restricted to the exact Portable namespace and requires
+          a valid matching ownership marker, an inactive lock and only known ArcScan contents.
+          Unknown directories, malformed markers, links and active sessions are not removed.
         </p>
         <p>
-          Installed and portable ArcScan are independent. Neither reads the other's database or
-          preferences, and nothing is merged in either direction. To be precise about the claim:
-          this is about data ArcScan owns. Windows itself, and the Microsoft Edge WebView2
-          Runtime, keep ordinary records of programs that have run on a machine, and no
-          application controls those.
+          Portable does not intentionally retain its database, Inventory, History, Changes, names,
+          notes, discovery evidence or WebView-backed preferences between launches. CSV, JSON and
+          XML exports saved outside the session are the intentional exception and survive cleanup.
+          The folder containing <code>ArcScan.exe</code> does not need to be writable, and Portable
+          never falls back to Installed AppData or the Installed WebView profile.
+        </p>
+        <p>
+          Installed and Portable ArcScan are independent and may run together. Two Portable
+          processes also receive independent sessions. To be precise about the cleanup claim: it
+          covers state ArcScan owns. Windows and WebView2 may keep ordinary operating-system records
+          of programs that ran, and no application controls all of those.
         </p>
 
         <h2>Requests the application makes</h2>
 
         <h3>Update check</h3>
         <p>
-          On launch, ArcScan asks GitHub whether a newer signed release exists, by requesting the
-          update manifest published with each release. The request carries only what any HTTPS
-          request carries, plus the version being checked. It does not include your scan targets,
-          your results or any identifier.
+          When enabled, Installed ArcScan asks GitHub on launch whether a newer signed release
+          exists by requesting the Installed update manifest. The request carries only what any
+          HTTPS request carries, plus the version being checked. It does not include your scan
+          targets, results or any identifier.
         </p>
         <p>
           GitHub receives ordinary request metadata for this, including your IP address, as it would
           for any file you download from it. You can switch the check off in
-          <strong>Settings, Network requests</strong>, and ArcScan will then never contact the
-          update feed on its own.
+          <strong>Settings, Network requests</strong>, and Installed ArcScan will then never contact
+          the update feed on its own. Portable does not run the Installer update check and cannot
+          apply the NSIS updater; its download action opens the release page only when you choose it.
         </p>
 
         <h3>Public IP lookup</h3>
@@ -157,10 +165,10 @@
 
         <h3>Release downloads</h3>
         <p>
-          When you download an installer or install an update, the file comes from GitHub. GitHub
-          receives the normal request metadata for a download, including your IP address, user agent
-          and the file requested. ArcScan never re-hosts binaries, and this website never serves
-          them itself.
+          When you download an Installer or Portable ZIP, or Installed ArcScan installs an update,
+          the file comes from GitHub. GitHub receives the normal request metadata for a download,
+          including your IP address, user agent and the file requested. ArcScan never re-hosts
+          binaries, and this website never serves them itself.
         </p>
 
         <h2>What the scan itself sends, and to whom</h2>
@@ -258,9 +266,11 @@
           the database file at the path listed above.
         </p>
         <p>
-          The portable Windows edition has nothing to uninstall. Close ArcScan and delete the
-          portable folder: the application and its <code>ArcScanData</code> go together, and no
-          installer, service, registry setting or Start-menu entry was created to leave behind.
+          The Portable Windows edition has nothing to uninstall. Close all processes launched from
+          that copy, then delete the extracted folder. No Installer, service, scheduled task,
+          ArcScan registry setting or Start-menu entry was created. The current validated temporary
+          session is removed on normal shutdown; a stale ArcScan-owned session left by a crash is
+          eligible for strict cleanup on a later Portable launch.
         </p>
 
         <h2>Responsible use</h2>

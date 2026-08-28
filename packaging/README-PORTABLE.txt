@@ -1,80 +1,117 @@
 ArcScan __VERSION__ - Portable Edition for Windows __ARCH__
 ==========================================================
 
-A fast, private network inventory and scanner that runs from wherever you
-put it. No installer, no setup, no administrator rights.
+A disposable field tool for one ArcScan session. No installer, setup or
+administrator rights.
 
 
 GETTING STARTED
 ---------------
 
-1. Extract this ZIP to a folder first.
-
-   Do not run ArcScan.exe from inside the ZIP. Windows opens archives in a
-   temporary folder that it deletes without warning, so an ArcScan started
-   from inside the ZIP would lose everything it saved.
-
+1. Extract this ZIP to a folder.
 2. Run ArcScan.exe.
+3. Scan the network and review Inventory, Changes, History, discovery,
+   devices and ports during this session.
+4. Export CSV, JSON or XML for anything you want to keep.
+5. Close ArcScan.
 
-3. A folder called ArcScanData appears beside it on the first launch.
+The next Portable launch starts fresh.
 
-   Windows may show an "unknown publisher" warning the first time. See
-   SIGNING below.
-
-
-WHERE YOUR DATA IS
-------------------
-
-ArcScan-owned persistent data stays in ArcScanData, beside ArcScan.exe:
-
-  ArcScan Portable\
-    ArcScan.exe
-    README-PORTABLE.txt
-    ArcScanData\
-      arcscan.db      scan history, inventory, names, notes, statuses
-      WebView\        theme, preferences, recent targets, column layout
-      runtime.lock    held while ArcScan is running
-
-Keep ArcScanData with ArcScan.exe and this copy of ArcScan keeps its
-history and its settings. Move the whole folder -- to another drive, to a
-USB stick, to another computer -- and everything comes with it.
-
-Settings shows the exact path, with a button to copy it.
-
-To be precise about the claim: this is about data ArcScan owns. Windows
-itself, and the Microsoft Edge WebView2 Runtime, keep ordinary records of
-programs that have run on a machine, and no application controls those.
-ArcScan does not write its database, its preferences or its cache
-anywhere except the folder above.
+Windows may show an "unknown publisher" warning the first time. See
+SIGNING below.
 
 
-MOVING, BACKING UP AND REMOVING
--------------------------------
+TEMPORARY SESSION
+-----------------
 
-Move:    close ArcScan, move the whole portable folder.
-Back up: close ArcScan, copy the whole portable folder.
-Remove:  close ArcScan, delete the portable folder. Nothing is left
-         behind on the machine: no installer, no service, no ArcScan
-         registry settings, no Start-menu entry.
+Every Portable process creates its own private session:
+
+  <system temp>\ArcScanPortable\sessions\<unique-session-id>\
+    arcscan.db
+    WebView\
+    validated ArcScan ownership and active-lock files
+
+The ordinary SQLite database keeps ArcScan features working while the
+window is open. The dedicated WebView profile keeps Portable preferences
+separate from Installed ArcScan.
+
+On normal shutdown ArcScan closes the database and WebView, then removes
+its owned session. A later Portable launch safely cleans stale ArcScan-
+owned sessions left by a crash or failed shutdown. Cleanup requires the
+exact session namespace, a valid matching ownership marker, an inactive
+lock and only known ArcScan contents. It refuses arbitrary temporary
+directories, unknown files, links and malformed markers.
+
+Windows and WebView2 may keep ordinary operating-system records of a
+program that ran. ArcScan's cleanup guarantee applies to the validated
+session it owns, not to Windows-owned artifacts.
+
+
+KEEPING AN EXPORT
+-----------------
+
+CSV, JSON and XML exports are the intentional persistence mechanism.
+Choose a destination outside ArcScan's temporary session. The exported
+file then belongs to you and survives session cleanup.
+
+Portable refuses an export destination inside its temporary session so a
+file cannot appear to save successfully and disappear when ArcScan closes.
+
+Without an export, Portable does not intentionally retain the scan
+database, Inventory, History, Changes, names, notes, discovery evidence,
+recent targets or WebView-backed preferences between launches.
+
+
+EXTRACTED FOLDER AND USB
+------------------------
+
+The folder containing ArcScan.exe does not need to be writable. Portable
+does not create a database, profile or persistent data folder beside the
+executable. A read-only extracted folder is supported when Windows system
+temporary storage is available.
+
+If ArcScan.exe is on a USB drive, leave the drive connected until ArcScan
+closes. Live database and WebView state are in local system temporary
+storage, but Windows or the runtime may still need executable resources.
+
+If system temporary storage is unavailable or unwritable, Portable stops
+with a clear error. It never falls back to Installed ArcScan AppData, the
+Installed WebView profile or the executable folder.
+
+
+CONCURRENT AND INSTALLED USE
+----------------------------
+
+Two Portable processes receive different temporary sessions and may run
+at the same time, including two launched from the same extracted folder.
+
+Installed ArcScan and Portable ArcScan are also completely separate and
+may run together. Neither reads the other's database, Inventory, History,
+names, notes, discovery evidence or preferences. Nothing is merged in
+either direction.
 
 
 UPDATING
 --------
 
-Portable ArcScan does not install updates. It will tell you when a newer
-version exists, and updating is four steps:
+Portable ArcScan does not install updates and cannot apply the NSIS
+Installer updater.
 
-1. Close ArcScan.
-2. Download the newer Windows Portable ZIP for your architecture.
-3. Extract it somewhere separate, then copy ArcScan.exe and
-   README-PORTABLE.txt over the old ones.
-4. Leave ArcScanData exactly where it is.
+1. Export anything you want to keep.
+2. Finish the session and close ArcScan.
+3. Download the latest Portable ZIP for this architecture.
+4. Extract it and run the new ArcScan.exe.
 
-Launch ArcScan again. It upgrades its own database if the new version
-needs to, and your history, names, notes and settings are all still
-there.
+There is no Portable database or profile to copy forward. The new launch
+starts fresh by design. Do not replace ArcScan.exe while it is running.
 
-Do not copy over a running copy of ArcScan.
+
+REMOVING
+--------
+
+Close every process launched from this copy, then delete the extracted
+folder. Portable has no uninstaller, service, Start-menu entry or
+scheduled task. Installed ArcScan is unaffected.
 
 
 REQUIREMENTS
@@ -83,62 +120,27 @@ REQUIREMENTS
 * Windows 10 or later, __ARCH__.
 * The Microsoft Edge WebView2 Runtime.
 
-WebView2 ships with Windows 11 and with current Windows 10, so it is
-almost certainly already present. The portable ZIP deliberately does not
-include an installer for it: portable ArcScan does not install system
-software. If it is missing, install "Microsoft Edge WebView2 Runtime"
-from Microsoft and run ArcScan again.
-
-
-WHERE PORTABLE ARCSCAN WILL NOT RUN
------------------------------------
-
-It says so clearly rather than falling back to somewhere you did not
-choose:
-
-* A read-only folder, or one it cannot write to. Move the folder to a
-  writable local folder or USB drive.
-
-* A network location -- a \\server\share path, or a mapped drive that
-  Windows reports as a network drive. Databases over a network share are
-  not reliable enough to keep a scan history in. Copy the folder to a
-  local or removable drive.
-
-* The same folder as an ArcScan that is already running. Two copies
-  sharing one ArcScanData would corrupt it. A second copy from a
-  *different* portable folder is fine, and so is running portable
-  ArcScan alongside an installed one.
-
-If the drive is removed while ArcScan is running, saving will start
-failing and ArcScan will say so. It never writes your data somewhere else
-instead.
-
-
-INSTALLED AND PORTABLE ARCSCAN
-------------------------------
-
-They are completely separate and safe to use on the same computer. The
-installed edition keeps its data in the normal Windows application-data
-location; this copy keeps its data in ArcScanData. Neither reads the
-other's history, names, notes or settings, and nothing is merged in
-either direction -- not automatically, and not silently.
+WebView2 ships with Windows 11 and current Windows 10 releases, so it is
+usually already present. This ZIP does not install system software. If it
+is missing, install "Microsoft Edge WebView2 Runtime" from Microsoft and
+run ArcScan again.
 
 
 SIGNING
 -------
 
 ArcScan is not code-signed with a paid publisher certificate, so Windows
-SmartScreen shows an unknown-publisher warning on first launch. Choose
-"More info", then "Run anyway".
+SmartScreen may show an unknown-publisher warning. Choose "More info",
+then "Run anyway". Download only from the official ArcScan release and
+verify the published SHA-256 checksum.
 
 
 PRIVACY
 -------
 
-ArcScan scans only what you point it at, stores everything locally, and
-sends nothing anywhere. Two optional features contact the internet, both
-listed in Settings and both about ArcScan rather than your network: the
-update check, and the public-IP lookup, which never runs without a press.
+ArcScan scans only what you point it at and does not upload scan data.
+Portable has no automatic installer update path. The optional public-IP
+lookup runs only when you press Check and can be disabled in Settings.
 
 Full notes: https://kingnazz.github.io/ArcScan/privacy.html
 

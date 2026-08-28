@@ -173,7 +173,8 @@
    * ARM64 machine downloading an x64 build, or somebody clicking "Download
    * installer" and getting a portable ZIP -- both of which look like a working
    * download right up until they do not work. So each rule states what the
-   * name must contain *and* what it must not, and a rule that matches nothing
+   * name must contain *and* what it must not. The caller also supplies the
+   * release tag's exact version, and anything other than one unambiguous match
    * leaves the card pointing at the release page rather than at a guess.
    */
   var ASSET_RULES = {
@@ -223,10 +224,17 @@
     /^(source|Source)[-_ ]?code/i,
   ];
 
-  function pickAsset(assets, rule) {
-    if (!rule) return null;
+  function pickAsset(assets, rule, expectedVersion) {
+    if (!rule || !/^\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?$/i.test(expectedVersion || "")) {
+      return null;
+    }
+    var versionPrefix = ("ArcScan_" + expectedVersion + "_").toLowerCase();
+    var matches = [];
     for (var i = 0; i < assets.length; i++) {
       var name = assets[i].name || "";
+      // A stale asset left attached to a release must never satisfy a current
+      // card merely because its architecture and suffix happen to match.
+      if (name.toLowerCase().indexOf(versionPrefix) !== 0) continue;
       var forbidden = false;
       for (var n = 0; n < NEVER.length; n++) {
         if (NEVER[n].test(name)) forbidden = true;
@@ -240,9 +248,12 @@
       for (var x = 0; x < rule.mustNot.length; x++) {
         if (rule.mustNot[x].test(name)) ok = false;
       }
-      if (ok) return assets[i];
+      if (ok) matches.push(assets[i]);
     }
-    return null;
+    // GitHub normally prevents duplicate names, but two differently named
+    // assets may still satisfy a suffix rule. Refuse ambiguity rather than make
+    // the result depend on API order.
+    return matches.length === 1 ? matches[0] : null;
   }
 
   // Exposed for the site verification suite, which runs these rules against a
@@ -281,8 +292,8 @@
       var map = {};
       var portableMap = {};
       Object.keys(ASSET_RULES).forEach(function (key) {
-        map[key] = pickAsset(assets, ASSET_RULES[key].installer);
-        portableMap[key] = pickAsset(assets, ASSET_RULES[key].portable);
+        map[key] = pickAsset(assets, ASSET_RULES[key].installer, version);
+        portableMap[key] = pickAsset(assets, ASSET_RULES[key].portable, version);
       });
 
       if (releaseMeta && release.published_at) {
