@@ -218,8 +218,10 @@ impl RuntimePaths {
     /// Whether an export destination is inside this disposable session.
     ///
     /// The target file usually does not exist yet, so its existing parent is
-    /// canonicalized. A conservative lexical check runs first and also rejects
-    /// paths containing `..` that begin inside the session.
+    /// canonicalized. If it does exist, the target itself is canonicalized too,
+    /// which prevents an outside-looking symlink from redirecting an export
+    /// into the disposable session. A conservative lexical check runs first and
+    /// also rejects paths containing `..` that begin inside the session.
     pub fn export_is_inside_temporary_session(&self, path: &Path) -> bool {
         if !self.edition.is_portable() {
             return false;
@@ -227,14 +229,43 @@ impl RuntimePaths {
         if path.starts_with(&self.data_root) {
             return true;
         }
-
-        let root = std::fs::canonicalize(&self.data_root).ok();
-        let parent = path.parent().and_then(|p| std::fs::canonicalize(p).ok());
-        match (root, parent) {
-            (Some(root), Some(parent)) => parent.starts_with(&root),
-            _ => false,
+        // A dangling outside symlink can target a not-yet-created file inside
+        // the session, so canonicalization alone cannot prove it safe. Export
+        // destinations that are themselves links or Windows reparse points are
+        // conservatively refused even when their current target is elsewhere.
+        if path_is_link_or_reparse_point(path) {
+            return true;
         }
+
+        let Some(root) = std::fs::canonicalize(&self.data_root).ok() else {
+            return false;
+        };
+        if std::fs::canonicalize(path).is_ok_and(|target| target.starts_with(&root)) {
+            return true;
+        }
+        path.parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .is_some_and(|parent| parent.starts_with(root))
     }
+}
+
+fn path_is_link_or_reparse_point(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata)
+}
+
+#[cfg(windows)]
+fn metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +470,51 @@ mod tests {
         assert!(portable.export_is_inside_temporary_session(&inside));
         assert!(!portable.export_is_inside_temporary_session(outside));
         assert!(!installed.export_is_inside_temporary_session(&inside));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_rejects_an_outside_symlink_that_targets_its_session() {
+        use std::os::unix::fs::symlink;
+
+        let temp = std::env::temp_dir().join(format!(
+            "arcscan-export-link-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let layout = PortableLayout::for_session(&temp, "0123456789ab4def8123456789abcdef");
+        std::fs::create_dir_all(&layout.session_root).unwrap();
+        let inside = layout.session_root.join("export.csv");
+        std::fs::write(&inside, b"temporary").unwrap();
+        let outside = temp.join("operator-export.csv");
+        symlink(&inside, &outside).unwrap();
+
+        let portable = RuntimePaths::portable(&layout);
+        assert!(portable.export_is_inside_temporary_session(&outside));
+
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_rejects_a_dangling_outside_symlink_into_its_session() {
+        use std::os::unix::fs::symlink;
+
+        let temp = std::env::temp_dir().join(format!(
+            "arcscan-export-dangling-link-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let layout = PortableLayout::for_session(&temp, "0123456789ab4def8123456789abcdef");
+        std::fs::create_dir_all(&layout.session_root).unwrap();
+        let inside = layout.session_root.join("not-created-yet.csv");
+        let outside = temp.join("operator-export.csv");
+        symlink(&inside, &outside).unwrap();
+
+        let portable = RuntimePaths::portable(&layout);
+        assert!(portable.export_is_inside_temporary_session(&outside));
+
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
