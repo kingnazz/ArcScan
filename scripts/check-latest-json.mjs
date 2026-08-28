@@ -1,71 +1,131 @@
 #!/usr/bin/env node
-// Check a generated latest.json before it is published.
+// Check the real latest.json immediately before publication.
 //
-// gen-latest-json's rules have their own tests. This reads the real manifest
-// that is about to go into a GitHub release and asserts the same properties
-// again, because the file that matters is the one being uploaded, not the
-// function that produced it: a wrong workflow argument, a stale artifact left in
-// the directory, or a hand edit would all slip past a unit test.
+// The generator has unit tests, but this is defense in depth against wrong
+// workflow arguments, stale signed artifacts, and hand-edited output. Installed
+// ArcScan may act on every URL in this file without a person inspecting it, so
+// the platform set, release version, architecture, and payload kind are exact.
 //
-// latest.json is the one file an installed ArcScan downloads and acts on without
-// a person looking at it, so what it names must be an installer the NSIS updater
-// can actually apply -- never a portable ZIP.
-//
-//   node scripts/check-latest-json.mjs <path to latest.json>
+//   node scripts/check-latest-json.mjs <latest.json> <expected version or tag>
 
 import { readFileSync } from "node:fs";
 
 const file = process.argv[2];
-if (!file) {
-  console.error("usage: check-latest-json.mjs <path to latest.json>");
+const expectedArg = process.argv[3];
+if (!file || !expectedArg) {
+  console.error("usage: check-latest-json.mjs <path to latest.json> <expected version or v-tag>");
+  process.exit(1);
+}
+
+const expectedVersion = expectedArg.replace(/^v/, "");
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(expectedVersion)) {
+  console.error(`expected version is not semantic: ${expectedArg}`);
   process.exit(1);
 }
 
 let manifest;
 try {
   manifest = JSON.parse(readFileSync(file, "utf8"));
-} catch (e) {
-  console.error(`could not read ${file}: ${e.message}`);
+} catch (error) {
+  console.error(`could not read ${file}: ${error.message}`);
   process.exit(1);
 }
 
 const problems = [];
+const REQUIRED_KEYS = [
+  "darwin-aarch64",
+  "darwin-x86_64",
+  "windows-aarch64",
+  "windows-x86_64",
+];
+const EXPECTED_ASSET = {
+  // Tauri's macOS updater payload is intentionally unversioned; the release-tag
+  // segment above is what binds it to the expected version. The human-facing
+  // universal DMG remains versioned and is asserted separately in the workflow.
+  "darwin-aarch64": "ArcScan.app.tar.gz",
+  "darwin-x86_64": "ArcScan.app.tar.gz",
+  "windows-aarch64": `ArcScan_${expectedVersion}_arm64-setup.exe`,
+  "windows-x86_64": `ArcScan_${expectedVersion}_x64-setup.exe`,
+};
 
-if (/portable/i.test(JSON.stringify(manifest))) {
-  problems.push("it names a portable asset, which the installed updater cannot apply");
+if (manifest?.version !== expectedVersion) {
+  problems.push(`manifest version is ${JSON.stringify(manifest?.version)}, expected ${expectedVersion}`);
 }
 
-const platforms = manifest.platforms ?? {};
-if (Object.keys(platforms).length === 0) {
-  problems.push("it names no platforms at all");
+const platforms =
+  manifest?.platforms && typeof manifest.platforms === "object" && !Array.isArray(manifest.platforms)
+    ? manifest.platforms
+    : {};
+const actualKeys = Object.keys(platforms).sort();
+if (JSON.stringify(actualKeys) !== JSON.stringify(REQUIRED_KEYS)) {
+  problems.push(
+    `platform keys are ${JSON.stringify(actualKeys)}, expected exactly ${JSON.stringify(REQUIRED_KEYS)}`,
+  );
 }
 
-/** What the installed updater can actually download and apply. */
-const APPLICABLE = /-setup\.exe$|\.msi$|\.app\.tar\.gz$/i;
+for (const key of actualKeys) {
+  const entry = platforms[key];
+  let decodedUrl = "";
+  try {
+    decodedUrl = decodeURIComponent(entry?.url ?? "");
+  } catch {
+    problems.push(`platform ${key} has a URL that cannot be decoded: ${entry?.url ?? ""}`);
+    continue;
+  }
 
-for (const [key, entry] of Object.entries(platforms)) {
-  const url = decodeURIComponent(entry?.url ?? "");
-  if (!APPLICABLE.test(url)) {
-    problems.push(`platform ${key} points at ${url}, which is not an installed updater artifact`);
+  if (/portable/i.test(decodedUrl)) {
+    problems.push(`platform ${key} points at a Portable asset: ${decodedUrl}`);
   }
-  if (!entry?.signature) {
-    problems.push(`platform ${key} has no signature`);
+  if (typeof entry?.signature !== "string" || entry.signature.trim() === "") {
+    problems.push(`platform ${key} has no non-empty updater signature`);
   }
-  // An architecture pointing at the other architecture's installer is an update
-  // that downloads, verifies, installs, and leaves the machine broken.
-  if (key === "windows-x86_64" && /arm64|aarch64/i.test(url)) {
-    problems.push(`platform ${key} points at an ARM64 artifact: ${url}`);
+
+  let parsed;
+  try {
+    parsed = new URL(decodedUrl);
+  } catch {
+    problems.push(`platform ${key} has an invalid URL: ${decodedUrl}`);
+    continue;
   }
-  if (key === "windows-aarch64" && /(^|[^a-z])x64|x86_64/i.test(url) && !/arm64|aarch64/i.test(url)) {
-    problems.push(`platform ${key} points at an x64 artifact: ${url}`);
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+    problems.push(`platform ${key} does not use an HTTPS GitHub release URL: ${decodedUrl}`);
   }
+
+  const expectedTagPath = `/releases/download/v${expectedVersion}/`;
+  if (!parsed.pathname.includes(expectedTagPath)) {
+    problems.push(
+      `platform ${key} does not target release v${expectedVersion}: ${decodedUrl}`,
+    );
+  }
+
+  const asset = pathBasename(parsed.pathname);
+  const expectedAsset = EXPECTED_ASSET[key];
+  if (!expectedAsset) {
+    problems.push(`platform ${key} is not an Installed updater platform`);
+  } else if (asset !== expectedAsset) {
+    problems.push(
+      `platform ${key} points at ${asset || "no asset"}, expected ${expectedAsset}`,
+    );
+  }
+}
+
+function pathBasename(pathname) {
+  const slash = pathname.lastIndexOf("/");
+  return slash >= 0 ? pathname.slice(slash + 1) : pathname;
 }
 
 console.log(`${file}`);
-console.log(`  version   ${manifest.version}`);
-console.log(`  platforms ${Object.keys(platforms).sort().join(", ")}`);
+console.log(`  expected  ${expectedVersion}`);
+console.log(`  version   ${manifest?.version}`);
+console.log(`  platforms ${actualKeys.join(", ")}`);
 for (const [key, entry] of Object.entries(platforms)) {
-  console.log(`    ${key} -> ${decodeURIComponent(entry?.url ?? "")}`);
+  let url = entry?.url ?? "";
+  try {
+    url = decodeURIComponent(url);
+  } catch {
+    // Keep the raw value in the report; the failure is already recorded above.
+  }
+  console.log(`    ${key} -> ${url}`);
 }
 
 if (problems.length > 0) {

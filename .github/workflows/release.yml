@@ -33,6 +33,7 @@ jobs:
             bundles: nsis
             portable_label: windows-x64
             portable_arch: x64
+            installer_suffix: _x64-setup.exe
             label: ArcScan-windows-x64
           - os: windows-latest
             target: aarch64-pc-windows-msvc
@@ -40,11 +41,13 @@ jobs:
             bundles: nsis
             portable_label: windows-arm64
             portable_arch: ARM64
+            installer_suffix: _arm64-setup.exe
             label: ArcScan-windows-arm64
           - os: macos-latest
             target: universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             bundles: app dmg
+            installer_suffix: _universal.dmg
             label: ArcScan-macos-universal
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +82,23 @@ jobs:
             find "$base" -name "$pattern" -exec cp {} artifacts/ \; 2>/dev/null || true
           done
           ls -la artifacts
+      - name: Require the installer and signed Installed-updater payload
+        shell: bash
+        run: |
+          installer="artifacts/ArcScan_${{ steps.version.outputs.value }}${{ matrix.installer_suffix }}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            updater="$installer"
+          else
+            updater="artifacts/ArcScan.app.tar.gz"
+          fi
+          for required in "$installer" "$updater" "$updater.sig"; do
+            if [[ ! -f "$required" ]]; then
+              echo "Required release artifact missing: $required"
+              find artifacts -maxdepth 1 -type f -print
+              exit 1
+            fi
+            echo "Required release artifact present: $required"
+          done
       # The portable ZIPs. Deliberately *not* signed as updater artifacts and
       # deliberately not built by the step above: a portable build is compiled
       # without the updater plugin, and the ZIP is never an updater payload. See
@@ -109,6 +129,14 @@ jobs:
           --zip artifacts/ArcScan_${{ steps.version.outputs.value }}_${{ matrix.portable_label }}-portable.zip
           --architecture ${{ matrix.portable_arch }}
           --version ${{ steps.version.outputs.value }}
+      - name: Verify the portable runtime
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          ARCSCAN_VERIFY_RUN_MS: 25000
+        run: >
+          node scripts/verify-portable-runtime.mjs
+          --portable src-tauri/target-portable/${{ matrix.target }}/release/arcscan.exe
+          --installed src-tauri/target/${{ matrix.target }}/release/arcscan.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
@@ -146,7 +174,7 @@ jobs:
       # be applied, so this asserts on the real manifest that is about to be
       # published rather than trusting that the generator's rules held.
       - name: Check latest.json names only installed updater artifacts
-        run: node scripts/check-latest-json.mjs dist/latest.json
+        run: node scripts/check-latest-json.mjs dist/latest.json "${{ steps.ver.outputs.tag }}"
       - name: List the assets about to be published
         run: ls -la dist
       - name: Publish signed release + manifest
