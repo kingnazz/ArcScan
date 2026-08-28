@@ -239,11 +239,20 @@ await step("download cards list every platform with real detail", async () => {
 });
 
 await step("exactly one platform is recommended, and only on that platform", async () => {
-  // Headless Chromium reports Linux, which ArcScan does not ship: nothing should
-  // be recommended, and no badge should be visible.
-  const shown = await page.$$eval("[data-recommended-badge]", (els) =>
+  // Pin an unsupported user agent instead of inheriting the host running this
+  // suite: local macOS Chromium and CI Linux report different real platforms.
+  const unsupported = await context.newPage();
+  await unsupported.addInitScript(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      get: () => "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    });
+    Object.defineProperty(navigator, "userAgentData", { get: () => undefined });
+  });
+  await unsupported.goto(BASE, { waitUntil: "domcontentloaded" });
+  const shown = await unsupported.$$eval("[data-recommended-badge]", (els) =>
     els.filter((el) => el.offsetParent !== null).length,
   );
+  await unsupported.close();
   if (shown !== 0) throw new Error(`${shown} badges visible on an unsupported platform`);
 
   // A Windows user agent must promote exactly one card.
@@ -278,6 +287,13 @@ const RELEASE_FIXTURE = {
   html_url: "https://github.com/kingnazz/ArcScan/releases/tag/v1.8.4",
   published_at: "2026-08-01T06:28:00Z",
   assets: [
+    // Stale assets are deliberately first. Selection is version-specific, so
+    // an old filename attached to the current release cannot win by API order.
+    { name: "ArcScan_1.8.3_x64-setup.exe", size: 4540000 },
+    { name: "ArcScan_1.8.3_arm64-setup.exe", size: 4280000 },
+    { name: "ArcScan_1.8.3_universal.dmg", size: 7500000 },
+    { name: "ArcScan_1.8.3_windows-x64-portable.zip", size: 4100000 },
+    { name: "ArcScan_1.8.3_windows-arm64-portable.zip", size: 3900000 },
     { name: "ArcScan.app.tar.gz", size: 7505259 },
     { name: "ArcScan.app.tar.gz.sig", size: 404 },
     { name: "ArcScan_1.8.4_arm64-setup.exe", size: 4285945 },
@@ -388,6 +404,34 @@ await step("the release API fills every card with the right asset", async () => 
     }
   }
   return cards.map((c) => `${c.os} ${c.size}${c.portableSize ? ` + ${c.portableSize}` : ""}`).join(", ");
+});
+
+await step("release asset selection rejects ambiguous same-version matches", async () => {
+  const ambiguous = {
+    ...RELEASE_FIXTURE,
+    assets: [
+      ...RELEASE_FIXTURE.assets,
+      {
+        name: "ArcScan_1.8.4_backup_x64-setup.exe",
+        size: 4543128,
+        browser_download_url:
+          "https://github.com/kingnazz/ArcScan/releases/download/v1.8.4/ArcScan_1.8.4_backup_x64-setup.exe",
+      },
+    ],
+  };
+  const p = await pageWithRelease(ambiguous);
+  const card = await p.$eval('.dl[data-os="win-x64"]', (el) => ({
+    href: el.querySelector('[data-field="link"]')?.getAttribute("href"),
+    size: el.querySelector('[data-field="size"]')?.textContent?.trim(),
+  }));
+  await p.close();
+  if (card.href !== "https://github.com/kingnazz/ArcScan/releases/latest") {
+    throw new Error(`ambiguous x64 installer resolved to ${card.href}`);
+  }
+  if (card.size !== "See the release page") {
+    throw new Error(`ambiguous x64 installer displayed size ${card.size}`);
+  }
+  return "ambiguous card keeps its safe release-page fallback";
 });
 
 await step("each platform is recommended the build it can run", async () => {
@@ -540,30 +584,31 @@ await step("the release section states the 1.8.4 improvements", async () => {
     [/windows/, "the platform it is for"],
     [/x64/, "x64"],
     [/arm64/, "ARM64"],
-    [/arcscandata/, "the ArcScanData folder"],
-    [/beside/, "the data being beside the app"],
-    [/usb/, "USB use"],
+    [/disposable/, "the disposable field-tool model"],
+    [/temporary session/, "temporary per-launch state"],
+    [/sqlite|database/, "the in-session SQLite database"],
+    [/webview/, "the isolated WebView profile"],
+    [/next portable launch starts fresh|start empty next time/, "the fresh next launch"],
+    [/csv, json and xml/, "the intentional export formats"],
     [/no installer|without installing|unzip/, "no installation being needed"],
-    [/administrator rights|no admin/, "no administrator rights"],
-    [/separate build|separate databases|independent/, "independence from the installed copy"],
-    [/settings names|names the exact path|exact path/, "the data path being shown"],
-    [/nothing merged|nothing is merged/, "no automatic merging"],
-    [/says so and stops|instead of quietly|never falls back/, "the absence of a silent fallback"],
-    [/network share|network location/, "the network-location policy"],
-    [/manual replacement|replacement of the application files/, "manual updating"],
-    [/updater is unchanged|automatic updater is unchanged/, "the installed updater being unchanged"],
+    [/independent|fully separate/, "independence from the Installed copy"],
+    [/two portable processes|separate sessions/, "concurrent Portable processes"],
+    [/validated arcscan ownership/, "ownership-gated cleanup"],
+    [/never falls back/, "the absence of a silent fallback"],
     [/unchanged/, "what did not change"],
   ];
   for (const [pattern, label] of claims) {
     if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
   }
 
-  // The four claims this release must never make.
+  // Claims from the superseded persistent-folder architecture must never return.
   for (const overclaim of [
     [/portable.{0,40}macos|macos.{0,40}portable/, "portable macOS"],
     [/zero dependencies|no dependencies/, "zero dependencies"],
     [/updates itself|self-updat|automatic.{0,20}portable update/, "portable self-update"],
-    [/writes nothing (?:else )?outside|nothing outside (?:the|that) folder/, "Windows writing nothing outside the folder"],
+    [/arcscandata/, "a persistent ArcScanData folder"],
+    [/\b(?:move|copy) the whole folder\b/, "folder-carried persistence"],
+    [/same-folder lock/, "the obsolete same-folder lock"],
   ]) {
     if (overclaim[0].test(text)) throw new Error(`the section claims ${overclaim[1]}`);
   }
@@ -831,48 +876,60 @@ await step("every required section is present and explained", async () => {
     // Each section is asserted on its claims rather than on its wording, so the
     // copy can be edited without the test turning into a transcript of it.
     portable: [
-      /arcscandata/i,
-      /database/i,
-      /theme|recent targets|column layout|settings/i,
-      /from the executable itself/i,
-      /never from whatever directory/i,
-      /isolating the database alone/i,
-      /copy it|copy data path/i,
+      /disposable afterwards/i,
+      /field session/i,
+      /system temp.*arcscanportable.*sessions/i,
+      /arcscan\.db/i,
+      /webview/i,
+      /removed after normal shutdown/i,
+      /strict namespace, ownership, layout/i,
+      /export csv, json or xml/i,
     ],
     choose: [
       /installer/i,
       /portable/i,
-      /usb/i,
-      /administrator rights/i,
+      /persistent history/i,
+      /settings retained/i,
+      /user exports retained/i,
       /no portable macos build/i,
     ],
     data: [
-      /arcscan\.exe/i,
+      /temporary session/i,
+      /system temp.*arcscanportable.*sessions/i,
+      /arcscan\.db/i,
       /webview/i,
-      /lock file/i,
-      /close arcscan and move/i,
-      /close arcscan and delete/i,
-      /arcscan-owned persistent data stays in/i,
-      /no application controls those/i,
+      /validated ownership marker/i,
+      /active-session lock/i,
+      /csv, json and xml/i,
+      /stale sessions/i,
+      /unknown contents.*arbitrary temp directories are refused/i,
+      /arcscan does not own/i,
     ],
     independent: [
-      /separate databases/i,
+      /installed and portable can run together/i,
+      /multiple portable processes can run together/i,
+      /never reads or writes those locations/i,
+      /different session identifier, sqlite file, webview profile/i,
+      /same extracted folder can run at the same time/i,
       /nothing is merged in either direction/i,
-      /two portable folders/i,
-      /same arcscandata/i,
     ],
     updating: [
-      /does not install it|does not install updates/i,
-      /does not contain the installer updater/i,
-      /close arcscan/i,
-      /leave.*arcscandata/i,
-      /installed edition.*updater is unchanged/i,
+      /intentionally manual/i,
+      /does not contain the nsis installer updater/i,
+      /export what matters/i,
+      /finish and close the session/i,
+      /download the latest zip/i,
+      /fresh private session/i,
+      /latest\.json.*installed-updater-only/i,
+      /installed.*updater is unchanged/i,
     ],
     limits: [
-      /actually writing a file/i,
-      /read-only flag/i,
-      /network location|mapped drive/i,
-      /extract first/i,
+      /extracted folder may be read-only/i,
+      /does not need to be writable/i,
+      /system temporary storage is required/i,
+      /never falls back to installed appdata/i,
+      /keep usb media connected/i,
+      /extract the zip before launching/i,
       /webview2/i,
       /not a claim arcscan makes|no dependencies.{0,40}not a claim/i,
       /smartscreen/i,
@@ -880,8 +937,10 @@ await step("every required section is present and explained", async () => {
     unchanged: [
       /same application-data location/i,
       /same updater/i,
+      /same read-only icmp and tcp scanning/i,
       /mdns and ssdp/i,
-      /no telemetry, no analytics|no telemetry/i,
+      /portable updates are manual/i,
+      /no account, cloud service, telemetry or analytics|no telemetry/i,
     ],
   };
   for (const [id, patterns] of Object.entries(sections)) {
@@ -902,8 +961,17 @@ await step("the installer and portable comparison covers the real differences", 
       cells: Array.from(tr.querySelectorAll("td")).map((td) => td.textContent?.trim() ?? ""),
     })),
   );
-  if (rows.length < 6) throw new Error(`the comparison has only ${rows.length} rows`);
-  for (const needed of [/setup required/i, /data/i, /updates/i, /usb/i, /platforms/i]) {
+  if (rows.length < 8) throw new Error(`the comparison has only ${rows.length} rows`);
+  for (const needed of [
+    /installation/i,
+    /persistent history/i,
+    /persistent inventory/i,
+    /settings retained/i,
+    /automatic installed update/i,
+    /user exports retained/i,
+    /platforms/i,
+    /best for/i,
+  ]) {
     if (!rows.some((r) => needed.test(r.label))) throw new Error(`no row for ${needed}`);
   }
   for (const row of rows) {
@@ -922,7 +990,7 @@ await step("the installer and portable comparison covers the real differences", 
   return `${rows.length} rows compared`;
 });
 
-await step("the page makes none of the four claims this release must not make", async () => {
+await step("the page rejects obsolete persistent-Portable claims and other overclaims", async () => {
   // The prose, not the download cards. Card text flattens into one run in which
   // the ARM64 card's "Download portable" sits next to the macOS card's heading,
   // and that adjacency is not a claim. The cards have their own assertion above:
@@ -931,7 +999,11 @@ await step("the page makes none of the four claims this release must not make", 
   const raw = (
     await page.$$eval("main section", (sections) =>
       sections
-        .filter((section) => section.id !== "download")
+        // Both the download cards and the comparison table intentionally place
+        // Installer macOS and Windows Portable text next to each other. Their
+        // platform cells are asserted structurally above; flattened adjacency
+        // is not prose claiming a Portable macOS build.
+        .filter((section) => section.id !== "download" && section.id !== "choose")
         .map((section) => section.innerText)
         .join("\n"),
     )
@@ -940,30 +1012,39 @@ await step("the page makes none of the four claims this release must not make", 
   // portable macOS build" and "no dependencies is not a claim ArcScan makes"
   // are the page being careful, so negated sentences are dropped before the
   // claim patterns run.
-  const text = raw
+  const sentences = raw
     .split(/(?<=[.!?])\s+|\n+/)
-    .filter((sentence) => !/\b(no|not|never|without|cannot|does not|is not)\b/.test(sentence))
-    .join(" ");
+    .filter((sentence) => !/\b(no|not|never|without|cannot|does not|is not)\b/.test(sentence));
   for (const [pattern, label] of [
     [/portable.{0,40}macos|macos.{0,40}portable/, "portable macOS"],
     [/zero dependencies/, "zero dependencies"],
     [/updates itself|self-updat/, "portable self-update"],
     [/code-signed with a paid|is signed with a paid/, "code signing it does not have"],
+    [/arcscandata/, "a persistent ArcScanData folder"],
+    [/\b(?:move|copy) the whole folder\b/, "folder-carried Portable state"],
+    [/same-folder lock/, "the obsolete same-folder lock"],
+    [/portable.{0,50}(?:automatic update check|checks latest\.json)/, "a Portable updater check"],
   ]) {
-    if (pattern.test(text)) throw new Error(`the page claims ${label}`);
+    if (sentences.some((sentence) => pattern.test(sentence))) {
+      throw new Error(`the page claims ${label}`);
+    }
   }
-  // The denials themselves are checked against the full text, since dropping
-  // them above is exactly what makes them invisible to the loop.
+  // The denials themselves are checked against all main-page text, including
+  // the comparison section. That section is omitted from `raw` only because
+  // flattening its adjacent columns creates false prose such as "macOS ...
+  // Portable"; its explicit footnote is still the right place to state that a
+  // Portable macOS build does not exist.
+  const allMainText = (await page.locator("main").innerText()).toLowerCase();
   for (const [pattern, label] of [
     [/no portable macos build/, "that there is no portable macOS build"],
     [/not a claim arcscan makes/, "that no-dependencies is not claimed"],
   ]) {
-    if (!pattern.test(raw)) throw new Error(`the page does not state ${label}`);
+    if (!pattern.test(allMainText)) throw new Error(`the page does not state ${label}`);
   }
   // And it must make the honest versions of two of them.
   for (const [pattern, label] of [
     [/webview2/, "the WebView2 requirement"],
-    [/no application controls those/, "that Windows keeps its own records"],
+    [/arcscan does not own/, "that Windows keeps records ArcScan does not own"],
     [/not code-signed/, "the unsigned publisher status"],
   ]) {
     if (!pattern.test(raw)) throw new Error(`the page does not state ${label}`);
@@ -1011,7 +1092,11 @@ await step("every previous What's New page is still published and reachable", as
     }
     const h1 = (await previous.locator("h1").innerText()).trim();
     if (!heading.test(h1)) throw new Error(`${file}'s heading is now "${h1}"`);
-    const body = await previous.locator("main").innerText();
+    // Shared download cards show the latest release even on an older article.
+    // Assert the archived article sections, not that intentionally live block.
+    const body = await previous.$$eval("main section:not(#download)", (sections) =>
+      sections.map((section) => section.innerText).join("\n"),
+    );
     if (!version.test(body)) throw new Error(`${file} no longer names its own version`);
     if (!content.test(body)) throw new Error(`${file} lost its own content`);
     // An older page must keep describing its own release, not this one.
@@ -1021,19 +1106,20 @@ await step("every previous What's New page is still published and reachable", as
   return "1.8.3, 1.8.2, 1.8.1 and 1.8.0 intact";
 });
 
-await step("a removed drive is described as failing rather than falling back", async () => {
-  // The 1.8.3 equivalent of this step asserted that a partial scan never marks
-  // a device Missing, which was that release's most easily overstated
-  // behaviour. This is 1.8.4's: a portable copy on a drive that has gone must
-  // say saving failed, and must not be described as recovering by writing
-  // somewhere else.
-  const text = await page.locator("#limits").innerText();
-  if (!/saving will start failing/i.test(text)) {
-    throw new Error("the page does not say that saving fails when the drive goes");
+await step("cleanup is ownership-gated and never expands to arbitrary temp data", async () => {
+  const text = (await page.locator("#data").innerText()).toLowerCase();
+  for (const [pattern, label] of [
+    [/direct session child/, "a direct session child"],
+    [/valid matching arcscan marker/, "a matching ownership marker"],
+    [/inactive lock/, "an inactive process lock"],
+    [/only the known database/, "the known-payload allowlist"],
+    [/unknown contents/, "unknown contents being refused"],
+    [/links, reparse points and arbitrary temp directories are refused/, "links and arbitrary temp being preserved"],
+    [/preserving every session whose process is still active/, "active concurrent sessions being preserved"],
+  ]) {
+    if (!pattern.test(text)) throw new Error(`the page does not state ${label}`);
   }
-  if (!/does not write your data elsewhere/i.test(text)) {
-    throw new Error("the page does not say the data is not written elsewhere instead");
-  }
+  return "namespace, marker, lock, payload and active-session gates";
 });
 
 await step("the page avoids managed-service and monitoring language", async () => {
@@ -1066,7 +1152,7 @@ await step("the download section covers every platform", async () => {
   // runtime from whatever GitHub calls the latest release, so asserting this
   // release's version against the real API would only pass once this release
   // is published, and would fail every pre-release run in between. What
-  // belongs to this pull request is that the page renders a 1.8.1 release
+  // belongs to this pull request is that the page renders a 1.8.4 release
   // correctly, which is what the fixture pins.
   const released = await pageWithRelease(RELEASE_FIXTURE, undefined, WHATS_NEW);
   const cards = await released.$$eval("#download .dl", (els) =>
@@ -1284,16 +1370,18 @@ await step("axe-core finds no violations on any page", async () => {
   const tags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
   const results = [];
 
-  // Desktop and a phone width for the home page, because the navigation and
-  // the release section lay out differently at each, plus the privacy page.
+  // Desktop and phone widths for the home page and the current release page,
+  // plus privacy and the immediately previous What's New page. Keeping 1.8.4
+  // in this matrix prevents a new release page from accidentally inheriting an
+  // accessibility pass that only ever exercised old markup.
   const passes = [
     { label: "home desktop", path: "/", width: 1440, height: 900 },
     { label: "home mobile", path: "/", width: 390, height: 844 },
     { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
-    { label: "whats-new desktop", path: "/whats-new-1.8.1.html", width: 1440, height: 900 },
-    { label: "whats-new mobile", path: "/whats-new-1.8.1.html", width: 390, height: 844 },
+    { label: "whats-new 1.8.4 desktop", path: "/whats-new-1.8.4.html", width: 1440, height: 900 },
+    { label: "whats-new 1.8.4 mobile", path: "/whats-new-1.8.4.html", width: 390, height: 844 },
     // The previous release's page stays published, so it stays checked.
-    { label: "whats-new 1.8.0", path: "/whats-new-1.8.0.html", width: 1440, height: 900 },
+    { label: "whats-new 1.8.3", path: "/whats-new-1.8.3.html", width: 1440, height: 900 },
   ];
 
   for (const { label, path, width, height } of passes) {
