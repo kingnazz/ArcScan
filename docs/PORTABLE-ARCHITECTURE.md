@@ -125,8 +125,11 @@ revalidates marker and PID, and waits on the exact session's exclusive active
 lock. Only after process exit releases that lock does it perform the same strict
 cleanup with bounded deletion retries. Starting the monitor while the owner and
 lock are known to be alive avoids late-shutdown and process-identifier reuse
-races. The ZIP still contains only `ArcScan.exe` and the Portable readme; there
-is no separate helper executable or persistent service.
+races. A transient I/O failure while WebView2 is removing a volatile profile
+entry restarts strict validation; an unsafe type, link, reparse point or unknown
+entry still causes immediate refusal. The ZIP still contains only `ArcScan.exe`
+and the Portable readme; there is no separate helper executable or persistent
+service.
 
 ## 6. Ownership marker
 
