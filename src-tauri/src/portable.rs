@@ -29,9 +29,9 @@ const NAMESPACE_LOCK_ATTEMPTS: usize = 200;
 const NAMESPACE_LOCK_DELAY: Duration = Duration::from_millis(10);
 #[cfg(any(feature = "portable", test))]
 const CLEANUP_HELPER_ARG: &str = "--arcscan-portable-cleanup";
-#[cfg(any(windows, test))]
+#[cfg(any(all(feature = "portable", windows), test))]
 const CLEANUP_HELPER_ATTEMPTS: usize = 50;
-#[cfg(any(windows, test))]
+#[cfg(any(all(feature = "portable", windows), test))]
 const CLEANUP_HELPER_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,7 +241,7 @@ fn wait_for_parent_exit(process_id: u32) -> Result<(), String> {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(all(feature = "portable", windows), test))]
 fn cleanup_helper_session(
     system_temp: &Path,
     session_id: &str,
