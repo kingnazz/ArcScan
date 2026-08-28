@@ -116,17 +116,17 @@ Portable processes cannot read each other's theme, recent targets, settings or
 WebView cache.
 
 The session path stays owned by Rust and is not offered as a place for the user
-to save records. Tauri and the WebView are fully torn down before filesystem
-cleanup is attempted. Windows WebView2 can retain profile handles until the
-owning process has fully exited, so normal shutdown starts the same Portable
-executable in a private no-window cleanup mode. That helper accepts no path. It
-receives only the compact session identifier and the creator PID already stored
-in the marker, reconstructs the fixed system-temp namespace, revalidates marker
-and PID, and polls the exact session's exclusive active lock before performing
-the same strict cleanup with bounded retries. Using the lock instead of opening
-the creator PID avoids a process-identifier reuse race. The ZIP still contains
-only `ArcScan.exe` and the Portable readme; there is no separate helper
-executable or persistent service.
+to save records. Windows WebView2 can retain profile handles until the owning
+process has fully exited, so ArcScan starts the same Portable executable in a
+private no-window monitor mode before the UI event loop. The monitor accepts no
+path. It receives only the compact session identifier and the creator PID
+already stored in the marker, reconstructs the fixed system-temp namespace,
+revalidates marker and PID, and waits on the exact session's exclusive active
+lock. Only after process exit releases that lock does it perform the same strict
+cleanup with bounded deletion retries. Starting the monitor while the owner and
+lock are known to be alive avoids late-shutdown and process-identifier reuse
+races. The ZIP still contains only `ArcScan.exe` and the Portable readme; there
+is no separate helper executable or persistent service.
 
 ## 6. Ownership marker
 
@@ -197,18 +197,19 @@ remain available for a later ownership-checked cleanup pass.
 
 Portable uses Tauri's returning run loop so teardown order is explicit:
 
-1. request scanner cancellation at application exit;
-2. shut down the managed SQLite connection;
-3. let Tauri destroy the window and WebView;
-4. after Tauri returns, start the private no-window mode, which waits for the
-   exact active lock to be released at process exit and then revalidates and
-   removes the owned session;
-5. return the original process exit code.
+1. start the private no-window cleanup monitor before the UI event loop;
+2. request scanner cancellation at application exit;
+3. shut down the managed SQLite connection;
+4. let Tauri destroy the window and WebView;
+5. the monitor observes the exact active lock being released at process exit,
+   then revalidates and removes the owned session;
+6. return the original process exit code.
 
-If the session still appears active or a payload file cannot be removed, ArcScan
-leaves the validated marker in place and logs that cleanup will be retried. It
-does not switch to an unvalidated recursive removal; an orphan that cannot retain
-its marker is deliberately ineligible for later cleanup.
+If the monitor cannot start or an inactive payload file cannot be removed after
+the bounded retries, ArcScan leaves the validated marker in place and logs that
+cleanup will be retried. It does not switch to an unvalidated recursive removal;
+an orphan that cannot retain its marker is deliberately ineligible for later
+cleanup.
 
 ## 10. Exports are the persistence boundary
 
