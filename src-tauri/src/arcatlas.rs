@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use url::Url;
 
-use crate::runtime::{Edition, RuntimePaths};
+#[cfg(test)]
+use crate::runtime::Edition;
+use crate::runtime::RuntimePaths;
 
 pub const KEYRING_SERVICE: &str = "ArcScan";
 pub const KEYRING_ACCOUNT: &str = "arcatlas-connection-token";
