@@ -416,14 +416,17 @@ impl HttpClient {
         Ok(Self { inner })
     }
 
+    #[cfg(test)]
     pub fn connect_timeout(&self) -> Duration {
         CONNECT_TIMEOUT
     }
 
+    #[cfg(test)]
     pub fn request_timeout(&self) -> Duration {
         REQUEST_TIMEOUT
     }
 
+    #[cfg(test)]
     pub fn follows_redirects(&self) -> bool {
         false
     }
@@ -622,6 +625,7 @@ impl ArcAtlasState {
     }
 }
 
+#[cfg(test)]
 pub fn portable_session_only() -> bool {
     Edition::current().is_portable()
 }
