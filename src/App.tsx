@@ -65,6 +65,7 @@ import {
   HandoffAttempt,
   buildHandoffEnvelope,
   canSendSingleNetwork,
+  handoffRowsForNetwork,
   nextModeOnSend,
   parseArcAtlasError,
   selectedNetworkName,
@@ -343,6 +344,15 @@ export default function App() {
     [inventory, invFilter, invSortKey, invSortDir],
   );
   const inventoryNetworks = inventory?.networks ?? [];
+  const arcAtlasRows = useMemo(
+    () =>
+      handoffRowsForNetwork({
+        rows: inventory?.rows ?? [],
+        networkId: invFilter.networkId,
+        networkCount: inventoryNetworks.length,
+      }),
+    [inventory, invFilter.networkId, inventoryNetworks.length],
+  );
   // Computed from the unfiltered set, so choosing a type never removes the
   // other options from the menu that got you there.
   const inventoryDeviceTypes = useMemo(
@@ -568,13 +578,13 @@ export default function App() {
   const canSendArcAtlas = canSendSingleNetwork({
     networkId: invFilter.networkId,
     networkCount: inventoryNetworks.length,
-    rows: inventoryRows,
+    rows: inventory?.rows ?? [],
   });
   const sendNetworkName =
-    selectedNetworkName(inventoryRows, invFilter.networkId, inventoryNetworks) ??
-    inventoryRows[0]?.network_name ??
+    selectedNetworkName(arcAtlasRows, invFilter.networkId, inventoryNetworks) ??
+    arcAtlasRows[0]?.network_name ??
     "Current network";
-  const sendToArcAtlasEnabled = !arcAtlas.configured || (inventoryRows.length > 0 && canSendArcAtlas);
+  const sendToArcAtlasEnabled = !arcAtlas.configured || (arcAtlasRows.length > 0 && canSendArcAtlas);
   const sendToArcAtlasTitle = !arcAtlas.configured
     ? "Connect ArcAtlas"
     : !canSendArcAtlas
@@ -606,7 +616,7 @@ export default function App() {
   }, [arcAtlas]);
 
   const openArcAtlasSend = useCallback(() => {
-    const next = nextModeOnSend(arcAtlas, canSendArcAtlas && inventoryRows.length > 0);
+    const next = nextModeOnSend(arcAtlas, canSendArcAtlas && arcAtlasRows.length > 0);
     if (next === "choose-network") {
       toast.info("Choose one network before sending to ArcAtlas.");
       return;
@@ -615,7 +625,7 @@ export default function App() {
     setArcAtlasResult(null);
     setArcAtlasMode(next);
     setArcAtlasOpen(true);
-  }, [arcAtlas, canSendArcAtlas, inventoryRows.length, toast]);
+  }, [arcAtlas, canSendArcAtlas, arcAtlasRows.length, toast]);
 
   const configureArcAtlas = useCallback(
     async (serverUrl: string, token: string) => {
@@ -657,16 +667,16 @@ export default function App() {
   }, [runtime?.edition, toast, reportError]);
 
   const sendToArcAtlas = useCallback(async () => {
-    if (!canSendArcAtlas || inventoryRows.length === 0) return;
+    if (!canSendArcAtlas || arcAtlasRows.length === 0) return;
     setArcAtlasBusy(true);
     setArcAtlasError(null);
     const handoffId = handoffAttempt.current.begin();
     try {
       const notes = await api.deviceNotes(
-        inventoryRows.filter((row) => row.notes_present).map((row) => row.device_id),
+        arcAtlasRows.filter((row) => row.notes_present).map((row) => row.device_id),
       );
       const envelope = buildHandoffEnvelope({
-        rows: inventoryRows,
+        rows: arcAtlasRows,
         notes,
         networkName: sendNetworkName,
         handoffId,
@@ -689,7 +699,7 @@ export default function App() {
     } finally {
       setArcAtlasBusy(false);
     }
-  }, [canSendArcAtlas, inventoryRows, sendNetworkName]);
+  }, [canSendArcAtlas, arcAtlasRows, sendNetworkName]);
 
   const applyBulkStatus = useCallback(
     async (ids: number[], status: DeviceStatus, verb: string) => {
@@ -1437,7 +1447,7 @@ export default function App() {
             ? sendConfirmation({
                 connection: arcAtlas,
                 networkName: sendNetworkName,
-                deviceCount: inventoryRows.length,
+                deviceCount: arcAtlasRows.length,
               })
             : null
         }

@@ -118,14 +118,32 @@ export function uniqueNetworkNames(rows: InventoryRow[]): string[] {
   return [...new Set(rows.map((row) => row.network_name).filter((name): name is string => Boolean(name)))];
 }
 
+/**
+ * Inventory snapshot sent to ArcAtlas.
+ *
+ * Network selection is the only scope filter. Search, presence view,
+ * classification view, device type, and sort order do not apply.
+ */
+export function handoffRowsForNetwork(args: {
+  rows: InventoryRow[];
+  networkId: number | null;
+  networkCount: number;
+}): InventoryRow[] {
+  if (args.rows.length === 0) return [];
+  if (args.networkId != null) {
+    return args.rows.filter((row) => row.network_scope_id === args.networkId);
+  }
+  const networkIds = [...new Set(args.rows.map((row) => row.network_scope_id))];
+  if (args.networkCount > 1 || networkIds.length > 1) return [];
+  return args.rows.slice();
+}
+
 export function canSendSingleNetwork(args: {
   networkId: number | null;
   networkCount: number;
   rows: InventoryRow[];
 }): boolean {
-  if (args.rows.length === 0) return false;
-  if (args.networkCount > 1 && args.networkId == null) return false;
-  return uniqueNetworkNames(args.rows).length <= 1;
+  return handoffRowsForNetwork(args).length > 0;
 }
 
 export function nextModeOnSend(
@@ -197,7 +215,28 @@ export function createHandoffId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
-  return "00000000-0000-4000-8000-000000000000";
+  return createFallbackHandoffId();
+}
+
+/** RFC 4122 UUID v4 from crypto.getRandomValues. Never uses a fixed id. */
+export function createFallbackHandoffId(): string {
+  return createUuidV4(fillCryptoRandom);
+}
+
+export function createUuidV4(fill: (bytes: Uint8Array) => void): string {
+  const bytes = new Uint8Array(16);
+  fill(bytes);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function fillCryptoRandom(bytes: Uint8Array): void {
+  if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") {
+    throw new Error("A cryptographically random source is required to create a handoff id.");
+  }
+  crypto.getRandomValues(bytes);
 }
 
 export function parseArcAtlasError(error: unknown): ArcAtlasError {

@@ -377,7 +377,7 @@ impl MetadataState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|_| ErrorCode::Internal)?;
         }
-        atomic_write(
+        replace_file(
             path,
             &serde_json::to_string_pretty(&meta).map_err(|_| ErrorCode::Internal)?,
         )
@@ -397,10 +397,24 @@ impl MetadataState {
     }
 }
 
-fn atomic_write(path: &Path, contents: &str) -> Result<(), ErrorCode> {
+fn replace_file(path: &Path, contents: &str) -> Result<(), ErrorCode> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, contents).map_err(|_| ErrorCode::Internal)?;
-    fs::rename(&tmp, path).map_err(|_| ErrorCode::Internal)
+    if fs::rename(&tmp, path).is_ok() {
+        return Ok(());
+    }
+    // Windows refuses rename onto an existing destination. Drop the previous
+    // non-secret metadata file and retry, then write in place if rename still
+    // cannot replace it.
+    if path.exists() {
+        fs::remove_file(path).map_err(|_| ErrorCode::Internal)?;
+    }
+    if fs::rename(&tmp, path).is_ok() {
+        return Ok(());
+    }
+    let written = fs::write(path, contents);
+    let _ = fs::remove_file(&tmp);
+    written.map_err(|_| ErrorCode::Internal)
 }
 
 pub struct HttpClient {
@@ -850,6 +864,66 @@ mod tests {
         state.disconnect().unwrap();
         assert!(state.secrets.get().unwrap().is_none());
         assert!(state.metadata.load().unwrap().is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn installed_metadata_can_be_replaced_on_the_same_path() {
+        let dir = std::env::temp_dir().join(format!("arcscan-arcatlas-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let state = ArcAtlasState::for_tests(false, Box::new(MapSecretStore::new()), dir.clone());
+        let first = StoredMetadata {
+            server_url: "https://atlas.example.com".into(),
+            connection_name: Some("Onsite".into()),
+            client_name: Some("Cedar Ridge".into()),
+            site_name: Some("Seattle HQ".into()),
+            token_prefix: Some("atlas_arcscan_abcd".into()),
+            last_validated_at: Some("2026-09-01T00:00:00Z".into()),
+        };
+        state.metadata.save(first).unwrap();
+        let path = dir.join(METADATA_FILE);
+        assert!(path.exists());
+        let second = StoredMetadata {
+            server_url: "https://atlas.example.net".into(),
+            connection_name: Some("Reconnect".into()),
+            client_name: Some("Harbor Lights".into()),
+            site_name: Some("Warehouse".into()),
+            token_prefix: Some("atlas_arcscan_efgh".into()),
+            last_validated_at: Some("2026-09-02T00:00:00Z".into()),
+        };
+        state.metadata.save(second).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        let loaded = state.metadata.load().unwrap().unwrap();
+        assert_eq!(loaded.server_url, "https://atlas.example.net");
+        assert_eq!(loaded.client_name.as_deref(), Some("Harbor Lights"));
+        assert_eq!(loaded.site_name.as_deref(), Some("Warehouse"));
+        assert_eq!(loaded.token_prefix.as_deref(), Some("atlas_arcscan_efgh"));
+        assert!(!raw.to_lowercase().contains("token\":"));
+        assert!(!raw.contains("atlas_arcscan_supersecret"));
+        assert!(!raw.contains("Bearer"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn portable_never_writes_connection_metadata() {
+        let dir = std::env::temp_dir().join(format!("arcscan-arcatlas-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let state =
+            ArcAtlasState::for_tests(true, Box::new(MemorySecretStore::default()), dir.clone());
+        state
+            .metadata
+            .save(StoredMetadata {
+                server_url: "http://127.0.0.1:3000".into(),
+                connection_name: Some("Lab".into()),
+                client_name: Some("Client".into()),
+                site_name: Some("Site".into()),
+                token_prefix: Some("atlas_arcscan_abcd".into()),
+                last_validated_at: None,
+            })
+            .unwrap();
+        state.secrets.store("portable-secret").unwrap();
+        assert!(!dir.join(METADATA_FILE).exists());
+        assert!(state.metadata.load().unwrap().is_some());
         let _ = fs::remove_dir_all(dir);
     }
 
