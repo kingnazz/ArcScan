@@ -40,6 +40,7 @@ import {
 import { mock } from "./mock";
 import { lookupPublicIp } from "./publicIp";
 import type { RuntimeInfo } from "./runtime";
+import type { ArcAtlasConnection, ArcAtlasHandoffEnvelope, ArcAtlasSendResult } from "./arcatlas";
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -375,6 +376,35 @@ export const api = {
       datedFilename("changes", scopeLabel, format),
       format,
     );
+  },
+
+  async getArcAtlasConnection(): Promise<ArcAtlasConnection> {
+    if (isTauri()) return invoke<ArcAtlasConnection>("get_arcatlas_connection");
+    return mock.getArcAtlasConnection();
+  },
+
+  async configureArcAtlasConnection(serverUrl: string, token: string): Promise<ArcAtlasConnection> {
+    if (isTauri()) {
+      return invoke<ArcAtlasConnection>("configure_arcatlas_connection", { serverUrl, token });
+    }
+    return mock.configureArcAtlasConnection(serverUrl, token);
+  },
+
+  async disconnectArcAtlasConnection(): Promise<ArcAtlasConnection> {
+    if (isTauri()) return invoke<ArcAtlasConnection>("disconnect_arcatlas_connection");
+    return mock.disconnectArcAtlasConnection();
+  },
+
+  async sendInventoryToArcAtlas(envelope: ArcAtlasHandoffEnvelope): Promise<ArcAtlasSendResult> {
+    if (isTauri()) {
+      return invoke<ArcAtlasSendResult>("send_inventory_to_arcatlas", { envelope });
+    }
+    return mock.sendInventoryToArcAtlas(envelope);
+  },
+
+  async openArcAtlas(url: string): Promise<void> {
+    if (isTauri()) return invoke<void>("open_arcatlas_url", { url });
+    window.open(url, "_blank", "noopener");
   },
 };
 

@@ -16,6 +16,7 @@ import { DeviceDrawer } from "./components/DeviceDrawer";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { ComparisonPanel } from "./components/ComparisonPanel";
 import { InventoryPanel, type BulkAction } from "./components/InventoryPanel";
+import { ArcAtlasDialog, type ArcAtlasDialogMode } from "./components/ArcAtlasDialog";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ScanStart } from "./components/ScanStart";
@@ -59,6 +60,20 @@ import {
 import type { ActionId } from "./lib/actions";
 import { type ChangeEvent, type ChangeFeed, type DeviceDetail, type DeviceStatus, type ExportFormat, type InventorySummary, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
 import { APP_VERSION } from "./version";
+import {
+  DISCONNECTED_CONNECTION,
+  HandoffAttempt,
+  buildHandoffEnvelope,
+  canSendSingleNetwork,
+  handoffRowsForNetwork,
+  nextModeOnSend,
+  parseArcAtlasError,
+  selectedNetworkName,
+  sendConfirmation,
+  type ArcAtlasConnection,
+  type ArcAtlasError,
+  type ArcAtlasSendResult,
+} from "./lib/arcatlas";
 
 /** Below this the drawer becomes an overlay rather than a second pane. */
 const OVERLAY_BREAKPOINT = 1100;
@@ -127,6 +142,13 @@ export default function App() {
   const [invSelection, setInvSelection] = useState<Set<number>>(() => new Set());
   const [invExportOpen, setInvExportOpen] = useState(false);
   const [highlightEventId, setHighlightEventId] = useState<number | null>(null);
+  const [arcAtlas, setArcAtlas] = useState<ArcAtlasConnection>(DISCONNECTED_CONNECTION);
+  const [arcAtlasOpen, setArcAtlasOpen] = useState(false);
+  const [arcAtlasMode, setArcAtlasMode] = useState<ArcAtlasDialogMode>("connect");
+  const [arcAtlasBusy, setArcAtlasBusy] = useState(false);
+  const [arcAtlasError, setArcAtlasError] = useState<ArcAtlasError | null>(null);
+  const [arcAtlasResult, setArcAtlasResult] = useState<ArcAtlasSendResult | null>(null);
+  const handoffAttempt = useRef(new HandoffAttempt());
 
   // --- Changes ------------------------------------------------------------
   const [changes, setChanges] = useState<ChangeFeed | null>(null);
@@ -322,6 +344,15 @@ export default function App() {
     [inventory, invFilter, invSortKey, invSortDir],
   );
   const inventoryNetworks = inventory?.networks ?? [];
+  const arcAtlasRows = useMemo(
+    () =>
+      handoffRowsForNetwork({
+        rows: inventory?.rows ?? [],
+        networkId: invFilter.networkId,
+        networkCount: inventoryNetworks.length,
+      }),
+    [inventory, invFilter.networkId, inventoryNetworks.length],
+  );
   // Computed from the unfiltered set, so choosing a type never removes the
   // other options from the menu that got you there.
   const inventoryDeviceTypes = useMemo(
@@ -543,6 +574,132 @@ export default function App() {
     },
     [inventoryRows, invSelection, invFilter.networkId, inventoryNetworks, toast, reportError],
   );
+
+  const canSendArcAtlas = canSendSingleNetwork({
+    networkId: invFilter.networkId,
+    networkCount: inventoryNetworks.length,
+    rows: inventory?.rows ?? [],
+  });
+  const sendNetworkName =
+    selectedNetworkName(arcAtlasRows, invFilter.networkId, inventoryNetworks) ??
+    arcAtlasRows[0]?.network_name ??
+    "Current network";
+  const sendToArcAtlasEnabled = !arcAtlas.configured || (arcAtlasRows.length > 0 && canSendArcAtlas);
+  const sendToArcAtlasTitle = !arcAtlas.configured
+    ? "Connect ArcAtlas"
+    : !canSendArcAtlas
+      ? "Choose one network before sending to ArcAtlas."
+      : "Send this network's inventory to ArcAtlas";
+
+  useEffect(() => {
+    api
+      .getArcAtlasConnection()
+      .then((connection) => {
+        setArcAtlas({
+          ...connection,
+          portableSessionOnly: connection.portableSessionOnly || runtime?.edition === "portable",
+        });
+      })
+      .catch(() => {
+        setArcAtlas({
+          ...DISCONNECTED_CONNECTION,
+          portableSessionOnly: runtime?.edition === "portable",
+        });
+      });
+  }, [runtime?.edition]);
+
+  const openArcAtlasManage = useCallback(() => {
+    setArcAtlasError(null);
+    setArcAtlasResult(null);
+    setArcAtlasMode(arcAtlas.configured && !arcAtlas.needsReconfigure ? "status" : "connect");
+    setArcAtlasOpen(true);
+  }, [arcAtlas]);
+
+  const openArcAtlasSend = useCallback(() => {
+    const next = nextModeOnSend(arcAtlas, canSendArcAtlas && arcAtlasRows.length > 0);
+    if (next === "choose-network") {
+      toast.info("Choose one network before sending to ArcAtlas.");
+      return;
+    }
+    setArcAtlasError(null);
+    setArcAtlasResult(null);
+    setArcAtlasMode(next);
+    setArcAtlasOpen(true);
+  }, [arcAtlas, canSendArcAtlas, arcAtlasRows.length, toast]);
+
+  const configureArcAtlas = useCallback(
+    async (serverUrl: string, token: string) => {
+      setArcAtlasBusy(true);
+      setArcAtlasError(null);
+      try {
+        const connection = await api.configureArcAtlasConnection(serverUrl, token);
+        setArcAtlas({
+          ...connection,
+          portableSessionOnly: connection.portableSessionOnly || runtime?.edition === "portable",
+        });
+        setArcAtlasMode("status");
+      } catch (error) {
+        const parsed = parseArcAtlasError(error);
+        setArcAtlasError(parsed);
+        if (parsed.code === "unauthorized") {
+          setArcAtlas((current) => ({ ...current, configured: false, needsReconfigure: true }));
+        }
+      } finally {
+        setArcAtlasBusy(false);
+      }
+    },
+    [runtime?.edition],
+  );
+
+  const disconnectArcAtlas = useCallback(async () => {
+    try {
+      const connection = await api.disconnectArcAtlasConnection();
+      setArcAtlas({
+        ...connection,
+        portableSessionOnly: connection.portableSessionOnly || runtime?.edition === "portable",
+      });
+      setArcAtlasMode("connect");
+      toast.info("Disconnected from ArcAtlas. The token was not revoked.");
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      reportError(message, technical);
+    }
+  }, [runtime?.edition, toast, reportError]);
+
+  const sendToArcAtlas = useCallback(async () => {
+    if (!canSendArcAtlas || arcAtlasRows.length === 0) return;
+    setArcAtlasBusy(true);
+    setArcAtlasError(null);
+    const handoffId = handoffAttempt.current.begin();
+    try {
+      const notes = await api.deviceNotes(
+        arcAtlasRows.filter((row) => row.notes_present).map((row) => row.device_id),
+      );
+      const envelope = buildHandoffEnvelope({
+        rows: arcAtlasRows,
+        notes,
+        networkName: sendNetworkName,
+        handoffId,
+      });
+      const result = await api.sendInventoryToArcAtlas(envelope);
+      handoffAttempt.current.succeed();
+      setArcAtlasResult(result);
+      setArcAtlasMode("success");
+    } catch (error) {
+      const parsed = parseArcAtlasError(error);
+      if (parsed.retryable) handoffAttempt.current.failRetryable();
+      else handoffAttempt.current.reset();
+      setArcAtlasError(parsed);
+      if (parsed.code === "unauthorized") {
+        setArcAtlas((current) => ({ ...current, configured: false, needsReconfigure: true }));
+        setArcAtlasMode("connect");
+      } else {
+        setArcAtlasMode("error");
+      }
+    } finally {
+      setArcAtlasBusy(false);
+    }
+  }, [canSendArcAtlas, arcAtlasRows, sendNetworkName]);
 
   const applyBulkStatus = useCallback(
     async (ids: number[], status: DeviceStatus, verb: string) => {
@@ -1105,6 +1262,11 @@ export default function App() {
               exportScopeLabel={inventoryExportScope}
               onStartScan={() => setView("results")}
               deviceTypes={inventoryDeviceTypes}
+              onSendToArcAtlas={openArcAtlasSend}
+              sendToArcAtlasEnabled={sendToArcAtlasEnabled}
+              sendToArcAtlasTitle={sendToArcAtlasTitle}
+              onManageArcAtlas={openArcAtlasManage}
+              arcAtlasConnected={arcAtlas.configured && !arcAtlas.needsReconfigure}
             />
           ) : view === "changes" ? (
             <ChangesPanel
@@ -1275,6 +1437,40 @@ export default function App() {
           onRenameScope={(id, name) => void renameScope(id, name)}
         />
       </div>
+
+      <ArcAtlasDialog
+        open={arcAtlasOpen}
+        mode={arcAtlasMode}
+        connection={arcAtlas}
+        confirmation={
+          arcAtlasMode === "confirm"
+            ? sendConfirmation({
+                connection: arcAtlas,
+                networkName: sendNetworkName,
+                deviceCount: arcAtlasRows.length,
+              })
+            : null
+        }
+        result={arcAtlasResult}
+        error={arcAtlasError}
+        busy={arcAtlasBusy}
+        onClose={() => setArcAtlasOpen(false)}
+        onConfigure={configureArcAtlas}
+        onDisconnect={disconnectArcAtlas}
+        onReconnect={() => {
+          setArcAtlasError(null);
+          setArcAtlasMode("connect");
+          setArcAtlasOpen(true);
+        }}
+        onSend={sendToArcAtlas}
+        onRetry={sendToArcAtlas}
+        onOpenInArcAtlas={(url) => {
+          void api.openArcAtlas(url).catch((error) => {
+            const { message, technical } = describeError(error);
+            reportError(message, technical);
+          });
+        }}
+      />
 
       <StatusBar
         mode={scan.mode}

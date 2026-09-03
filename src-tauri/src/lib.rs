@@ -1,3 +1,4 @@
+mod arcatlas;
 mod commands;
 mod db;
 mod discovery;
@@ -99,6 +100,7 @@ pub fn run() {
             })?;
             app.manage(database);
             app.manage(paths.clone());
+            app.manage(arcatlas::ArcAtlasState::new(&paths)?);
 
             // The window is built here rather than by Tauri's own config pass
             // (`app.windows[0].create` is false) for one reason: the portable
@@ -157,6 +159,11 @@ pub fn run() {
             commands::open_web,
             commands::open_rdp,
             commands::open_ssh,
+            arcatlas::configure_arcatlas_connection,
+            arcatlas::get_arcatlas_connection,
+            arcatlas::disconnect_arcatlas_connection,
+            arcatlas::send_inventory_to_arcatlas,
+            arcatlas::open_arcatlas_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ArcScan");

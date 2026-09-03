@@ -1575,6 +1575,19 @@ function publicIpScenario(): PublicIpScenario {
 /** Attempts so far, so `flaky` can fail the first lookup and pass the retry. */
 let publicIpAttempts = 0;
 
+let mockArcAtlas: import("./arcatlas").ArcAtlasConnection = {
+  configured: false,
+  serverUrl: null,
+  connectionName: null,
+  clientName: null,
+  siteName: null,
+  tokenPrefix: null,
+  lastValidatedAt: null,
+  portableSessionOnly: false,
+  needsReconfigure: false,
+};
+let mockArcAtlasToken: string | null = null;
+
 function abortableSleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -2185,6 +2198,76 @@ export const mock = {
   async publicIp(signal?: AbortSignal): Promise<string> {
     publicIpAttempts += 1;
     return lookupPublicIp(scriptedProviderFetch(publicIpScenario(), publicIpAttempts), signal);
+  },
+
+  getArcAtlasConnection(): import("./arcatlas").ArcAtlasConnection {
+    mockArcAtlas.portableSessionOnly = demoRuntimeInfo().edition === "portable";
+    return { ...mockArcAtlas };
+  },
+
+  async configureArcAtlasConnection(
+    serverUrl: string,
+    token: string,
+  ): Promise<import("./arcatlas").ArcAtlasConnection> {
+    if (!token.trim()) {
+      throw JSON.stringify({
+        code: "unauthorized",
+        message: "The ArcAtlas connection token is invalid or revoked.",
+      });
+    }
+    mockArcAtlasToken = token.trim();
+    mockArcAtlas = {
+      configured: true,
+      serverUrl: serverUrl.replace(/\/+$/, ""),
+      connectionName: "Onsite",
+      clientName: "Cedar Ridge Property Management",
+      siteName: "Seattle Headquarters",
+      tokenPrefix: "atlas_arcscan_abcd",
+      lastValidatedAt: new Date().toISOString(),
+      portableSessionOnly: demoRuntimeInfo().edition === "portable",
+      needsReconfigure: false,
+    };
+    return { ...mockArcAtlas };
+  },
+
+  disconnectArcAtlasConnection(): import("./arcatlas").ArcAtlasConnection {
+    mockArcAtlasToken = null;
+    mockArcAtlas = {
+      configured: false,
+      serverUrl: null,
+      connectionName: null,
+      clientName: null,
+      siteName: null,
+      tokenPrefix: null,
+      lastValidatedAt: null,
+      portableSessionOnly: demoRuntimeInfo().edition === "portable",
+      needsReconfigure: false,
+    };
+    return { ...mockArcAtlas };
+  },
+
+  async sendInventoryToArcAtlas(
+    envelope: import("./arcatlas").ArcAtlasHandoffEnvelope,
+  ): Promise<import("./arcatlas").ArcAtlasSendResult> {
+    if (!mockArcAtlas.configured || !mockArcAtlasToken) {
+      throw JSON.stringify({
+        code: "not_configured",
+        message: "Connect ArcAtlas before sending inventory.",
+      });
+    }
+    const inventory = Array.isArray(envelope.inventory) ? envelope.inventory : [];
+    return {
+      runId: envelope.handoffId,
+      recordCount: inventory.length,
+      presentCount: inventory.length,
+      missingCount: 0,
+      unknownCount: 0,
+      clientName: mockArcAtlas.clientName ?? "Cedar Ridge Property Management",
+      siteName: mockArcAtlas.siteName ?? "Seattle Headquarters",
+      discoveryUrl: `${mockArcAtlas.serverUrl}/discovery?run=${envelope.handoffId}`,
+      duplicate: false,
+      status: 201,
+    };
   },
 };
 
