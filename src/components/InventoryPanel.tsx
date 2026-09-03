@@ -76,6 +76,11 @@ export interface InventoryPanelProps {
   onStartScan: () => void;
   /** Device types present in the unfiltered set, for the type filter. */
   deviceTypes: string[];
+  onSendToArcAtlas: () => void;
+  sendToArcAtlasEnabled: boolean;
+  sendToArcAtlasTitle: string;
+  onManageArcAtlas: () => void;
+  arcAtlasConnected: boolean;
 }
 
 export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
@@ -253,6 +258,17 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
               </span>
             ) : null}
             <div className="relative">
+              <Button size="sm" onClick={props.onManageArcAtlas} title="ArcAtlas connection">
+                ArcAtlas
+              </Button>
+              <Button
+                size="sm"
+                disabled={!props.sendToArcAtlasEnabled}
+                onClick={props.onSendToArcAtlas}
+                title={props.sendToArcAtlasTitle}
+              >
+                Send to ArcAtlas
+              </Button>
               <Button
                 ref={exportButton}
                 size="sm"

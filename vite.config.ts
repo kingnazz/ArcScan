@@ -11,6 +11,7 @@ const host = process.env.TAURI_DEV_HOST;
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as {
   version: string;
 };
+const buildSha = (process.env.ARCSCAN_BUILD_SHA ?? "").trim().slice(0, 7);
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
@@ -18,6 +19,7 @@ export default defineConfig(async () => ({
 
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_SHA__: JSON.stringify(buildSha),
   },
 
   // Prevent Vite from obscuring Rust errors.

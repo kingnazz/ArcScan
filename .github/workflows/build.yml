@@ -16,6 +16,10 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    env:
+      # PR artifacts identify the actual feature HEAD rather than GitHub's
+      # synthetic pull-request merge commit. Main/tag builds use github.sha.
+      ARCSCAN_BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
