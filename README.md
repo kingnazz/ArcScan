@@ -21,8 +21,9 @@ Tauri 2 · React + TypeScript · Tailwind CSS · Rust (Tokio) · SQLite
 
 ArcScan discovers the devices on a network, records them in a local inventory,
 and reports what is different from the previous scan. It is a desktop
-application: everything runs on your own computer, there is no account, no cloud
-service and no subscription, and nothing it finds is uploaded anywhere.
+application: everything runs on your own computer, there is no ArcScan account or
+subscription, and scan data stays local unless you explicitly send one selected
+network inventory to a configured ArcAtlas server.
 
 It is deliberately **not** a vulnerability scanner, a penetration-testing tool or
 a monitoring platform. It performs read-only discovery and reports what is
@@ -101,12 +102,14 @@ checksums are published with every release.
 
 ## Network requests
 
-Scanning is entirely local. Scan results, the device inventory, your names and
-your notes are written to a SQLite file on your computer and are never sent
-anywhere.
+Scanning itself is entirely local. Scan results, the device inventory, your names
+and your notes are written to a SQLite file on your computer. Nothing is uploaded
+in the background. Version 1.8.5 adds one explicit exception: after you configure
+an ArcAtlas server, choose one network and confirm Send to ArcAtlas, that selected
+network inventory is sent to the configured server's Discovery inbox.
 
 Installed ArcScan can make one optional request on its own, and both editions
-offer one operator-triggered lookup:
+offer operator-triggered network actions:
 
 - **Installed update check**, on launch, against GitHub. It sends only the
   version being checked and is switchable off in Settings. Portable does not run
@@ -116,6 +119,10 @@ offer one operator-triggered lookup:
   the request, and keeps the answer in memory for the session only. It is never
   looked up at startup, after a scan, on a view change or on a timer, and it can
   be switched off entirely in Settings.
+- **ArcAtlas direct handoff**, which runs only after you configure an ArcAtlas
+  server, choose one network in Inventory, review the destination and device
+  count, and confirm **Send to ArcAtlas**. Installed stores the token in the OS
+  credential store; Portable keeps it in process memory only.
 
 There is no telemetry, no analytics and no account. The
 [privacy page](https://kingnazz.github.io/ArcScan/privacy.html) states all of
