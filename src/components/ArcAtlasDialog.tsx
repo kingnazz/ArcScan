@@ -12,6 +12,31 @@ import {
   successCounts,
 } from "../lib/arcatlas";
 
+const ARCATLAS_DISCOVERY_PATH = "/api/discovery/arcscan";
+
+/**
+ * Accept the machine endpoint technicians often copy from documentation and
+ * reduce it to the server URL ArcScan stores. Rust still validates the final
+ * URL and owns every network request.
+ */
+export function normalizeArcAtlasServerInput(raw: string): string {
+  const trimmed = raw.trim();
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    if (path === ARCATLAS_DISCOVERY_PATH) {
+      parsed.pathname = "/";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    // Preserve invalid input so the Rust URL validator can return the normal
+    // ArcAtlas validation error rather than inventing a second validation path.
+  }
+  return trimmed;
+}
+
 export type ArcAtlasDialogMode = "connect" | "status" | "confirm" | "success" | "error";
 
 export interface ArcAtlasDialogProps {
@@ -53,7 +78,9 @@ export function ArcAtlasDialog(props: ArcAtlasDialogProps) {
             onSubmit={(event) => {
               event.preventDefault();
               void (async () => {
-                await props.onConfigure(serverUrl, token);
+                const normalizedServerUrl = normalizeArcAtlasServerInput(serverUrl);
+                setServerUrl(normalizedServerUrl);
+                await props.onConfigure(normalizedServerUrl, token);
                 setToken("");
               })();
             }}
