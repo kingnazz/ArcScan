@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>What's new in ArcScan 1.8.5</title>
+    <meta name="description" content="ArcScan 1.8.5 adds an explicit direct handoff from Inventory to an ArcAtlas Discovery inbox, secure connection-token storage, safer URL setup and visible build identity." />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.5.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+    <link rel="stylesheet" href="arcscan.v5.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./"><img src="assets/logo.png" width="24" height="24" alt="" /><span>ArcScan</span></a>
+        <nav aria-label="Primary"><ul class="nav-links"><li><a href="./#features">Features</a></li><li><a href="./#download">Download</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li></ul></nav>
+      </div>
+    </header>
+    <main id="main" class="section">
+      <div class="wrap prose">
+        <p class="eyebrow">ArcScan 1.8.5</p>
+        <h1 class="page-title">Observed inventory, straight into ArcAtlas.</h1>
+        <p class="lede">
+          1.8.5 adds a direct, technician-controlled handoff from ArcScan Inventory to an ArcAtlas
+          Discovery inbox. It removes the export-and-upload step without turning ArcScan into a
+          background agent or changing what Discovery is allowed to do.
+        </p>
+
+        <h2>Send one network directly from Inventory</h2>
+        <p>
+          Connect ArcScan to a site-scoped ArcAtlas token, choose one network, review the destination
+          and device count, and confirm <strong>Send to ArcAtlas</strong>. ArcScan sends the same row
+          shape its existing Inventory JSON export already produces. Search text, presence filters,
+          device-type filters and sorting do not silently remove devices from the handoff snapshot.
+        </p>
+        <p>
+          Nothing is sent when a scan completes. ArcAtlas receives observed evidence in Discovery;
+          it does not silently create or overwrite documented devices.
+        </p>
+
+        <h2>Connection secrets stay in the right place</h2>
+        <p>
+          Installed ArcScan keeps the connection token in the operating system credential store.
+          Portable keeps it in memory for the current process only. After setup, the full token is
+          never returned to the interface, written to the ArcScan database, placed in a URL or
+          included in diagnostics.
+        </p>
+        <p>
+          ArcScan accepts HTTPS servers, with plain HTTP limited to local development on loopback.
+          Redirects are refused for bearer-token requests.
+        </p>
+
+        <h2>Retries do not create accidental duplicate runs</h2>
+        <p>
+          If a request times out or has an uncertain network failure, Retry reuses the same handoff
+          identifier so ArcAtlas can return the already-created run. After a confirmed success, the
+          next deliberate send receives a new identifier and creates a new historical Discovery run.
+        </p>
+
+        <h2>Small setup improvements</h2>
+        <p>
+          If you paste the full ArcAtlas machine endpoint, ArcScan now normalizes it back to the
+          server URL before validation. The main header also shows the application version, and CI
+          test builds can include the short source commit so it is obvious which binary is running.
+        </p>
+
+        <div class="notice">
+          <div>
+            <h3>The local-first boundary is explicit</h3>
+            <p>
+              ArcScan still has no account, telemetry or automatic scan-data upload. The ArcAtlas
+              handoff is an optional outbound action that occurs only after a technician configures
+              a server and confirms a send. The <a href="privacy.html">privacy page</a> documents the
+              exact boundary.
+            </p>
+          </div>
+        </div>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="./#download">Download ArcScan</a>
+          <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Release history</a>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><div class="wrap"><p class="footer-note">ArcScan is free and open source under the MIT license. Scan only networks you own or are authorised to inspect.</p></div></footer>
+  </body>
+</html>

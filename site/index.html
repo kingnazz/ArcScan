@@ -109,7 +109,7 @@
             "name": "Does ArcScan upload my network data?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Scan results, the device inventory, your names and your notes stay on your computer and are never sent anywhere. Installed ArcScan can make an optional update check against GitHub, which sends only the version being checked and can be switched off. Both editions offer a public IP lookup that only runs when you press the button. Portable updates are manual."
+              "text": "By default, scan results, the device inventory, your names and your notes stay on your computer. If you explicitly connect ArcScan to an ArcAtlas server and confirm Send to ArcAtlas, the selected network inventory is sent to that server's Discovery inbox. Nothing is sent automatically after a scan. Installed ArcScan can make an optional update check against GitHub, and both editions offer a public IP lookup that only runs when you press the button. Portable updates are manual."
             }
           },
           {
@@ -319,8 +319,8 @@
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.4.html"
-              >What changed in 1.8.4</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.5.html"
+              >What changed in 1.8.5</a
             >
           </p>
 
@@ -509,7 +509,8 @@
               </h3>
               <p>
                 The inventory, the changes, your device names and your notes live in a SQLite file
-                on your own computer. Nothing is uploaded, and there is no account to create.
+                on your own computer. They stay local unless you explicitly send a selected network
+                inventory to a configured ArcAtlas server. There is no ArcScan account to create.
               </p>
             </article>
 
@@ -659,9 +660,10 @@
             <div>
               <h3>What ArcScan never does</h3>
               <p>
-                No password is ever attempted. No exploit is ever sent. No scan result, device name
-                or note leaves your computer. There is no stealth or evasion behaviour, because
-                ArcScan is a network administration tool and nothing else.
+                No password is ever attempted. No exploit is ever sent. ArcScan never uploads scan
+                data in the background. A selected network inventory leaves your computer only when
+                you explicitly confirm <strong>Send to ArcAtlas</strong> for a configured server.
+                There is no stealth or evasion behaviour.
               </p>
               <p>
                 Only scan networks you own or have been authorised to inspect. Scanning someone
@@ -794,75 +796,48 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.4 -->
-      <!--
-        Sits directly above the downloads, so what changed is in front of the
-        person about to install it. Divided columns rather than another card
-        grid: the benefits section above already uses cards, and repeating them
-        here would give the release the same weight as the product itself.
-      -->
+      <!-- ====================================================== new in 1.8.5 -->
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.4</p>
-            <h2>A fresh field session, wherever you need it.</h2>
+            <p class="eyebrow">New in 1.8.5</p>
+            <h2>Send observed inventory straight to ArcAtlas.</h2>
             <p>
-              1.8.4 adds disposable Windows Portable ZIPs for x64 and ARM64. Extract one, launch
-              without installing, scan and investigate with the normal ArcScan tools, export
-              anything you want to keep, then close it. The next Portable launch starts fresh.
-              Everything the scanner does is unchanged.
-              <a href="whats-new-1.8.4.html">What&rsquo;s new in 1.8.4</a>
+              ArcScan can now hand one selected network directly to an ArcAtlas Discovery inbox.
+              The send is always explicit, reuses ArcScan's existing Inventory JSON shape, and never
+              creates or edits documented devices on its own.
+              <a href="whats-new-1.8.5.html">What&rsquo;s new in 1.8.5</a>
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>One private temporary session</h3>
+              <h3>One network, one deliberate send</h3>
               <p>
-                Every Portable process gets a unique SQLite database and WebView profile under the
-                system temporary directory. Inventory, Changes, History, discovery, device details
-                and preferences work for the session, then ArcScan safely removes the state it owns.
+                Choose a network in Inventory, review the destination and device count, then confirm
+                Send to ArcAtlas. Search, presence and device-type filters never silently shrink the
+                snapshot, and nothing is sent when a scan merely finishes.
               </p>
             </article>
 
             <article>
-              <h3>Export what should survive</h3>
+              <h3>Secrets stay out of the interface</h3>
               <p>
-                CSV, JSON and XML exports are the intentional persistence mechanism. Save them
-                outside the temporary session and they remain after ArcScan closes. Inventory,
-                History, Changes, names, notes, discovery evidence and preferences otherwise start
-                empty next time.
+                Installed ArcScan stores the connection token in the operating system credential
+                store. Portable keeps it in process memory for the current session only. The token
+                is never returned to the interface after setup and is never placed in a URL.
               </p>
             </article>
 
             <article>
-              <h3>Independent, concurrent and safe</h3>
+              <h3>Clearer build identity</h3>
               <p>
-                Two Portable processes receive separate sessions and can run together, even from
-                the same extracted folder. Installed ArcScan remains fully separate. Cleanup requires
-                validated ArcScan ownership, and Portable never falls back to Installed AppData or
-                writes a data folder beside the executable.
+                The main header now shows the ArcScan version, and CI test builds can include the
+                short source commit. Pasting the full ArcAtlas machine endpoint is also normalized
+                automatically to the server URL before connection validation.
               </p>
             </article>
           </div>
-
-          <figure class="frame frame-sm">
-            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-            <img
-              src="assets/shots/settings-portable-dark.webp"
-              srcset="assets/shots/settings-portable-dark-800.webp 800w, assets/shots/settings-portable-dark.webp 1440w"
-              sizes="(max-width: 820px) 100vw, 44rem"
-              width="1440"
-              height="900"
-              alt="The ArcScan Settings panel. About identifies Portable edition, Windows x64. Session storage reads Temporary, followed by a reminder that this launch starts fresh and to export CSV, JSON or XML before closing. The update note says to finish the session, close ArcScan, then download the latest Portable ZIP."
-              loading="lazy"
-              decoding="async"
-            />
-            <figcaption>
-              Portable Settings makes the temporary lifetime and export boundary explicit without
-              exposing the internal session path as a place to save files.
-            </figcaption>
-          </figure>
         </div>
       </section>
 
@@ -1104,8 +1079,11 @@
             <details>
               <summary>Does ArcScan upload my network data?</summary>
               <p>
-                No. Scan results, the device inventory, your names and your notes are stored in a
-                SQLite database on your own computer and are never sent anywhere.
+                By default, scan results, the device inventory, your names and your notes are stored
+                in a SQLite database on your own computer. If you explicitly connect ArcScan to an
+                ArcAtlas server and confirm <strong>Send to ArcAtlas</strong>, the selected network
+                inventory is sent to that server's Discovery inbox. Nothing is sent automatically
+                after a scan.
               </p>
               <p>
                 Installed ArcScan can make an optional update check against GitHub, which sends only
