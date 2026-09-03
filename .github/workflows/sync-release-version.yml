@@ -20,15 +20,17 @@ jobs:
           node-version: 20
       - name: Apply package version everywhere
         run: node scripts/sync-version.mjs
-      - name: Commit generated version copies
+      - name: Apply v1.8.5 website and privacy copy
+        run: node scripts/release-1.8.5-site.mjs
+      - name: Commit generated release files
         shell: bash
         run: |
           if git diff --quiet; then
-            echo "Version copies are already synchronized."
+            echo "Release files are already synchronized."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/updater.conf.json site/index.html site/privacy.html
-          git commit -m "chore: sync v1.8.5 release version"
+          git add src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/updater.conf.json site/index.html site/privacy.html site/whats-new-1.8.5.html
+          git commit -m "chore: prepare v1.8.5 release site"
           git push origin HEAD:release/v1.8.5
