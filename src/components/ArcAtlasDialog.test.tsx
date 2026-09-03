@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ArcAtlasDialog } from "./ArcAtlasDialog";
+import { ArcAtlasDialog, normalizeArcAtlasServerInput } from "./ArcAtlasDialog";
 import { DISCONNECTED_CONNECTION, PORTABLE_SESSION_COPY, type ArcAtlasConnection, type ArcAtlasSendResult } from "../lib/arcatlas";
 
 afterEach(() => {
@@ -56,6 +56,31 @@ describe("ArcAtlas dialog", () => {
     await waitFor(() => {
       expect(onConfigure).toHaveBeenCalledWith("https://atlas.example.com", "atlas_arcscan_supersecret");
       expect((screen.getByLabelText("Connection token") as HTMLInputElement).value).toBe("");
+    });
+  });
+
+  it("normalizes the copied ArcAtlas machine endpoint to its server URL", async () => {
+    expect(normalizeArcAtlasServerInput("https://atlas.example.com/api/discovery/arcscan")).toBe(
+      "https://atlas.example.com",
+    );
+    expect(normalizeArcAtlasServerInput("https://atlas.example.com/api/discovery/arcscan/?copied=1#test")).toBe(
+      "https://atlas.example.com",
+    );
+
+    const onConfigure = vi.fn(async () => undefined);
+    render(<ArcAtlasDialog {...noop} open mode="connect" connection={DISCONNECTED_CONNECTION} onConfigure={onConfigure} />);
+    fireEvent.change(screen.getByLabelText("ArcAtlas server URL"), {
+      target: { value: "https://atlas.example.com/api/discovery/arcscan" },
+    });
+    fireEvent.change(screen.getByLabelText("Connection token"), {
+      target: { value: "atlas_arcscan_supersecret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => {
+      expect(onConfigure).toHaveBeenCalledWith("https://atlas.example.com", "atlas_arcscan_supersecret");
+      expect((screen.getByLabelText("ArcAtlas server URL") as HTMLInputElement).value).toBe(
+        "https://atlas.example.com",
+      );
     });
   });
 
