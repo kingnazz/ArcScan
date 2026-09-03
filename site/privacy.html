@@ -65,9 +65,11 @@
 
         <h2>The short version</h2>
         <p>
-          Your scan results, device inventory, names and notes never leave your computer. The
-          Installed edition can make an optional update check. Both editions offer a public IP
-          lookup that only runs when you press <strong>Check</strong>. Portable updates are manual.
+          Your scan results, device inventory, names and notes stay on your computer by default.
+          If you explicitly connect ArcScan to an ArcAtlas server and confirm a send, the selected
+          network inventory is sent to that server's Discovery inbox. Nothing is sent automatically
+          after a scan. The Installed edition can make an optional update check. Both editions offer
+          a public IP lookup that only runs when you press <strong>Check</strong>.
         </p>
 
         <h2>What stays on your computer</h2>
@@ -75,7 +77,8 @@
           Everything ArcScan discovers is written to a local SQLite database. Installed ArcScan
           keeps that database in the operating system's application-data directory. Portable uses
           a fresh private database for the current process and removes it during safe session
-          cleanup. Nothing in either database is transmitted anywhere.
+          cleanup. Database contents are not transmitted in the background. The explicit ArcAtlas
+          handoff described below is the only feature that sends selected inventory data to a server.
         </p>
         <ul>
           <li>Scan results: addresses, hostnames, MAC addresses, manufacturers and open services.</li>
@@ -121,6 +124,29 @@
         </p>
 
         <h2>Requests the application makes</h2>
+
+        <h3>ArcAtlas direct handoff</h3>
+        <p>
+          Version 1.8.5 adds an optional direct handoff to ArcAtlas. ArcScan never sends inventory
+          merely because a scan completed. A technician must first configure an ArcAtlas server and
+          connection token, choose one network in Inventory, review the destination and device count,
+          and press <strong>Send to ArcAtlas</strong>.
+        </p>
+        <p>
+          That explicit action sends the selected network's existing Inventory JSON fields over
+          HTTPS to <code>/api/discovery/arcscan</code> on the server you configured. The ArcAtlas
+          server therefore receives the inventory data in that handoff and ordinary HTTPS request
+          metadata such as your public IP address. ArcScan does not contact an ArcAtlas server in the
+          background, on a timer, or after a scan without that confirmation.
+        </p>
+        <p>
+          Installed ArcScan stores the ArcAtlas connection token in the operating system credential
+          store and keeps only non-secret destination metadata in its application-data directory.
+          Portable stores both the token and connection metadata in process memory only, so they
+          disappear when the Portable process exits. The full token is never returned to the webview
+          after setup, never logged, and never placed in a URL. Disconnecting locally removes the
+          local secret but does not revoke the token on the ArcAtlas server.
+        </p>
 
         <h3>Update check</h3>
         <p>
@@ -237,7 +263,7 @@
         <ul>
           <li>No telemetry, usage statistics, crash reports or feature analytics.</li>
           <li>No account, email address, licence key or device identifier.</li>
-          <li>No upload of scan results, device names, notes, MAC addresses or hostnames.</li>
+          <li>No background or automatic upload of scan results. ArcAtlas inventory is sent only after an explicit technician-confirmed handoff.</li>
           <li>No advertising identifiers, and no third-party SDK of any kind.</li>
         </ul>
 
