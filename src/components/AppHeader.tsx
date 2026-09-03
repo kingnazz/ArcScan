@@ -12,6 +12,7 @@
 import { DownloadCloud, Moon, Settings, Sun } from "lucide-react";
 import { IconButton } from "../ui/primitives";
 import type { ResolvedTheme } from "../hooks/useTheme";
+import { APP_BUILD_LABEL } from "../version";
 
 export type View = "results" | "inventory" | "changes" | "history";
 
@@ -94,6 +95,14 @@ export function AppHeader({
 
       {/* The flexible gap is the drag handle. */}
       <div className="min-w-0 flex-1" data-tauri-drag-region />
+
+      <span
+        className="mr-1 shrink-0 font-mono text-[11px] font-medium tabular-nums text-text-muted"
+        title="ArcScan version and build"
+        aria-label={`ArcScan ${APP_BUILD_LABEL}`}
+      >
+        {APP_BUILD_LABEL}
+      </span>
 
       <div className="flex shrink-0 items-center gap-0.5">
         <IconButton label={updateActionLabel} onClick={onCheckUpdates} size="sm">
