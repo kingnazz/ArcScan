@@ -1,0 +1,34 @@
+name: Sync Release Version
+
+on:
+  push:
+    branches: ["release/v1.8.5"]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v1.8.5
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply package version everywhere
+        run: node scripts/sync-version.mjs
+      - name: Commit generated version copies
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Version copies are already synchronized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/updater.conf.json site/index.html site/privacy.html
+          git commit -m "chore: sync v1.8.5 release version"
+          git push origin HEAD:release/v1.8.5
