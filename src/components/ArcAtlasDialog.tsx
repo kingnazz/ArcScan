@@ -51,6 +51,7 @@ export interface ArcAtlasDialogProps {
   onConfigure: (serverUrl: string, token: string) => Promise<void> | void;
   onDisconnect: () => Promise<void> | void;
   onReconnect: () => void;
+  onManageConnection?: () => void;
   onSend: () => Promise<void> | void;
   onRetry: () => Promise<void> | void;
   onOpenInArcAtlas: (url: string) => void;
@@ -193,6 +194,11 @@ export function ArcAtlasDialog(props: ArcAtlasDialogProps) {
             </dl>
             <p className="mt-3 text-[13px] leading-relaxed text-text-secondary">{props.confirmation.explanation}</p>
             <div className="mt-4 flex justify-end gap-2">
+              {props.onManageConnection ? (
+                <Button type="button" onClick={props.onManageConnection}>
+                  Connection
+                </Button>
+              ) : null}
               <Button type="button" onClick={props.onClose}>
                 Cancel
               </Button>
