@@ -1,9 +1,9 @@
 name: Publish Release
 
-# Manually publish a SIGNED release with installers + the auto-updater manifest
-# (latest.json) for all platforms. Actions tab -> "Publish Release" -> Run
-# workflow. The version/tag is read automatically from package.json, so it
-# always matches the built app — just bump the version, commit, and run.
+# Publish a SIGNED release with installers + the auto-updater manifest
+# (latest.json) for all platforms. A package.json version bump on main publishes
+# automatically; workflow_dispatch remains available for recovery. The version/tag
+# is read automatically from package.json, so it always matches the built app.
 #
 # This repo is public, so the in-app updater reads this repo's own Releases
 # feed directly — no separate repo or PAT needed. See docs/AUTO_UPDATE.md.
@@ -14,6 +14,11 @@ name: Publish Release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
 
 concurrency:
   group: release-${{ github.ref }}
