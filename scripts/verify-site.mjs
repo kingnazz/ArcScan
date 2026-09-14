@@ -1307,7 +1307,7 @@ await step("the mobile menu works on the What's New page", async () => {
 await step("the home page and the current What's New page reach each other", async () => {
   const currentWhatsNew = "/whats-new-1.8.5.html";
   await page.goto(`${BASE}${currentWhatsNew}`, { waitUntil: "networkidle" });
-  await page.locator('.hero a[href="./"]').first().click();
+  await page.locator('.brand[href="./"]').first().click();
   await page.waitForLoadState("networkidle");
   if (!/See every device/.test(await page.locator("h1").innerText())) {
     throw new Error("the back link did not reach the home page");
@@ -1340,8 +1340,8 @@ await step("axe-core finds no violations on any page", async () => {
     { label: "home desktop", path: "/", width: 1440, height: 900 },
     { label: "home mobile", path: "/", width: 390, height: 844 },
     { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
-    { label: "whats-new 1.8.4 desktop", path: "/whats-new-1.8.4.html", width: 1440, height: 900 },
-    { label: "whats-new 1.8.4 mobile", path: "/whats-new-1.8.4.html", width: 390, height: 844 },
+    { label: "whats-new 1.8.5 desktop", path: "/whats-new-1.8.5.html", width: 1440, height: 900 },
+    { label: "whats-new 1.8.5 mobile", path: "/whats-new-1.8.5.html", width: 390, height: 844 },
     // The previous release's page stays published, so it stays checked.
     { label: "whats-new 1.8.3", path: "/whats-new-1.8.3.html", width: 1440, height: 900 },
   ];
