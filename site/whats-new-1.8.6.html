@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>What's new in ArcScan 1.8.6</title>
+    <meta name="description" content="ArcScan 1.8.6 fixes macOS local-network discovery dropping most devices after a scan and simplifies the ArcAtlas Inventory controls." />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.6.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+    <link rel="stylesheet" href="arcscan.v5.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./"><img src="assets/logo.png" width="24" height="24" alt="" /><span>ArcScan</span></a>
+        <nav aria-label="Primary"><ul class="nav-links"><li><a href="./#features">Features</a></li><li><a href="./#download">Download</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li></ul></nav>
+      </div>
+    </header>
+    <main id="main" class="section">
+      <div class="wrap prose">
+        <p class="eyebrow">ArcScan 1.8.6</p>
+        <h1 class="page-title">macOS LAN scans keep the devices they actually find.</h1>
+        <p class="lede">
+          1.8.6 is a focused reliability release for local scanning on macOS, plus a small ArcAtlas
+          interface cleanup. The important change is underneath the table: ArcScan no longer lets
+          macOS hostname lookups consume the short neighbor-discovery time budget.
+        </p>
+
+        <h2>Numeric ARP discovery on macOS</h2>
+        <p>
+          ArcScan now reads the macOS/BSD neighbor table with <code>arp -n -a</code>. The numeric flag
+          prevents the operating system from trying to reverse-resolve every address before ArcScan
+          can parse the table. On a populated local network, those lookups could previously run past
+          ArcScan's ARP-read timeout and make the final scan look like only a handful of devices existed.
+        </p>
+
+        <h2>Numeric ICMP probes too</h2>
+        <p>
+          macOS ping probes now stay numeric, use the platform's per-reply timeout, and stop after the
+          first valid response. That keeps hostname resolution out of the liveness path and makes the
+          scan deadline describe network response time rather than DNS behavior.
+        </p>
+
+        <h2>The 1.8.5 liveness protections remain</h2>
+        <p>
+          A host that positively answers ICMP or TCP is still retained even if its neighbor-cache entry
+          disappears before enrichment finishes. Legitimate ARP-only devices are still discoverable,
+          while proxy-ARP responses from routers or access points are still filtered rather than turning
+          the whole subnet into false positives.
+        </p>
+
+        <h2>A cleaner ArcAtlas handoff</h2>
+        <p>
+          Inventory no longer places a separate <strong>ArcAtlas</strong> button immediately beside
+          <strong>Send to ArcAtlas</strong>. The send action is now the one clear ArcAtlas control in the
+          toolbar, with connection management available from the send flow when it is needed.
+        </p>
+
+        <div class="notice">
+          <div>
+            <h3>What this release is meant to fix</h3>
+            <p>
+              If Inventory remembered many devices but a fresh macOS local scan finished with only a few
+              rows, 1.8.6 targets that exact failure mode. The inventory remains historical; the scan view
+              still shows only devices evidenced by that scan, but local ARP discovery should no longer
+              disappear because of reverse-DNS stalls.
+            </p>
+          </div>
+        </div>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="./#download">Download ArcScan</a>
+          <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Release history</a>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><div class="wrap"><p class="footer-note">ArcScan is free and open source under the MIT license. Scan only networks you own or are authorised to inspect.</p></div></footer>
+  </body>
+</html>
