@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ArcScan site build: v1.8.4 -->
+<!-- ArcScan site build: v1.8.6 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -72,7 +72,7 @@
         "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps an inventory and lists the changes found in later scans. The Installed edition retains its inventory; Windows Portable uses a disposable session with explicit exports.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
-        "softwareVersion": "1.8.5",
+        "softwareVersion": "1.8.6",
         "license": "https://github.com/kingnazz/ArcScan/blob/main/LICENSE",
         "isAccessibleForFree": true,
         "screenshot": "https://kingnazz.github.io/ArcScan/assets/shots/inventory-dark.png",
@@ -312,15 +312,15 @@
           </div>
 
           <p class="release-line">
-            <span id="version-fallback">v1.8.5</span><span id="release-meta"></span>
+            <span id="version-fallback">v1.8.6</span><span id="release-meta"></span>
             <!--
               A local page rather than the GitHub release, so the first thing a
               curious visitor reads is written for them. The technical notes are
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.5.html"
-              >What changed in 1.8.5</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.6.html"
+              >What changed in 1.8.6</a
             >
           </p>
 
@@ -796,45 +796,42 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.5 -->
+      <!-- ====================================================== new in 1.8.6 -->
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.5</p>
-            <h2>Send observed inventory straight to ArcAtlas.</h2>
+            <p class="eyebrow">New in 1.8.6</p>
+            <h2>More reliable local discovery on macOS.</h2>
             <p>
-              ArcScan can now hand one selected network directly to an ArcAtlas Discovery inbox.
-              The send is always explicit, reuses ArcScan's existing Inventory JSON shape, and never
-              creates or edits documented devices on its own.
-              <a href="whats-new-1.8.5.html">What&rsquo;s new in 1.8.5</a>
+              ArcScan now keeps macOS ARP and ICMP discovery numeric so reverse-DNS lookups cannot
+              consume the scanner's short liveness timeouts on a populated LAN. This targets the
+              failure mode where Inventory remembers many devices but a fresh scan ends with only a few.
+              <a href="whats-new-1.8.6.html">What&rsquo;s new in 1.8.6</a>
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>One network, one deliberate send</h3>
+              <h3>ARP without reverse-DNS stalls</h3>
               <p>
-                Choose a network in Inventory, review the destination and device count, then confirm
-                Send to ArcAtlas. Search, presence and device-type filters never silently shrink the
-                snapshot, and nothing is sent when a scan merely finishes.
+                macOS neighbor-table reads now use numeric <code>arp -n -a</code> output. Hostname
+                lookups can no longer burn through the ARP-read budget and discard the local device table.
               </p>
             </article>
 
             <article>
-              <h3>Secrets stay out of the interface</h3>
+              <h3>Numeric ICMP probes</h3>
               <p>
-                Installed ArcScan stores the connection token in the operating system credential
-                store. Portable keeps it in process memory for the current session only. The token
-                is never returned to the interface after setup and is never placed in a URL.
+                macOS ping stays numeric, uses the platform's per-reply timeout, and exits after the
+                first valid response. Positive ICMP/TCP evidence and proxy-ARP protection remain intact.
               </p>
             </article>
 
             <article>
-              <h3>More reliable macOS discovery</h3>
+              <h3>One clear ArcAtlas action</h3>
               <p>
-                Devices that answer ICMP or TCP no longer disappear at finalization just because
-                macOS dropped the matching ARP cache entry. Proxy-ARP false-positive protection and
-                quiet-device ARP discovery remain intact.
+                Inventory now shows Send to ArcAtlas as the single ArcAtlas toolbar action. The redundant
+                neighboring ArcAtlas button is gone, while connection management remains in the send flow.
               </p>
             </article>
           </div>
@@ -862,7 +859,7 @@
                 <dt>Architecture</dt>
                 <dd>x64 (Intel or AMD)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.5</dd>
+                <dd data-field="version">1.8.6</dd>
               </dl>
 
               <div class="dl-option">
@@ -905,7 +902,7 @@
                 <dt>Architecture</dt>
                 <dd>ARM64</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.5</dd>
+                <dd data-field="version">1.8.6</dd>
               </dl>
 
               <div class="dl-option">
@@ -948,7 +945,7 @@
                 <dt>Architecture</dt>
                 <dd>Universal (Apple Silicon and Intel)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.5</dd>
+                <dd data-field="version">1.8.6</dd>
               </dl>
 
               <div class="dl-option">

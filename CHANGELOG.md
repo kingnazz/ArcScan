@@ -3,6 +3,27 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] - 2026-09-14
+
+A focused macOS LAN-discovery reliability and ArcAtlas UI polish release. Full notes:
+[docs/RELEASE-NOTES-1.8.6.md](docs/RELEASE-NOTES-1.8.6.md).
+
+### Fixed
+
+- **macOS ARP discovery no longer stalls on reverse DNS.** Local neighbor-table reads now use
+  numeric output with `arp -n -a`, preventing hostname resolution across a populated subnet
+  from consuming ArcScan's ARP-read timeout and leaving only a handful of direct responders.
+- **macOS ICMP probes stay numeric and use the platform reply timeout.** Ping now avoids name
+  lookups, waits only for the configured reply window, and exits after the first valid response.
+- The 1.8.5 positive ICMP/TCP retention, quiet-device ARP discovery and proxy-ARP filtering
+  remain in place.
+
+### Improved
+
+- **Simplified ArcAtlas controls.** Inventory now presents **Send to ArcAtlas** as the single
+  toolbar action instead of placing a redundant **ArcAtlas** button beside it. Connection
+  management remains available from the send flow.
+
 ## [1.8.5] - 2026-09-14
 
 ArcAtlas handoff plus a macOS discovery reliability fix. ArcScan can explicitly
