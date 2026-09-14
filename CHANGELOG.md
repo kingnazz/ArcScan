@@ -3,7 +3,48 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.4] - unreleased
+## [1.8.5] - 2026-09-14
+
+ArcAtlas handoff plus a macOS discovery reliability fix. ArcScan can explicitly
+send one selected network inventory to an ArcAtlas Discovery inbox, and responsive
+macOS hosts no longer disappear during finalization when neighbor-cache enrichment
+is missing. Full notes:
+[docs/RELEASE-NOTES-1.8.5.md](docs/RELEASE-NOTES-1.8.5.md).
+
+### Added
+
+- **Explicit ArcAtlas handoff from Inventory.** Configure a server and site-scoped
+  token, choose one network, review the destination and device count, then confirm
+  **Send to ArcAtlas**. Nothing is sent automatically when a scan completes.
+- **Secure ArcAtlas token handling.** Installed ArcScan stores the token in the OS
+  credential store; Portable keeps it in process memory for the current session.
+  The token is not returned to the UI after setup, logged, or placed in a URL.
+- **Idempotent retry behavior** so uncertain network failures can be retried without
+  accidentally creating duplicate Discovery runs.
+- **Visible build identity and safer ArcAtlas URL setup.** The app exposes its
+  version/build identity and normalizes a pasted machine endpoint back to the
+  server URL before validation.
+
+### Fixed
+
+- **macOS devices no longer appear live and then disappear at the end of a scan**
+  when their ARP/neighbor-cache entry is missing during final enrichment. A positive
+  ICMP or TCP response remains authoritative evidence that the host is alive.
+- **Proxy-ARP filtering remains strict.** If an ARP entry is present but its MAC is
+  classified as a proxy responder, the apparent host is still rejected.
+- **Quiet local devices remain discoverable through a legitimate ARP/MAC entry**
+  even when they ignore active ICMP/TCP probes.
+- Added regression coverage for all three liveness cases so live results and saved
+  history cannot drift apart again.
+
+### Website and privacy
+
+- Updated the first-party **What's new in 1.8.5** page and homepage release summary
+  to cover both ArcAtlas handoff and the macOS reliability fix.
+- Expanded the privacy copy to document exactly when ArcAtlas receives inventory,
+  what is sent, and how Installed versus Portable stores the connection secret.
+
+## [1.8.4] - 2026-08-27
 
 A disposable Windows Portable edition, for x64 and for ARM64. Extract the ZIP,
 run a complete ArcScan session without installing, export anything that should

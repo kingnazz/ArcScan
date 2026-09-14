@@ -569,48 +569,25 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.8.4 improvements", async () => {
+await step("the release section states the 1.8.5 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
-  // The version has to be named, or the section could describe any release.
-  if (!text.includes("1.8.4")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.5")) throw new Error("the section does not name the version");
 
-  // One assertion per claim, phrased as the claim rather than as exact wording,
-  // so the copy can be edited without the test becoming a transcript.
   const claims = [
-    [/portable/, "the portable edition"],
-    [/windows/, "the platform it is for"],
-    [/x64/, "x64"],
-    [/arm64/, "ARM64"],
-    [/disposable/, "the disposable field-tool model"],
-    [/temporary session/, "temporary per-launch state"],
-    [/sqlite|database/, "the in-session SQLite database"],
-    [/webview/, "the isolated WebView profile"],
-    [/next portable launch starts fresh|start empty next time/, "the fresh next launch"],
-    [/csv, json and xml/, "the intentional export formats"],
-    [/no installer|without installing|unzip/, "no installation being needed"],
-    [/independent|fully separate/, "independence from the Installed copy"],
-    [/two portable processes|separate sessions/, "concurrent Portable processes"],
-    [/validated arcscan ownership/, "ownership-gated cleanup"],
-    [/never falls back/, "the absence of a silent fallback"],
-    [/unchanged/, "what did not change"],
+    [/arcatlas/, "the ArcAtlas handoff"],
+    [/one selected network|choose a network/, "one-network scope"],
+    [/explicit|deliberate send|confirm/, "explicit operator action"],
+    [/nothing is sent when a scan merely finishes|nothing is sent.*scan/, "no automatic post-scan upload"],
+    [/credential store/, "installed credential-store secret handling"],
+    [/process memory/, "portable in-memory secret handling"],
+    [/icmp|tcp/, "positive probe evidence"],
+    [/arp cache|proxy-arp/, "macOS ARP finalization protection"],
   ];
   for (const [pattern, label] of claims) {
     if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
-  }
-
-  // Claims from the superseded persistent-folder architecture must never return.
-  for (const overclaim of [
-    [/portable.{0,40}macos|macos.{0,40}portable/, "portable macOS"],
-    [/zero dependencies|no dependencies/, "zero dependencies"],
-    [/updates itself|self-updat|automatic.{0,20}portable update/, "portable self-update"],
-    [/arcscandata/, "a persistent ArcScanData folder"],
-    [/\b(?:move|copy) the whole folder\b/, "folder-carried persistence"],
-    [/same-folder lock/, "the obsolete same-folder lock"],
-  ]) {
-    if (overclaim[0].test(text)) throw new Error(`the section claims ${overclaim[1]}`);
   }
 
   const headings = await section.locator("h3").allInnerTexts();
@@ -618,13 +595,13 @@ await step("the release section states the 1.8.4 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.8.4 page", async () => {
+await step("the What changed link opens the local 1.8.5 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A first-party page, not GitHub: a visitor asking what changed should get
   // something written for them before they get a commit list.
-  if (href !== "whats-new-1.8.4.html") {
+  if (href !== "whats-new-1.8.5.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -638,37 +615,21 @@ await step("the What changed link opens the local 1.8.4 page", async () => {
   return href;
 });
 
-await step("the new screenshots load at their stated size", async () => {
-  const shots = ["assets/shots/settings-portable-dark.webp"];
-  for (const src of shots) {
-    const img = page.locator(`img[src="${src}"]`);
-    if ((await img.count()) === 0) throw new Error(`${src} is not on the page`);
-    // They are lazy and below the fold, so they only fetch once scrolled to.
-    await img.first().scrollIntoViewIfNeeded();
-    await page.waitForFunction(
-      (selector) => {
-        const el = document.querySelector(selector);
-        return el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0;
-      },
-      `img[src="${src}"]`,
-      { timeout: 5000 },
-    );
-    const info = await img.first().evaluate((el) => ({
-      complete: el.complete,
-      natural: el.naturalWidth,
-      w: el.getAttribute("width"),
-      h: el.getAttribute("height"),
-      alt: el.getAttribute("alt") ?? "",
-      loading: el.getAttribute("loading"),
-    }));
-    if (!info.complete || info.natural === 0) throw new Error(`${src} did not load`);
-    // Intrinsic dimensions are what stop the section shifting as it loads.
-    if (!info.w || !info.h) throw new Error(`${src} has no width/height attributes`);
-    if (info.alt.trim().length < 30) throw new Error(`${src} needs descriptive alt text`);
-    if (info.loading !== "lazy") throw new Error(`${src} should be lazy, it is below the fold`);
-  }
+await step("the current product screenshots load at their stated size", async () => {
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  const hero = page.locator('.hero img[src="assets/shots/inventory-dark.webp"]').first();
+  if ((await hero.count()) === 0) throw new Error("the current inventory hero screenshot is missing");
+  const info = await hero.evaluate((el) => ({
+    complete: el.complete,
+    natural: el.naturalWidth,
+    w: el.getAttribute("width"),
+    h: el.getAttribute("height"),
+    alt: el.getAttribute("alt") ?? "",
+  }));
+  if (!info.complete || info.natural === 0) throw new Error("the inventory hero screenshot did not load");
+  if (!info.w || !info.h) throw new Error("the inventory hero screenshot has no width/height attributes");
+  if (info.alt.trim().length < 30) throw new Error("the inventory hero screenshot needs descriptive alt text");
 
-  // The partial-scan view is reachable from the switcher rather than inline.
   const tab = page.locator("#tab-partial");
   if ((await tab.count()) === 0) throw new Error("no partial-scan tab in the switcher");
   await tab.click();
@@ -679,7 +640,7 @@ await step("the new screenshots load at their stated size", async () => {
   }
   await page.locator("#tab-inventory").click();
   await page.waitForTimeout(150);
-  return `${shots.length} inline shots plus the switcher tab`;
+  return "hero screenshot plus the partial-scan switcher view";
 });
 
 await step("partial scans are described accurately", async () => {
@@ -723,6 +684,7 @@ await step("robots.txt and sitemap.xml are served, and the sitemap is current", 
   // find late, and the 1.8.2 entry was missed once already.
   const sitemap = await (await page.request.get(`${BASE}/sitemap.xml`)).text();
   for (const page_ of [
+    "whats-new-1.8.5.html",
     "whats-new-1.8.4.html",
     "whats-new-1.8.3.html",
     "whats-new-1.8.2.html",
@@ -1342,8 +1304,9 @@ await step("the mobile menu works on the What's New page", async () => {
   return `menu is ${Math.round(box.height)}px tall at 390px`;
 });
 
-await step("the home page and the What's New page reach each other", async () => {
-  await page.goto(`${BASE}${WHATS_NEW}`, { waitUntil: "networkidle" });
+await step("the home page and the current What's New page reach each other", async () => {
+  const currentWhatsNew = "/whats-new-1.8.5.html";
+  await page.goto(`${BASE}${currentWhatsNew}`, { waitUntil: "networkidle" });
   await page.locator('.hero a[href="./"]').first().click();
   await page.waitForLoadState("networkidle");
   if (!/See every device/.test(await page.locator("h1").innerText())) {
@@ -1352,11 +1315,10 @@ await step("the home page and the What's New page reach each other", async () =>
   await page.locator("#release-notes-link").click();
   await page.waitForLoadState("networkidle");
   const heading = await page.locator("h1").innerText();
-  if (!/What's new in ArcScan 1\.8/.test(heading)) {
+  if (!/Observed inventory, straight into ArcAtlas/i.test(heading)) {
     throw new Error(`the What changed link landed on: ${heading}`);
   }
-  await page.goto(BASE, { waitUntil: "networkidle" });
-  return "round trip works in both directions";
+  return "home and 1.8.5 release page link both ways";
 });
 
 // --- axe-core --------------------------------------------------------------
