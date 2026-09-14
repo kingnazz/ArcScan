@@ -61,6 +61,18 @@
           next deliberate send receives a new identifier and creates a new historical Discovery run.
         </p>
 
+        <h2>More reliable macOS discovery</h2>
+        <p>
+          A device that genuinely answered ICMP or TCP now stays in the final scan even if macOS
+          has omitted or aged its ARP cache entry before enrichment finishes. Missing ARP data is
+          treated as missing enrichment, not proof that a responsive device vanished.
+        </p>
+        <p>
+          The safety boundary stays intact: a present ARP entry identified as a proxy responder is
+          still rejected, while a legitimate ARP/MAC entry can still keep a quiet local device that
+          ignored active probes. Regression tests cover all three cases.
+        </p>
+
         <h2>Small setup improvements</h2>
         <p>
           If you paste the full ArcAtlas machine endpoint, ArcScan now normalizes it back to the
