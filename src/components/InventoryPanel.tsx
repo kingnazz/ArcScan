@@ -258,9 +258,6 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
               </span>
             ) : null}
             <div className="relative">
-              <Button size="sm" onClick={props.onManageArcAtlas} title="ArcAtlas connection">
-                ArcAtlas
-              </Button>
               <Button
                 size="sm"
                 disabled={!props.sendToArcAtlasEnabled}
