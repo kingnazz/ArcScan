@@ -1833,8 +1833,7 @@ mod tests {
 
     #[test]
     fn proxy_arp_still_rejects_probe_positive_address() {
-        let scanned: Vec<Ipv4Addr> =
-            (1..=9u8).map(|n| Ipv4Addr::new(10, 0, 0, n)).collect();
+        let scanned: Vec<Ipv4Addr> = (1..=9u8).map(|n| Ipv4Addr::new(10, 0, 0, n)).collect();
         let shared = "AA:BB:CC:DD:EE:FF".to_string();
         let arp: HashMap<Ipv4Addr, String> = scanned
             .iter()
