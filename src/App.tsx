@@ -1462,6 +1462,7 @@ export default function App() {
           setArcAtlasMode("connect");
           setArcAtlasOpen(true);
         }}
+        onManageConnection={openArcAtlasManage}
         onSend={sendToArcAtlas}
         onRetry={sendToArcAtlas}
         onOpenInArcAtlas={(url) => {
