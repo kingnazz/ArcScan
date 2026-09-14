@@ -96,11 +96,8 @@ replaceRequired(
   "sitemap current release list",
 );
 
-const crossStart = 'await step("the home page and the What\\'s New page reach each other", async () => {';
-let crossIndex = s.indexOf(crossStart);
-if (crossIndex < 0) {
-  crossIndex = s.indexOf('await step("the home page and the What\'s New page reach each other", async () => {');
-}
+const crossStart = `await step("the home page and the What's New page reach each other", async () => {`;
+const crossIndex = s.indexOf(crossStart);
 if (crossIndex < 0) throw new Error("Could not find cross-link assertion");
 const crossEnd = s.indexOf("\n});", crossIndex);
 if (crossEnd < 0) throw new Error("Could not find cross-link assertion end");
