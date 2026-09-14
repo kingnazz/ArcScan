@@ -1,0 +1,189 @@
+name: Update v1.8.5 Site Verifier
+
+on:
+  push:
+    branches: ["release/v1.8.5"]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v1.8.5
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Update current-release website assertions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'scripts/verify-site.mjs';
+          let s = fs.readFileSync(path, 'utf8');
+
+          const replaceRequired = (before, after, label) => {
+            if (s.includes(after)) return;
+            if (!s.includes(before)) throw new Error(`Could not find ${label}`);
+            s = s.replace(before, after);
+          };
+
+          const releaseStart = 'await step("the release section states the 1.8.4 improvements", async () => {';
+          const releaseEnd = '\n});\n\nawait step("the What changed link opens the local 1.8.4 page", async () => {';
+          const start = s.indexOf(releaseStart);
+          const end = s.indexOf(releaseEnd, start);
+          if (start < 0 || end < 0) throw new Error('Could not locate current release assertion block');
+          const releaseBlock = `await step("the release section states the 1.8.5 improvements", async () => {
+  const section = page.locator("#whats-new");
+  await section.waitFor({ timeout: 3000 });
+  const text = (await section.innerText()).toLowerCase();
+
+  if (!text.includes("1.8.5")) throw new Error("the section does not name the version");
+
+  const claims = [
+    [/arcatlas/, "the ArcAtlas handoff"],
+    [/one selected network|choose a network/, "one-network scope"],
+    [/explicit|deliberate send|confirm/, "explicit operator action"],
+    [/nothing is sent when a scan merely finishes|nothing is sent.*scan/, "no automatic post-scan upload"],
+    [/credential store/, "installed credential-store secret handling"],
+    [/process memory/, "portable in-memory secret handling"],
+    [/icmp|tcp/, "positive probe evidence"],
+    [/arp cache|proxy-arp/, "macOS ARP finalization protection"],
+  ];
+  for (const [pattern, label] of claims) {
+    if (!pattern.test(text)) throw new Error(\`the section does not cover \${label}\`);
+  }
+
+  const headings = await section.locator("h3").allInnerTexts();
+  if (headings.length !== 3) throw new Error(\`expected 3 improvements, got \${headings.length}\`);
+  return headings.map((h) => h.trim()).join(", ");
+});
+
+await step("the What changed link opens the local 1.8.5 page", async () => {`;
+          s = s.slice(0, start) + releaseBlock + s.slice(end + releaseEnd.length);
+
+          replaceRequired(
+            'if (href !== "whats-new-1.8.4.html") {',
+            'if (href !== "whats-new-1.8.5.html") {',
+            'current What changed href',
+          );
+
+          const oldShotBlock = `await step("the new screenshots load at their stated size", async () => {
+  const shots = ["assets/shots/settings-portable-dark.webp"];
+  for (const src of shots) {
+    const img = page.locator(\`img[src="\${src}"]\`);
+    if ((await img.count()) === 0) throw new Error(\`\${src} is not on the page\`);
+    // They are lazy and below the fold, so they only fetch once scrolled to.
+    await img.first().scrollIntoViewIfNeeded();
+    await page.waitForFunction(
+      (selector) => {
+        const el = document.querySelector(selector);
+        return el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0;
+      },
+      \`img[src="\${src}"]\`,
+      { timeout: 5000 },
+    );
+    const info = await img.first().evaluate((el) => ({
+      complete: el.complete,
+      natural: el.naturalWidth,
+      w: el.getAttribute("width"),
+      h: el.getAttribute("height"),
+      alt: el.getAttribute("alt") ?? "",
+      loading: el.getAttribute("loading"),
+    }));
+    if (!info.complete || info.natural === 0) throw new Error(\`\${src} did not load\`);
+    // Intrinsic dimensions are what stop the section shifting as it loads.
+    if (!info.w || !info.h) throw new Error(\`\${src} has no width/height attributes\`);
+    if (info.alt.trim().length < 30) throw new Error(\`\${src} needs descriptive alt text\`);
+    if (info.loading !== "lazy") throw new Error(\`\${src} should be lazy, it is below the fold\`);
+  }
+
+  // The partial-scan view is reachable from the switcher rather than inline.
+  const tab = page.locator("#tab-partial");
+  if ((await tab.count()) === 0) throw new Error("no partial-scan tab in the switcher");
+  await tab.click();
+  await page.waitForTimeout(250);
+  const shown = await page.locator("#shot-image").getAttribute("src");
+  if (!shown?.includes("history-partial-dark")) {
+    throw new Error(\`the partial-scan tab shows \${shown}\`);
+  }
+  await page.locator("#tab-inventory").click();
+  await page.waitForTimeout(150);
+  return \`\${shots.length} inline shots plus the switcher tab\`;
+});`;
+          const newShotBlock = `await step("the current product screenshots load at their stated size", async () => {
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  const hero = page.locator('.hero img[src="assets/shots/inventory-dark.webp"]').first();
+  if ((await hero.count()) === 0) throw new Error("the current inventory hero screenshot is missing");
+  const info = await hero.evaluate((el) => ({
+    complete: el.complete,
+    natural: el.naturalWidth,
+    w: el.getAttribute("width"),
+    h: el.getAttribute("height"),
+    alt: el.getAttribute("alt") ?? "",
+  }));
+  if (!info.complete || info.natural === 0) throw new Error("the inventory hero screenshot did not load");
+  if (!info.w || !info.h) throw new Error("the inventory hero screenshot has no width/height attributes");
+  if (info.alt.trim().length < 30) throw new Error("the inventory hero screenshot needs descriptive alt text");
+
+  const tab = page.locator("#tab-partial");
+  if ((await tab.count()) === 0) throw new Error("no partial-scan tab in the switcher");
+  await tab.click();
+  await page.waitForTimeout(250);
+  const shown = await page.locator("#shot-image").getAttribute("src");
+  if (!shown?.includes("history-partial-dark")) {
+    throw new Error(\`the partial-scan tab shows \${shown}\`);
+  }
+  await page.locator("#tab-inventory").click();
+  await page.waitForTimeout(150);
+  return "hero screenshot plus the partial-scan switcher view";
+});`;
+          replaceRequired(oldShotBlock, newShotBlock, 'stale 1.8.4 screenshot assertion');
+
+          replaceRequired(
+            '    "whats-new-1.8.4.html",\n    "whats-new-1.8.3.html",',
+            '    "whats-new-1.8.5.html",\n    "whats-new-1.8.4.html",\n    "whats-new-1.8.3.html",',
+            'sitemap current release list',
+          );
+
+          const crossStart = 'await step("the home page and the What\'s New page reach each other", async () => {';
+          const crossIndex = s.indexOf(crossStart);
+          if (crossIndex < 0) throw new Error('Could not find cross-link assertion');
+          const nextEnd = s.indexOf('\n});', crossIndex);
+          if (nextEnd < 0) throw new Error('Could not find cross-link assertion end');
+          const crossBlock = `await step("the home page and the current What's New page reach each other", async () => {
+  const currentWhatsNew = "/whats-new-1.8.5.html";
+  await page.goto(\`\${BASE}\${currentWhatsNew}\`, { waitUntil: "networkidle" });
+  await page.locator('.hero a[href="./"]').first().click();
+  await page.waitForLoadState("networkidle");
+  if (!/See every device/.test(await page.locator("h1").innerText())) {
+    throw new Error("the back link did not reach the home page");
+  }
+  await page.locator("#release-notes-link").click();
+  await page.waitForLoadState("networkidle");
+  const heading = await page.locator("h1").innerText();
+  if (!/Observed inventory, straight into ArcAtlas/i.test(heading)) {
+    throw new Error(\`the What changed link landed on: \${heading}\`);
+  }
+  return "home and 1.8.5 release page link both ways";
+});`;
+          s = s.slice(0, crossIndex) + crossBlock + s.slice(nextEnd + 4);
+
+          fs.writeFileSync(path, s);
+          NODE
+      - name: Commit verifier update
+        shell: bash
+        run: |
+          if git diff --quiet scripts/verify-site.mjs; then
+            echo "Verifier already updated."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/verify-site.mjs
+          git commit -m "test: update website verification for v1.8.5"
+          git push origin HEAD:release/v1.8.5
