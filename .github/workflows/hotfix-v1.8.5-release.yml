@@ -1,0 +1,57 @@
+name: Hotfix v1.8.5 Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hotfix-v1.8.5-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Upgrade rustls to patched version
+        working-directory: src-tauri
+        run: cargo update -p rustls --precise 0.23.45
+      - name: Fix current What's New cross-link verifier
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/verify-site.mjs')
+          s = p.read_text()
+          old = 'await page.locator(\'.hero a[href="./"]\').first().click();'
+          new = 'await page.locator(\'.brand[href="./"]\').first().click();'
+          if old not in s and new not in s:
+              raise SystemExit('cross-link selector not found')
+          s = s.replace(old, new, 1)
+          s = s.replace(
+              '{ label: "whats-new 1.8.4 desktop", path: "/whats-new-1.8.4.html", width: 1440, height: 900 },\n    { label: "whats-new 1.8.4 mobile", path: "/whats-new-1.8.4.html", width: 390, height: 844 },',
+              '{ label: "whats-new 1.8.5 desktop", path: "/whats-new-1.8.5.html", width: 1440, height: 900 },\n    { label: "whats-new 1.8.5 mobile", path: "/whats-new-1.8.5.html", width: 390, height: 844 },',
+              1,
+          )
+          p.write_text(s)
+          PY
+      - name: Trigger clean release rebuild
+        run: printf '\n' >> package.json
+      - name: Verify patched rustls lock entry
+        working-directory: src-tauri
+        run: |
+          cargo tree -i rustls | head -40
+          grep -A2 'name = "rustls"' Cargo.lock | grep 'version = "0.23.45"'
+      - name: Commit hotfix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/Cargo.lock scripts/verify-site.mjs package.json
+          git commit -m "fix: patch rustls before v1.8.5 release"
+          git push origin HEAD:main
