@@ -68,7 +68,7 @@ fn cancel_notify() -> &'static Notify {
 }
 
 /// Ask the running scan to stop as soon as it can. It finishes early and still
-/// returns the hosts discovered so far, so the user keeps partial results.
+/// returns whatever hosts were discovered so far, so the user keeps partial results.
 pub fn request_cancel() {
     CANCEL_SCAN.store(ACTIVE_SCAN.load(Ordering::Relaxed), Ordering::Relaxed);
     cancel_notify().notify_waiters();
@@ -253,7 +253,7 @@ pub enum ScanPhase {
 }
 
 /// Emitted once at the start of a scan so the UI can size its progress display
-/// and surface any workload warning before results arrive.
+/// and surface any workload warning before the operator commits to it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanStarted {
     pub scan_id: u64,
@@ -362,7 +362,7 @@ pub struct ScanOptions {
     pub profile: Option<String>,
     /// `Some(false)` forces routed-scan behaviour: no ARP-based liveness and no
     /// re-prime pass, for targets the operator knows are remote. `None` decides
-    /// automatically from the detected local subnets and the ARP cache.
+    /// automatically from the detected subnets and the ARP cache.
     #[serde(default)]
     pub arp_assist: Option<bool>,
     /// Which parts of local discovery to run. Absent means every part, which is
@@ -882,24 +882,25 @@ pub async fn run(
     let threshold = proxy_threshold(scanned);
     let has_real_mac = |ip: &Ipv4Addr| is_real_mac(&arp, &mac_freq, threshold, ip);
 
-    // On the local segment ARP is ground truth: a real device answers ARP with
-    // its own MAC, which no firewall or middlebox can forge. A transparent
-    // router CAN, however, accept TCP or answer ICMP for *every* address in the
-    // subnet (intercepting port 53, for instance), which would make dead
-    // addresses look up. So for local targets we require a real, non-proxy MAC;
-    // routed targets, which have no ARP entries at all, keep the probe signals.
+    // Positive ICMP/TCP evidence must survive finalization even when the local
+    // neighbor cache has no entry. macOS can omit or age an ARP entry between
+    // the probe and this pass, so absence of ARP is missing enrichment, not
+    // proof that a device vanished. A real ARP entry still keeps a quiet host,
+    // and a present-but-rejected proxy-ARP entry still rejects the false host.
     let mut removed: Vec<String> = Vec::new();
     probe_results.retain(|(ip, p)| {
-        let keep = if own_ips.contains(ip) {
-            true // this machine itself
-        } else if arp_authoritative {
-            has_real_mac(ip)
-        } else {
-            p.up
-        };
-        // A host streamed as discovered that does not survive the local-segment
-        // rule must be withdrawn, or the live table would disagree with what
-        // gets saved.
+        let keep = should_keep_probe(
+            ip,
+            p,
+            &own_ips,
+            arp_authoritative,
+            &arp,
+            &mac_freq,
+            threshold,
+        );
+        // A host streamed as discovered that does not survive a positive proxy-
+        // ARP conflict must be withdrawn, or the live table would disagree with
+        // what gets saved.
         if !keep && p.up {
             removed.push(ip.to_string());
         }
@@ -1241,6 +1242,38 @@ impl Probe {
             ttl: None,
         }
     }
+}
+
+/// Decide whether one probed address belongs in the final host set.
+///
+/// ARP is strong evidence when it positively identifies a real local MAC, and
+/// a present proxy-ARP entry is strong evidence that the apparent host is a
+/// router/AP artifact. The *absence* of an ARP entry is different: neighbor
+/// caches are transient (notably on macOS), so a missing entry must never erase
+/// a host that already proved liveness via ICMP or TCP.
+fn should_keep_probe(
+    ip: &Ipv4Addr,
+    probe: &Probe,
+    own_ips: &HashSet<Ipv4Addr>,
+    arp_authoritative: bool,
+    arp: &HashMap<Ipv4Addr, String>,
+    mac_freq: &HashMap<String, usize>,
+    threshold: usize,
+) -> bool {
+    if own_ips.contains(ip) {
+        return true;
+    }
+    if !arp_authoritative {
+        return probe.up;
+    }
+    if is_real_mac(arp, mac_freq, threshold, ip) {
+        return true;
+    }
+    if arp.contains_key(ip) {
+        // An ARP entry exists but its MAC was classified as a proxy responder.
+        return false;
+    }
+    probe.up
 }
 
 /// Re-trigger ARP resolution for one address without caring about the result.
@@ -1751,6 +1784,81 @@ mod tests {
             &freq,
             threshold,
             &"10.1.1.8".parse().unwrap()
+        ));
+    }
+
+    #[test]
+    fn probe_reply_survives_missing_local_arp_entry() {
+        let ip: Ipv4Addr = "10.0.1.42".parse().unwrap();
+        let probe = Probe {
+            up: true,
+            open_ports: vec![443],
+            icmp_ms: Some(1.2),
+            tcp_ms: Some(0.8),
+            ttl: Some(64),
+        };
+        let own = HashSet::new();
+        let arp = HashMap::new();
+        let freq = HashMap::new();
+
+        assert!(should_keep_probe(
+            &ip,
+            &probe,
+            &own,
+            true,
+            &arp,
+            &freq,
+            proxy_threshold(254),
+        ));
+    }
+
+    #[test]
+    fn real_arp_entry_keeps_quiet_local_device() {
+        let ip: Ipv4Addr = "10.0.1.50".parse().unwrap();
+        let probe = Probe::dead();
+        let own = HashSet::new();
+        let arp = arp_map(&[("10.0.1.50", "11:22:33:44:55:66")]);
+        let freq = proxy_frequencies(&arp, std::iter::once(ip));
+
+        assert!(should_keep_probe(
+            &ip,
+            &probe,
+            &own,
+            true,
+            &arp,
+            &freq,
+            proxy_threshold(254),
+        ));
+    }
+
+    #[test]
+    fn proxy_arp_still_rejects_probe_positive_address() {
+        let scanned: Vec<Ipv4Addr> =
+            (1..=9u8).map(|n| Ipv4Addr::new(10, 0, 0, n)).collect();
+        let shared = "AA:BB:CC:DD:EE:FF".to_string();
+        let arp: HashMap<Ipv4Addr, String> = scanned
+            .iter()
+            .copied()
+            .map(|ip| (ip, shared.clone()))
+            .collect();
+        let freq = proxy_frequencies(&arp, scanned.iter().copied());
+        let ip = scanned[0];
+        let probe = Probe {
+            up: true,
+            open_ports: vec![],
+            icmp_ms: Some(1.0),
+            tcp_ms: None,
+            ttl: Some(64),
+        };
+
+        assert!(!should_keep_probe(
+            &ip,
+            &probe,
+            &HashSet::new(),
+            true,
+            &arp,
+            &freq,
+            proxy_threshold(64),
         ));
     }
 
