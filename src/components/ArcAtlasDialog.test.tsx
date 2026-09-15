@@ -1,7 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArcAtlasDialog, normalizeArcAtlasServerInput } from "./ArcAtlasDialog";
-import { DISCONNECTED_CONNECTION, PORTABLE_SESSION_COPY, type ArcAtlasConnection, type ArcAtlasSendResult } from "../lib/arcatlas";
+import {
+  DISCONNECTED_CONNECTION,
+  PORTABLE_SESSION_COPY,
+  type ArcAtlasConnection,
+  type ArcAtlasSendResult,
+} from "../lib/arcatlas";
 
 afterEach(() => {
   cleanup();
@@ -49,9 +54,15 @@ describe("ArcAtlas dialog", () => {
 
   it("clears the token field after a successful connection", async () => {
     const onConfigure = vi.fn(async () => undefined);
-    render(<ArcAtlasDialog {...noop} open mode="connect" connection={DISCONNECTED_CONNECTION} onConfigure={onConfigure} />);
-    fireEvent.change(screen.getByLabelText("ArcAtlas server URL"), { target: { value: "https://atlas.example.com" } });
-    fireEvent.change(screen.getByLabelText("Connection token"), { target: { value: "atlas_arcscan_supersecret" } });
+    render(
+      <ArcAtlasDialog {...noop} open mode="connect" connection={DISCONNECTED_CONNECTION} onConfigure={onConfigure} />,
+    );
+    fireEvent.change(screen.getByLabelText("ArcAtlas server URL"), {
+      target: { value: "https://atlas.example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Connection token"), {
+      target: { value: "atlas_arcscan_supersecret" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await waitFor(() => {
       expect(onConfigure).toHaveBeenCalledWith("https://atlas.example.com", "atlas_arcscan_supersecret");
@@ -68,7 +79,9 @@ describe("ArcAtlas dialog", () => {
     );
 
     const onConfigure = vi.fn(async () => undefined);
-    render(<ArcAtlasDialog {...noop} open mode="connect" connection={DISCONNECTED_CONNECTION} onConfigure={onConfigure} />);
+    render(
+      <ArcAtlasDialog {...noop} open mode="connect" connection={DISCONNECTED_CONNECTION} onConfigure={onConfigure} />,
+    );
     fireEvent.change(screen.getByLabelText("ArcAtlas server URL"), {
       target: { value: "https://atlas.example.com/api/discovery/arcscan" },
     });
@@ -107,20 +120,32 @@ describe("ArcAtlas dialog", () => {
         confirmation={{
           destination: "Cedar Ridge / Seattle HQ",
           networkName: "192.168.10.0/24",
-          deviceCount: 42,
+          presentCount: 40,
+          missingExcluded: 1,
+          unknownExcluded: 1,
           explanation: "Sends observed inventory to ArcAtlas Discovery. It does not change documented devices.",
         }}
       />,
     );
     expect(screen.getByText("192.168.10.0/24")).toBeTruthy();
-    expect(screen.getByText("42")).toBeTruthy();
+    expect(screen.getByText("Present devices sent")).toBeTruthy();
+    expect(screen.getByText("40")).toBeTruthy();
+    expect(screen.getByText("Missing excluded")).toBeTruthy();
+    expect(screen.getByText("Unknown / historical excluded")).toBeTruthy();
     expect(screen.queryByText(/online|offline|down/i)).toBeNull();
   });
 
   it("renders success counts and opens the returned discovery URL", () => {
     const onOpenInArcAtlas = vi.fn();
     render(
-      <ArcAtlasDialog {...noop} open mode="success" connection={connected} result={result} onOpenInArcAtlas={onOpenInArcAtlas} />,
+      <ArcAtlasDialog
+        {...noop}
+        open
+        mode="success"
+        connection={connected}
+        result={result}
+        onOpenInArcAtlas={onOpenInArcAtlas}
+      />,
     );
     expect(screen.getByText("Sent to ArcAtlas")).toBeTruthy();
     expect(screen.getByText("Observed: 42")).toBeTruthy();
@@ -137,7 +162,11 @@ describe("ArcAtlas dialog", () => {
         open
         mode="error"
         connection={connected}
-        error={{ code: "unauthorized", message: "The ArcAtlas connection token is invalid or revoked.", retryable: false }}
+        error={{
+          code: "unauthorized",
+          message: "The ArcAtlas connection token is invalid or revoked.",
+          retryable: false,
+        }}
         onReconnect={onReconnect}
       />,
     );
@@ -150,7 +179,11 @@ describe("ArcAtlas dialog", () => {
         open
         mode="error"
         connection={connected}
-        error={{ code: "timeout", message: "The ArcAtlas request timed out.", retryable: true }}
+        error={{
+          code: "timeout",
+          message: "The ArcAtlas request timed out.",
+          retryable: true,
+        }}
         onRetry={onRetry}
       />,
     );

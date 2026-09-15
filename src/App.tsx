@@ -34,12 +34,7 @@ import { useUpdater } from "./hooks/useUpdater";
 import { api } from "./lib/api";
 import { setServiceCatalog } from "./lib/format";
 import { rowFromInventory, rowName, rowsFromScanDetail } from "./lib/live";
-import {
-  markLegacyLabelsImported,
-  pendingLegacyLabels,
-  loadRecentTargets,
-  pushRecentTarget,
-} from "./lib/prefs";
+import { markLegacyLabelsImported, pendingLegacyLabels, loadRecentTargets, pushRecentTarget } from "./lib/prefs";
 import { recommendedProfile, type ProfileId } from "./lib/profiles";
 import { EMPTY_FILTER, prepareRows, visibleColumns, type SortKey, type TableFilter } from "./lib/table";
 import {
@@ -51,14 +46,21 @@ import {
   type InventorySortKey,
   type SortDirection,
 } from "./lib/inventory";
-import {
-  EMPTY_CHANGE_FILTER,
-  filterChanges,
-  type ChangeAction,
-  type ChangeFilter,
-} from "./lib/changes";
+import { EMPTY_CHANGE_FILTER, filterChanges, type ChangeAction, type ChangeFilter } from "./lib/changes";
 import type { ActionId } from "./lib/actions";
-import { type ChangeEvent, type ChangeFeed, type DeviceDetail, type DeviceStatus, type ExportFormat, type InventorySummary, type LocalNetwork, type NetworkScope, type ScanComparison, type ScanOptions, type ScanSummary } from "./types";
+import {
+  type ChangeEvent,
+  type ChangeFeed,
+  type DeviceDetail,
+  type DeviceStatus,
+  type ExportFormat,
+  type InventorySummary,
+  type LocalNetwork,
+  type NetworkScope,
+  type ScanComparison,
+  type ScanOptions,
+  type ScanSummary,
+} from "./types";
 import { APP_VERSION } from "./version";
 import {
   DISCONNECTED_CONNECTION,
@@ -66,6 +68,7 @@ import {
   buildHandoffEnvelope,
   canSendSingleNetwork,
   handoffRowsForNetwork,
+  handoffPresenceCounts,
   nextModeOnSend,
   parseArcAtlasError,
   selectedNetworkName,
@@ -84,10 +87,7 @@ export default function App() {
   const theme = useTheme(settings.theme);
   const runtime = useRuntime();
   const updaterMode = runtime?.updater_mode ?? "manual";
-  const updater = useUpdater(
-    settings.checkForUpdates && updaterMode === "installer",
-    updaterMode,
-  );
+  const updater = useUpdater(settings.checkForUpdates && updaterMode === "installer", updaterMode);
   const publicIp = usePublicIp();
 
   const [view, setView] = useState<View>("results");
@@ -118,9 +118,7 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(392);
-  const [windowWidth, setWindowWidth] = useState(() =>
-    typeof window === "undefined" ? 1440 : window.innerWidth,
-  );
+  const [windowWidth, setWindowWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
   const [pendingDelete, setPendingDelete] = useState<ScanSummary | null>(null);
   const [pendingBulk, setPendingBulk] = useState<{
     title: string;
@@ -294,7 +292,9 @@ export default function App() {
         if (adopted > 0) {
           toast.info(
             `Brought across ${adopted} device ${adopted === 1 ? "name" : "names"} from your previous version.`,
-            { detail: "They are stored with the device inventory now." },
+            {
+              detail: "They are stored with the device inventory now.",
+            },
           );
         }
       })
@@ -333,10 +333,7 @@ export default function App() {
     () => visibleColumns(windowWidth, settings.hiddenColumns),
     [windowWidth, settings.hiddenColumns],
   );
-  const rows = useMemo(
-    () => prepareRows(scan.rows, filter, sortKey, sortDir),
-    [scan.rows, filter, sortKey, sortDir],
-  );
+  const rows = useMemo(() => prepareRows(scan.rows, filter, sortKey, sortDir), [scan.rows, filter, sortKey, sortDir]);
   const overlayDrawers = windowWidth < OVERLAY_BREAKPOINT;
 
   const inventoryRows = useMemo(
@@ -353,25 +350,23 @@ export default function App() {
       }),
     [inventory, invFilter.networkId, inventoryNetworks.length],
   );
+  const arcAtlasPresenceCounts = useMemo(
+    () =>
+      handoffPresenceCounts({
+        rows: inventory?.rows ?? [],
+        networkId: invFilter.networkId,
+        networkCount: inventoryNetworks.length,
+      }),
+    [inventory, invFilter.networkId, inventoryNetworks.length],
+  );
   // Computed from the unfiltered set, so choosing a type never removes the
   // other options from the menu that got you there.
-  const inventoryDeviceTypes = useMemo(
-    () => presentDeviceTypes(inventory?.rows ?? []),
-    [inventory],
-  );
+  const inventoryDeviceTypes = useMemo(() => presentDeviceTypes(inventory?.rows ?? []), [inventory]);
   const inventoryColumns = useMemo(
-    () =>
-      visibleInventoryColumns(
-        windowWidth,
-        settings.inventoryColumns,
-        inventoryNetworks.length > 1,
-      ),
+    () => visibleInventoryColumns(windowWidth, settings.inventoryColumns, inventoryNetworks.length > 1),
     [windowWidth, settings.inventoryColumns, inventoryNetworks.length],
   );
-  const visibleChanges = useMemo(
-    () => filterChanges(changes?.events ?? [], changeFilter),
-    [changes, changeFilter],
-  );
+  const visibleChanges = useMemo(() => filterChanges(changes?.events ?? [], changeFilter), [changes, changeFilter]);
 
   // The drawer describes either a row of the current scan or a row of the
   // inventory. Resolving both to one shape keeps a single drawer rather than two
@@ -434,10 +429,7 @@ export default function App() {
   const openSavedScan = useCallback(
     async (id: number) => {
       try {
-        const [detail, comparison] = await Promise.all([
-          api.getScan(id),
-          api.compareScan(id).catch(() => null),
-        ]);
+        const [detail, comparison] = await Promise.all([api.getScan(id), api.compareScan(id).catch(() => null)]);
         scan.showSavedScan(detail, comparison);
         setTarget(detail.target);
         setSelectedIp(null);
@@ -538,9 +530,7 @@ export default function App() {
       return `Exports the ${formatPlural(invSelection.size, "selected device")}.`;
     }
     const network =
-      invFilter.networkId == null
-        ? null
-        : inventoryNetworks.find((n) => n.id === invFilter.networkId)?.name;
+      invFilter.networkId == null ? null : inventoryNetworks.find((n) => n.id === invFilter.networkId)?.name;
     const filtered = inventoryRows.length !== (inventory?.rows.length ?? 0);
     if (network) return `Exports the ${formatPlural(inventoryRows.length, "device")} on ${network}.`;
     if (filtered) return `Exports the ${formatPlural(inventoryRows.length, "device")} shown.`;
@@ -551,9 +541,7 @@ export default function App() {
     async (format: ExportFormat) => {
       setInvExportOpen(false);
       const chosen =
-        invSelection.size > 0
-          ? inventoryRows.filter((row) => invSelection.has(row.device_id))
-          : inventoryRows;
+        invSelection.size > 0 ? inventoryRows.filter((row) => invSelection.has(row.device_id)) : inventoryRows;
       if (chosen.length === 0) {
         toast.info("There is nothing to export yet.", {
           detail: "Run a scan, or clear the filters to include more devices.",
@@ -588,8 +576,10 @@ export default function App() {
   const sendToArcAtlasTitle = !arcAtlas.configured
     ? "Connect ArcAtlas"
     : !canSendArcAtlas
-      ? "Choose one network before sending to ArcAtlas."
-      : "Send this network's inventory to ArcAtlas";
+      ? inventoryNetworks.length > 1 && invFilter.networkId == null
+        ? "Choose one network before sending to ArcAtlas."
+        : "No present devices to send to ArcAtlas."
+      : "Send this network's present devices to ArcAtlas";
 
   useEffect(() => {
     api
@@ -642,7 +632,11 @@ export default function App() {
         const parsed = parseArcAtlasError(error);
         setArcAtlasError(parsed);
         if (parsed.code === "unauthorized") {
-          setArcAtlas((current) => ({ ...current, configured: false, needsReconfigure: true }));
+          setArcAtlas((current) => ({
+            ...current,
+            configured: false,
+            needsReconfigure: true,
+          }));
         }
       } finally {
         setArcAtlasBusy(false);
@@ -672,9 +666,7 @@ export default function App() {
     setArcAtlasError(null);
     const handoffId = handoffAttempt.current.begin();
     try {
-      const notes = await api.deviceNotes(
-        arcAtlasRows.filter((row) => row.notes_present).map((row) => row.device_id),
-      );
+      const notes = await api.deviceNotes(arcAtlasRows.filter((row) => row.notes_present).map((row) => row.device_id));
       const envelope = buildHandoffEnvelope({
         rows: arcAtlasRows,
         notes,
@@ -691,7 +683,11 @@ export default function App() {
       else handoffAttempt.current.reset();
       setArcAtlasError(parsed);
       if (parsed.code === "unauthorized") {
-        setArcAtlas((current) => ({ ...current, configured: false, needsReconfigure: true }));
+        setArcAtlas((current) => ({
+          ...current,
+          configured: false,
+          needsReconfigure: true,
+        }));
         setArcAtlasMode("connect");
       } else {
         setArcAtlasMode("error");
@@ -713,7 +709,9 @@ export default function App() {
           // survives so the operator can see what is left.
           toast.info(
             `${verb} ${formatPlural(outcome.updated, "device")}. ${formatPlural(outcome.missing.length, "device")} could not be updated.`,
-            { detail: "Those devices are no longer in the inventory." },
+            {
+              detail: "Those devices are no longer in the inventory.",
+            },
           );
           return;
         }
@@ -734,7 +732,10 @@ export default function App() {
       const chosen = inventoryRows.filter((row) => invSelection.has(row.device_id));
 
       if (action === "copy") {
-        const addresses = chosen.map((row) => row.current_ip).filter(Boolean).join("\n");
+        const addresses = chosen
+          .map((row) => row.current_ip)
+          .filter(Boolean)
+          .join("\n");
         void api.copyText(addresses);
         toast.success(`Copied ${formatPlural(chosen.length, "address", "addresses")}.`);
         return;
@@ -744,8 +745,7 @@ export default function App() {
         return;
       }
 
-      const label =
-        action === "trusted" ? "Marked trusted" : action === "ignored" ? "Ignored" : "Marked unreviewed";
+      const label = action === "trusted" ? "Marked trusted" : action === "ignored" ? "Ignored" : "Marked unreviewed";
       // A large action confirms first; a handful of rows does not need a dialog.
       if (ids.length > 25) {
         setPendingBulk({
@@ -774,10 +774,7 @@ export default function App() {
           return;
         }
         toast.success(message, {
-          onUndo:
-            undoTo == null
-              ? undefined
-              : () => void setChangeStates(ids, undoTo, "Reopened.", undefined),
+          onUndo: undoTo == null ? undefined : () => void setChangeStates(ids, undoTo, "Reopened.", undefined),
         });
       } catch (error) {
         const { message: text, technical } = describeError(error);
@@ -824,12 +821,7 @@ export default function App() {
     const ids = visibleChanges.filter((e) => e.state === "unreviewed").map((e) => e.id);
     if (ids.length === 0) return;
     const run = () =>
-      void setChangeStates(
-        ids,
-        "acknowledged",
-        `Acknowledged ${formatPlural(ids.length, "change")}.`,
-        "unreviewed",
-      );
+      void setChangeStates(ids, "acknowledged", `Acknowledged ${formatPlural(ids.length, "change")}.`, "unreviewed");
     if (ids.length > 25) {
       setPendingBulk({
         title: `Acknowledge ${formatPlural(ids.length, "change")}?`,
@@ -945,9 +937,7 @@ export default function App() {
         await api.setDeviceStatus(deviceId, status);
         if (row) scan.patchRow(row.host.ip, { status });
         setDeviceDetail((current) =>
-          current && current.device.id === deviceId
-            ? { ...current, device: { ...current.device, status } }
-            : current,
+          current && current.device.id === deviceId ? { ...current, device: { ...current.device, status } } : current,
         );
         void refreshInventory();
         if (status === "ignored" || previous === "ignored") void refreshChanges();
@@ -969,9 +959,7 @@ export default function App() {
       try {
         await api.setDeviceNotes(deviceId, notes);
         setDeviceDetail((current) =>
-          current && current.device.id === deviceId
-            ? { ...current, device: { ...current.device, notes } }
-            : current,
+          current && current.device.id === deviceId ? { ...current, device: { ...current.device, notes } } : current,
         );
         void refreshInventory();
         toast.success("Notes saved.");
@@ -997,13 +985,14 @@ export default function App() {
         await api.setDeviceTypeOverride(deviceId, deviceType);
         setDeviceDetail((current) =>
           current && current.device.id === deviceId
-            ? { ...current, device: { ...current.device, user_device_type: deviceType } }
+            ? {
+                ...current,
+                device: { ...current.device, user_device_type: deviceType },
+              }
             : current,
         );
         void refreshInventory();
-        toast.success(
-          deviceType ? "Device type saved." : "Back to ArcScan's own answer.",
-        );
+        toast.success(deviceType ? "Device type saved." : "Back to ArcScan's own answer.");
         return true;
       } catch (error) {
         const { message, technical } = describeError(error);
@@ -1068,11 +1057,7 @@ export default function App() {
         setInvSelection(new Set());
         return;
       }
-      if (
-        invFilter.query ||
-        invFilter.view !== "all" ||
-        invFilter.networkId != null
-      ) {
+      if (invFilter.query || invFilter.view !== "all" || invFilter.networkId != null) {
         setInvFilter(EMPTY_INVENTORY_FILTER);
         return;
       }
@@ -1130,10 +1115,7 @@ export default function App() {
     },
     [toast],
   );
-  const recommendFor = useCallback(
-    (candidate: string) => recommendedProfile(candidate, localCidrs),
-    [localCidrs],
-  );
+  const recommendFor = useCallback((candidate: string) => recommendedProfile(candidate, localCidrs), [localCidrs]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1151,9 +1133,7 @@ export default function App() {
           else if (runtime.updater_mode === "manual") void api.openPortableDownloads();
           else void updater.check(true);
         }}
-        updateActionLabel={
-          runtime?.updater_mode === "manual" ? "Portable downloads" : "Check for updates"
-        }
+        updateActionLabel={runtime?.updater_mode === "manual" ? "Portable downloads" : "Check for updates"}
         updateBusy={updater.status === "checking"}
       />
 
@@ -1399,11 +1379,7 @@ export default function App() {
           onNotesChange={(deviceId, notes) => void saveDeviceNotes(deviceId, notes)}
           onTypeChange={(deviceId, deviceType) => saveDeviceType(deviceId, deviceType)}
           onCopyDiscovery={(deviceId) => void copyDiscoveryReport(deviceId)}
-          scanKey={
-            drawerSource === "inventory"
-              ? "inventory"
-              : (scan.meta?.savedScanId ?? scan.meta?.scanId ?? null)
-          }
+          scanKey={drawerSource === "inventory" ? "inventory" : (scan.meta?.savedScanId ?? scan.meta?.scanId ?? null)}
           context={drawerSource}
           highlightEventId={highlightEventId}
         />
@@ -1447,7 +1423,7 @@ export default function App() {
             ? sendConfirmation({
                 connection: arcAtlas,
                 networkName: sendNetworkName,
-                deviceCount: arcAtlasRows.length,
+                counts: arcAtlasPresenceCounts,
               })
             : null
         }
@@ -1488,8 +1464,8 @@ export default function App() {
         description={
           <>
             The saved results for <span className="mono">{pendingDelete?.target}</span> from{" "}
-            {pendingDelete ? new Date(pendingDelete.created_at).toLocaleString() : ""} are removed
-            and cannot be recovered. Device names, notes and first-seen dates are kept.
+            {pendingDelete ? new Date(pendingDelete.created_at).toLocaleString() : ""} are removed and cannot be
+            recovered. Device names, notes and first-seen dates are kept.
           </>
         }
         confirmLabel="Delete scan"
@@ -1603,9 +1579,7 @@ function UpdateNotice({ updater }: { updater: ReturnType<typeof useUpdater> }) {
         ) : status === "uptodate" ? (
           <span className="text-text-secondary">ArcScan is up to date.</span>
         ) : (
-          <span className="text-warning">
-            The update check did not complete{error ? `: ${error}` : "."}
-          </span>
+          <span className="text-warning">The update check did not complete{error ? `: ${error}` : "."}</span>
         )}
       </p>
       {status === "available" ? (
@@ -1636,8 +1610,8 @@ function PortableSessionNotice({ onDismiss }: { onDismiss: () => void }) {
     >
       <DownloadCloud className="h-3.5 w-3.5 shrink-0 text-accent-text" aria-hidden />
       <p className="min-w-0 flex-1 text-text-secondary">
-        <span className="font-medium text-text">Temporary Portable session.</span> Export anything
-        you want to keep before closing ArcScan.
+        <span className="font-medium text-text">Temporary Portable session.</span> Export anything you want to keep
+        before closing ArcScan.
       </p>
       <button
         type="button"

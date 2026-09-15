@@ -69,7 +69,7 @@ use crate::scanner::{HostResult, ScanResult};
 use crate::signature;
 
 /// Current schema version. Bump when a migration is added below.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Which generation of the naming rules wrote a device's stored detected name.
 ///
@@ -3103,6 +3103,8 @@ fn upsert_device(
     seen_at: &str,
 ) -> Result<DeviceRecord, String> {
     let identity = inventory::identify(host);
+    let hostname = non_blank(host.hostname.as_deref());
+    let vendor = non_blank(host.vendor.as_deref());
 
     // Look up by MAC first: a device seen earlier without one (routed scan, or a
     // scan where ARP had not resolved yet) was stored under a hostname or IP key,
@@ -3192,8 +3194,8 @@ fn upsert_device(
                 identity.key,
                 source_str(identity.source),
                 identity.mac,
-                host.hostname,
-                host.vendor,
+                hostname,
+                vendor,
                 host.ip,
                 seen_at,
                 id,
@@ -3219,8 +3221,8 @@ fn upsert_device(
             identity.key,
             source_str(identity.source),
             identity.mac,
-            host.hostname,
-            host.vendor,
+            hostname,
+            vendor,
             host.ip,
             seen_at,
         ],
@@ -3249,7 +3251,7 @@ fn insert_observation(
             scan_id,
             device_id,
             host.ip,
-            host.hostname,
+            non_blank(host.hostname.as_deref()),
             host.mac,
             host.vendor,
             format_ports(&host.open_ports),
@@ -3263,6 +3265,15 @@ fn insert_observation(
     )
     .map_err(sql_err)?;
     Ok(())
+}
+
+/// Scanner misses are represented as NULL, never as an empty automatic value.
+/// This keeps SQLite's COALESCE-based durable identity merge meaningful.
+fn non_blank(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn source_str(source: IdentitySource) -> &'static str {
@@ -3641,6 +3652,9 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
     if version < 5 {
         migrate_v5(conn)?;
     }
+    if version < 7 {
+        migrate_v7(conn)?;
+    }
 
     // v1.8.3 (schema 6). Two nullable columns and nothing else: no table is
     // rebuilt, no row is re-keyed, no device is reclassified and nothing is
@@ -3707,6 +3721,32 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         "INSERT INTO schema_meta (key, value) VALUES ('version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![SCHEMA_VERSION.to_string()],
+    )
+    .map_err(sql_err)?;
+    Ok(())
+}
+
+/// Recover durable hostnames that an older build replaced with a blank string.
+/// Observation history remains the source: the newest non-blank value wins,
+/// and operator names are deliberately untouched.
+fn migrate_v7(conn: &mut Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE devices
+         SET hostname = (
+             SELECT TRIM(h.hostname)
+             FROM hosts h
+             WHERE h.device_id = devices.id
+               AND NULLIF(TRIM(h.hostname), '') IS NOT NULL
+             ORDER BY h.scan_id DESC, h.id DESC
+             LIMIT 1
+         )
+         WHERE NULLIF(TRIM(hostname), '') IS NULL
+           AND EXISTS (
+             SELECT 1 FROM hosts h
+             WHERE h.device_id = devices.id
+               AND NULLIF(TRIM(h.hostname), '') IS NOT NULL
+           )",
+        [],
     )
     .map_err(sql_err)?;
     Ok(())
@@ -5794,6 +5834,62 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_later_hostname_does_not_erase_durable_identity_or_operator_name() {
+        let db = Db::open_in_memory().unwrap();
+        let mac = Some("aa:bb:cc:00:00:05");
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.5",
+                mac,
+                Some("U7ProGarage.localdomain"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        let id = db.list_devices().unwrap()[0].id;
+        db.set_device_name(id, Some("Garage AP".into())).unwrap();
+
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, Some("   "), &[])],
+        ))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.hostname.as_deref(), Some("U7ProGarage.localdomain"));
+        assert_eq!(row.custom_name.as_deref(), Some("Garage AP"));
+        assert_eq!(row.display_name, "Garage AP");
+    }
+
+    #[test]
+    fn inventory_ports_are_the_latest_observation_not_stale_history() {
+        let db = Db::open_in_memory().unwrap();
+        let mac = Some("aa:bb:cc:00:00:05");
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, Some("nas"), &[445, 5001])],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, None, &[])],
+        ))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.presence, PresenceState::Present);
+        assert!(row.open_ports.is_empty());
+        let detail = db.device_detail(row.device_id).unwrap();
+        assert_eq!(detail.observations[0].open_ports, Vec::<u16>::new());
+        assert_eq!(detail.observations[1].open_ports, vec![445, 5001]);
+    }
+
+    #[test]
     fn an_inventory_of_five_thousand_devices_is_two_queries_and_stays_quick() {
         let db = Db::open_in_memory().unwrap();
         // 5,000 devices over 20 scans is 100,000 observations, which is the
@@ -7618,6 +7714,7 @@ mod tests {
             conn.execute_batch(
                 "ALTER TABLE devices DROP COLUMN user_device_type;
                  ALTER TABLE device_discovery DROP COLUMN naming_rules_version;
+                 UPDATE devices SET hostname = '   ';
                  UPDATE schema_meta SET value = '5' WHERE key = 'version';",
             )
             .unwrap();
@@ -7627,6 +7724,7 @@ mod tests {
         let db = Db::open(&path).unwrap();
         let rows = db.inventory().unwrap().rows;
         assert_eq!(rows.len(), before_rows);
+        assert_eq!(rows[0].hostname.as_deref(), Some("printer-01"));
         assert_eq!(rows[0].custom_name.as_deref(), Some("Front Office Printer"));
         assert_eq!(rows[0].status, DeviceStatus::Trusted);
         assert!(rows[0].notes_present);
