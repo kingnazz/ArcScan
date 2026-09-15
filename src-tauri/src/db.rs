@@ -7652,6 +7652,137 @@ mod tests {
         );
     }
 
+    /// The v7 hostname repair, from every schema version that can reach it.
+    ///
+    /// The bug it undoes wrote an empty string over a durable hostname, so the
+    /// repair reads the observation history back. That makes three things worth
+    /// pinning: the newest non-blank sighting is the one that wins, an operator
+    /// name is not a hostname and is never touched, and running the migration
+    /// again changes nothing.
+    #[test]
+    fn the_v7_hostname_repair_is_idempotent_scoped_and_takes_the_newest_value() {
+        for from_version in [2, 3, 4, 5, 6] {
+            let dir = std::env::temp_dir().join(format!(
+                "arcscan-mig7-{}-{from_version}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("upgrade-v7.db");
+
+            let (damaged, intact, other_network) = {
+                let db = Db::open(&path).unwrap();
+                // Three sightings of the same device, oldest first. The middle
+                // scan could not resolve a name, so the newest *non-blank* value
+                // is the third one.
+                for hostname in [Some("nas-old"), None, Some("nas-current")] {
+                    db.save_scan(&result(
+                        "10.0.0.0/24",
+                        Some("office"),
+                        vec![
+                            host("10.0.0.5", Some("aa:bb:cc:00:00:05"), hostname, &[445]),
+                            host("10.0.0.6", Some("aa:bb:cc:00:00:06"), Some("kept"), &[22]),
+                        ],
+                    ))
+                    .unwrap();
+                }
+                // A different network with a device that has no hostname at all:
+                // the repair must not reach across scopes to invent one.
+                db.save_scan(&result(
+                    "192.168.50.0/24",
+                    Some("guest"),
+                    vec![host("192.168.50.9", Some("aa:bb:cc:00:00:09"), None, &[80])],
+                ))
+                .unwrap();
+
+                let rows = db.inventory().unwrap().rows;
+                let damaged = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:05"))
+                    .unwrap()
+                    .device_id;
+                let intact = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:06"))
+                    .unwrap()
+                    .device_id;
+                let other = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:09"))
+                    .unwrap()
+                    .device_id;
+                db.set_device_name(damaged, Some("Server Room NAS".into()))
+                    .unwrap();
+                (damaged, intact, other)
+            };
+
+            // Reproduce the damage an older build left behind, and stand the
+            // version back down to the one under test.
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute(
+                    "UPDATE devices SET hostname = '   ' WHERE id = ?1",
+                    params![damaged],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'version'",
+                    params![from_version.to_string()],
+                )
+                .unwrap();
+            }
+
+            let db = Db::open(&path).unwrap();
+            let read = |id: i64| db.device_detail(id).unwrap().device;
+            assert_eq!(
+                read(damaged).hostname.as_deref(),
+                Some("nas-current"),
+                "from v{from_version}: the newest non-blank sighting wins"
+            );
+            // The operator's name is not a hostname and is not a repair target.
+            assert_eq!(
+                read(damaged).custom_name.as_deref(),
+                Some("Server Room NAS")
+            );
+            assert_eq!(read(intact).hostname.as_deref(), Some("kept"));
+            // Nothing to recover from, so nothing is invented.
+            assert_eq!(read(other_network).hostname, None);
+
+            // Idempotent: standing the version down and reopening again is a
+            // no-op, and no device was re-keyed on the way through.
+            let identities: Vec<(i64, String)> = [damaged, intact, other_network]
+                .iter()
+                .map(|id| (*id, read(*id).identity_key))
+                .collect();
+            drop(db);
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'version'",
+                    params![from_version.to_string()],
+                )
+                .unwrap();
+            }
+            let db = Db::open(&path).unwrap();
+            assert_eq!(
+                db.device_detail(damaged)
+                    .unwrap()
+                    .device
+                    .hostname
+                    .as_deref(),
+                Some("nas-current")
+            );
+            for (id, key) in identities {
+                assert_eq!(db.device_detail(id).unwrap().device.identity_key, key);
+            }
+            drop(db);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn a_v182_database_upgrades_without_losing_anything_and_reopens_clean() {
         let dir = std::env::temp_dir().join(format!("arcscan-mig183-{}", std::process::id()));

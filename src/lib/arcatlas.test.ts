@@ -204,6 +204,85 @@ describe("current selected-network snapshot", () => {
     expect(snapshot.some((row) => row.network_scope_id === 2)).toBe(false);
   });
 
+  it("a network with nothing present sends nothing and counts honestly", () => {
+    const historyOnly = raw.filter((row) => row.presence !== "present");
+    const snapshot = handoffRowsForNetwork({
+      rows: historyOnly,
+      networkId: 1,
+      networkCount: 2,
+    });
+    expect(snapshot).toEqual([]);
+    expect(canSendSingleNetwork({ rows: historyOnly, networkId: 1, networkCount: 2 })).toBe(false);
+    expect(handoffPresenceCounts({ rows: historyOnly, networkId: 1, networkCount: 2 })).toEqual({
+      present: 0,
+      missing: 1,
+      unknown: 1,
+    });
+  });
+
+  it("an empty inventory is not a send", () => {
+    expect(handoffRowsForNetwork({ rows: [], networkId: 1, networkCount: 1 })).toEqual([]);
+    expect(handoffPresenceCounts({ rows: [], networkId: null, networkCount: 1 })).toEqual({
+      present: 0,
+      missing: 0,
+      unknown: 0,
+    });
+    expect(canSendSingleNetwork({ rows: [], networkId: null, networkCount: 1 })).toBe(false);
+  });
+
+  it("the single-network shortcut still excludes history, and several networks send nothing", () => {
+    const oneNetwork = raw.filter((row) => row.network_scope_id === 1);
+    // No explicit selection, but only one network exists: still present-only.
+    const implicit = handoffRowsForNetwork({
+      rows: oneNetwork,
+      networkId: null,
+      networkCount: 1,
+    });
+    expect(implicit.map((row) => row.presence)).toEqual(["present"]);
+    expect(handoffPresenceCounts({ rows: oneNetwork, networkId: null, networkCount: 1 })).toEqual({
+      present: 1,
+      missing: 1,
+      unknown: 1,
+    });
+
+    // Two networks and no selection: refuse rather than mix sites.
+    expect(handoffRowsForNetwork({ rows: raw, networkId: null, networkCount: 2 })).toEqual([]);
+    expect(handoffPresenceCounts({ rows: raw, networkId: null, networkCount: 2 })).toEqual({
+      present: 0,
+      missing: 0,
+      unknown: 0,
+    });
+  });
+
+  it("the sent envelope carries only present rows, in the exported Inventory shape", () => {
+    const envelope = buildHandoffEnvelope({
+      rows: handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 }),
+      notes: new Map(),
+      networkName: "192.168.10.0/24",
+      handoffId: "fixed-id",
+      generatedAt: "2026-09-15T09:00:00.000Z",
+      sourceVersion: "1.8.6",
+    });
+    expect(envelope.schemaVersion).toBe(1);
+    expect(envelope.inventory).toHaveLength(1);
+    // Same mapper as the Inventory JSON export, so the two cannot drift.
+    const [device] = envelope.inventory as Array<Record<string, unknown>>;
+    const exported = JSON.parse(
+      buildInventoryExport(
+        handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 }),
+        "json",
+        new Map(),
+      ),
+    ) as Array<Record<string, unknown>>;
+    expect(device).toEqual(exported[0]);
+    expect(device.presence).toBe("Present in latest scan");
+    expect(
+      (envelope.inventory as Array<Record<string, unknown>>).every(
+        (row) => row.presence === "Present in latest scan",
+      ),
+    ).toBe(true);
+  });
+
   it("confirmation separates sent and excluded presence counts", () => {
     const counts = handoffPresenceCounts({
       rows: raw,
