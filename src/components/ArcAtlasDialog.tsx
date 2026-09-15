@@ -73,7 +73,12 @@ export function ArcAtlasDialog(props: ArcAtlasDialogProps) {
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div className="animate-fade-in absolute inset-0 bg-black/40" onClick={props.onClose} aria-hidden />
-      <div role="dialog" aria-modal="true" aria-labelledby="arcatlas-title" className="popover animate-slide-up relative w-full max-w-md p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="arcatlas-title"
+        className="popover animate-slide-up relative w-full max-w-md p-4"
+      >
         {props.mode === "connect" ? (
           <form
             onSubmit={(event) => {
@@ -137,7 +142,9 @@ export function ArcAtlasDialog(props: ArcAtlasDialogProps) {
             <h2 id="arcatlas-title" className="text-sm font-semibold text-text">
               ArcAtlas
             </h2>
-            <p className="mt-1 text-[13px] text-text-secondary">{props.connection.configured ? "Connected" : "Not connected"}</p>
+            <p className="mt-1 text-[13px] text-text-secondary">
+              {props.connection.configured ? "Connected" : "Not connected"}
+            </p>
             {props.connection.serverUrl ? (
               <p className="mt-2 text-[13px] text-text">
                 <span className="text-text-muted">Server: </span>
@@ -188,8 +195,16 @@ export function ArcAtlasDialog(props: ArcAtlasDialogProps) {
                 <dd className="text-text">{props.confirmation.networkName}</dd>
               </div>
               <div>
-                <dt className="text-text-muted">Devices</dt>
-                <dd className="text-text">{props.confirmation.deviceCount}</dd>
+                <dt className="text-text-muted">Present devices sent</dt>
+                <dd className="text-text">{props.confirmation.presentCount}</dd>
+              </div>
+              <div>
+                <dt className="text-text-muted">Missing excluded</dt>
+                <dd className="text-text">{props.confirmation.missingExcluded}</dd>
+              </div>
+              <div>
+                <dt className="text-text-muted">Unknown / historical excluded</dt>
+                <dd className="text-text">{props.confirmation.unknownExcluded}</dd>
               </div>
             </dl>
             <p className="mt-3 text-[13px] leading-relaxed text-text-secondary">{props.confirmation.explanation}</p>
@@ -252,7 +267,10 @@ function Success(props: { result: ArcAtlasSendResult; onClose: () => void; onOpe
         <li>Unknown: {counts.unknown}</li>
       </ul>
       <p className="mt-2 text-[13px] text-text-secondary">
-        {destinationLabel({ clientName: props.result.clientName, siteName: props.result.siteName })}
+        {destinationLabel({
+          clientName: props.result.clientName,
+          siteName: props.result.siteName,
+        })}
       </p>
       <div className="mt-4 flex justify-end gap-2">
         <Button type="button" onClick={props.onClose}>

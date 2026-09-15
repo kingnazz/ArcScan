@@ -69,7 +69,7 @@ use crate::scanner::{HostResult, ScanResult};
 use crate::signature;
 
 /// Current schema version. Bump when a migration is added below.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Which generation of the naming rules wrote a device's stored detected name.
 ///
@@ -3103,6 +3103,8 @@ fn upsert_device(
     seen_at: &str,
 ) -> Result<DeviceRecord, String> {
     let identity = inventory::identify(host);
+    let hostname = non_blank(host.hostname.as_deref());
+    let vendor = non_blank(host.vendor.as_deref());
 
     // Look up by MAC first: a device seen earlier without one (routed scan, or a
     // scan where ARP had not resolved yet) was stored under a hostname or IP key,
@@ -3192,8 +3194,8 @@ fn upsert_device(
                 identity.key,
                 source_str(identity.source),
                 identity.mac,
-                host.hostname,
-                host.vendor,
+                hostname,
+                vendor,
                 host.ip,
                 seen_at,
                 id,
@@ -3219,8 +3221,8 @@ fn upsert_device(
             identity.key,
             source_str(identity.source),
             identity.mac,
-            host.hostname,
-            host.vendor,
+            hostname,
+            vendor,
             host.ip,
             seen_at,
         ],
@@ -3249,7 +3251,7 @@ fn insert_observation(
             scan_id,
             device_id,
             host.ip,
-            host.hostname,
+            non_blank(host.hostname.as_deref()),
             host.mac,
             host.vendor,
             format_ports(&host.open_ports),
@@ -3263,6 +3265,15 @@ fn insert_observation(
     )
     .map_err(sql_err)?;
     Ok(())
+}
+
+/// Scanner misses are represented as NULL, never as an empty automatic value.
+/// This keeps SQLite's COALESCE-based durable identity merge meaningful.
+fn non_blank(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn source_str(source: IdentitySource) -> &'static str {
@@ -3641,6 +3652,9 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
     if version < 5 {
         migrate_v5(conn)?;
     }
+    if version < 7 {
+        migrate_v7(conn)?;
+    }
 
     // v1.8.3 (schema 6). Two nullable columns and nothing else: no table is
     // rebuilt, no row is re-keyed, no device is reclassified and nothing is
@@ -3707,6 +3721,32 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         "INSERT INTO schema_meta (key, value) VALUES ('version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![SCHEMA_VERSION.to_string()],
+    )
+    .map_err(sql_err)?;
+    Ok(())
+}
+
+/// Recover durable hostnames that an older build replaced with a blank string.
+/// Observation history remains the source: the newest non-blank value wins,
+/// and operator names are deliberately untouched.
+fn migrate_v7(conn: &mut Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE devices
+         SET hostname = (
+             SELECT TRIM(h.hostname)
+             FROM hosts h
+             WHERE h.device_id = devices.id
+               AND NULLIF(TRIM(h.hostname), '') IS NOT NULL
+             ORDER BY h.scan_id DESC, h.id DESC
+             LIMIT 1
+         )
+         WHERE NULLIF(TRIM(hostname), '') IS NULL
+           AND EXISTS (
+             SELECT 1 FROM hosts h
+             WHERE h.device_id = devices.id
+               AND NULLIF(TRIM(h.hostname), '') IS NOT NULL
+           )",
+        [],
     )
     .map_err(sql_err)?;
     Ok(())
@@ -5794,6 +5834,62 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_later_hostname_does_not_erase_durable_identity_or_operator_name() {
+        let db = Db::open_in_memory().unwrap();
+        let mac = Some("aa:bb:cc:00:00:05");
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host(
+                "10.0.0.5",
+                mac,
+                Some("U7ProGarage.localdomain"),
+                &[80],
+            )],
+        ))
+        .unwrap();
+        let id = db.list_devices().unwrap()[0].id;
+        db.set_device_name(id, Some("Garage AP".into())).unwrap();
+
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, Some("   "), &[])],
+        ))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.hostname.as_deref(), Some("U7ProGarage.localdomain"));
+        assert_eq!(row.custom_name.as_deref(), Some("Garage AP"));
+        assert_eq!(row.display_name, "Garage AP");
+    }
+
+    #[test]
+    fn inventory_ports_are_the_latest_observation_not_stale_history() {
+        let db = Db::open_in_memory().unwrap();
+        let mac = Some("aa:bb:cc:00:00:05");
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, Some("nas"), &[445, 5001])],
+        ))
+        .unwrap();
+        db.save_scan(&result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![host("10.0.0.5", mac, None, &[])],
+        ))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.presence, PresenceState::Present);
+        assert!(row.open_ports.is_empty());
+        let detail = db.device_detail(row.device_id).unwrap();
+        assert_eq!(detail.observations[0].open_ports, Vec::<u16>::new());
+        assert_eq!(detail.observations[1].open_ports, vec![445, 5001]);
+    }
+
+    #[test]
     fn an_inventory_of_five_thousand_devices_is_two_queries_and_stays_quick() {
         let db = Db::open_in_memory().unwrap();
         // 5,000 devices over 20 scans is 100,000 observations, which is the
@@ -7556,6 +7652,137 @@ mod tests {
         );
     }
 
+    /// The v7 hostname repair, from every schema version that can reach it.
+    ///
+    /// The bug it undoes wrote an empty string over a durable hostname, so the
+    /// repair reads the observation history back. That makes three things worth
+    /// pinning: the newest non-blank sighting is the one that wins, an operator
+    /// name is not a hostname and is never touched, and running the migration
+    /// again changes nothing.
+    #[test]
+    fn the_v7_hostname_repair_is_idempotent_scoped_and_takes_the_newest_value() {
+        for from_version in [2, 3, 4, 5, 6] {
+            let dir = std::env::temp_dir().join(format!(
+                "arcscan-mig7-{}-{from_version}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("upgrade-v7.db");
+
+            let (damaged, intact, other_network) = {
+                let db = Db::open(&path).unwrap();
+                // Three sightings of the same device, oldest first. The middle
+                // scan could not resolve a name, so the newest *non-blank* value
+                // is the third one.
+                for hostname in [Some("nas-old"), None, Some("nas-current")] {
+                    db.save_scan(&result(
+                        "10.0.0.0/24",
+                        Some("office"),
+                        vec![
+                            host("10.0.0.5", Some("aa:bb:cc:00:00:05"), hostname, &[445]),
+                            host("10.0.0.6", Some("aa:bb:cc:00:00:06"), Some("kept"), &[22]),
+                        ],
+                    ))
+                    .unwrap();
+                }
+                // A different network with a device that has no hostname at all:
+                // the repair must not reach across scopes to invent one.
+                db.save_scan(&result(
+                    "192.168.50.0/24",
+                    Some("guest"),
+                    vec![host("192.168.50.9", Some("aa:bb:cc:00:00:09"), None, &[80])],
+                ))
+                .unwrap();
+
+                let rows = db.inventory().unwrap().rows;
+                let damaged = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:05"))
+                    .unwrap()
+                    .device_id;
+                let intact = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:06"))
+                    .unwrap()
+                    .device_id;
+                let other = rows
+                    .iter()
+                    .find(|r| r.mac.as_deref() == Some("AA:BB:CC:00:00:09"))
+                    .unwrap()
+                    .device_id;
+                db.set_device_name(damaged, Some("Server Room NAS".into()))
+                    .unwrap();
+                (damaged, intact, other)
+            };
+
+            // Reproduce the damage an older build left behind, and stand the
+            // version back down to the one under test.
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute(
+                    "UPDATE devices SET hostname = '   ' WHERE id = ?1",
+                    params![damaged],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'version'",
+                    params![from_version.to_string()],
+                )
+                .unwrap();
+            }
+
+            let db = Db::open(&path).unwrap();
+            let read = |id: i64| db.device_detail(id).unwrap().device;
+            assert_eq!(
+                read(damaged).hostname.as_deref(),
+                Some("nas-current"),
+                "from v{from_version}: the newest non-blank sighting wins"
+            );
+            // The operator's name is not a hostname and is not a repair target.
+            assert_eq!(
+                read(damaged).custom_name.as_deref(),
+                Some("Server Room NAS")
+            );
+            assert_eq!(read(intact).hostname.as_deref(), Some("kept"));
+            // Nothing to recover from, so nothing is invented.
+            assert_eq!(read(other_network).hostname, None);
+
+            // Idempotent: standing the version down and reopening again is a
+            // no-op, and no device was re-keyed on the way through.
+            let identities: Vec<(i64, String)> = [damaged, intact, other_network]
+                .iter()
+                .map(|id| (*id, read(*id).identity_key))
+                .collect();
+            drop(db);
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'version'",
+                    params![from_version.to_string()],
+                )
+                .unwrap();
+            }
+            let db = Db::open(&path).unwrap();
+            assert_eq!(
+                db.device_detail(damaged)
+                    .unwrap()
+                    .device
+                    .hostname
+                    .as_deref(),
+                Some("nas-current")
+            );
+            for (id, key) in identities {
+                assert_eq!(db.device_detail(id).unwrap().device.identity_key, key);
+            }
+            drop(db);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn a_v182_database_upgrades_without_losing_anything_and_reopens_clean() {
         let dir = std::env::temp_dir().join(format!("arcscan-mig183-{}", std::process::id()));
@@ -7618,6 +7845,7 @@ mod tests {
             conn.execute_batch(
                 "ALTER TABLE devices DROP COLUMN user_device_type;
                  ALTER TABLE device_discovery DROP COLUMN naming_rules_version;
+                 UPDATE devices SET hostname = '   ';
                  UPDATE schema_meta SET value = '5' WHERE key = 'version';",
             )
             .unwrap();
@@ -7627,6 +7855,7 @@ mod tests {
         let db = Db::open(&path).unwrap();
         let rows = db.inventory().unwrap().rows;
         assert_eq!(rows.len(), before_rows);
+        assert_eq!(rows[0].hostname.as_deref(), Some("printer-01"));
         assert_eq!(rows[0].custom_name.as_deref(), Some("Front Office Printer"));
         assert_eq!(rows[0].status, DeviceStatus::Trusted);
         assert!(rows[0].notes_present);

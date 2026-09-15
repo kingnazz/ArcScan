@@ -178,6 +178,22 @@ fn made_by(vendor: Option<&str>, makers: &[&str]) -> bool {
     makers.iter().any(|m| has_word(&lower, m))
 }
 
+fn compact_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn numbered_family(value: &str, prefix: &str) -> bool {
+    let compact = compact_identity(value);
+    compact
+        .strip_prefix(prefix)
+        .and_then(|tail| tail.chars().next())
+        .is_some_and(|c| c.is_ascii_digit())
+}
+
 /// Classify one device.
 ///
 /// Deterministic: the inputs are folded into sorted sets before any rule runs,
@@ -223,6 +239,61 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             evidence,
         });
     };
+
+    // Strong manufacturer + product-family identity is more durable than an
+    // incidental service. NAS appliances often advertise IPP, and management
+    // controllers expose HTTP; neither fact changes what the hardware is.
+    let strong_identity_type = if made_by(facts.vendor, NAS_MAKERS)
+        && models
+            .iter()
+            .any(|model| numbered_family(model, "rs") || numbered_family(model, "ds"))
+    {
+        Some((
+            DeviceType::Nas,
+            format!(
+                "{} RS/DS storage family",
+                facts.vendor.unwrap_or("Synology")
+            ),
+        ))
+    } else if made_by(facts.vendor, NETWORK_MAKERS)
+        && models.iter().any(|model| {
+            let compact = compact_identity(model);
+            compact.starts_with("udm") || compact.starts_with("uxg")
+        })
+    {
+        Some((DeviceType::Router, "UDM/UXG gateway family".into()))
+    } else if made_by(facts.vendor, NETWORK_MAKERS)
+        && models
+            .iter()
+            .any(|model| compact_identity(model).starts_with("usw"))
+    {
+        Some((DeviceType::NetworkEquipment, "USW switch family".into()))
+    } else if made_by(facts.vendor, NETWORK_MAKERS)
+        && models.iter().any(|model| {
+            let compact = compact_identity(model);
+            compact.starts_with("u6") || compact.starts_with("u7")
+        })
+    {
+        Some((
+            DeviceType::NetworkEquipment,
+            "U6/U7 access-point family".into(),
+        ))
+    } else if made_by(facts.vendor, COMPUTER_MAKERS)
+        && models.iter().any(|model| {
+            let compact = compact_identity(model);
+            compact.contains("poweredge") || compact.contains("idrac")
+        })
+    {
+        Some((
+            DeviceType::Computer,
+            "Dell PowerEdge/iDRAC server identity".into(),
+        ))
+    } else {
+        None
+    };
+    if let Some((device_type, evidence)) = &strong_identity_type {
+        claim(*device_type, Confidence::High, vec![evidence.clone()]);
+    }
 
     // ---- Router -----------------------------------------------------------
     //
@@ -286,7 +357,15 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         if print_port {
             evidence.push(format!("TCP {}", print_ports_label(&ports)));
         }
-        claim(DeviceType::Printer, Confidence::High, evidence);
+        let confidence = if strong_identity_type
+            .as_ref()
+            .is_some_and(|(device_type, _)| *device_type != DeviceType::Printer)
+        {
+            Confidence::Medium
+        } else {
+            Confidence::High
+        };
+        claim(DeviceType::Printer, confidence, evidence);
     } else if printer_service {
         claim(
             DeviceType::Printer,
@@ -1380,6 +1459,163 @@ mod tests {
         let plain = Fixture::new().service("_smb._tcp").vendor("Synology").run();
         assert_eq!(plain.device_type, DeviceType::Nas);
         assert_eq!(plain.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn synology_rs_identity_beats_incidental_printer_services() {
+        let result = Fixture::new()
+            .service("_ipp._tcp")
+            .model("RS3617xs+")
+            .vendor("Synology")
+            .ports(&[631])
+            .run();
+        assert_eq!(result.device_type, DeviceType::Nas);
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result
+            .conflicts
+            .iter()
+            .any(|claim| claim.device_type == DeviceType::Printer));
+    }
+
+    #[test]
+    fn ubiquiti_product_families_beat_incidental_services() {
+        for model in ["U7 Pro", "U6 LR", "USW-24-G2", "USW Lite 8 PoE"] {
+            let result = Fixture::new()
+                .service("_ipp._tcp")
+                .model(model)
+                .vendor("Ubiquiti Inc")
+                .ports(&[631])
+                .run();
+            assert_eq!(
+                result.device_type,
+                DeviceType::NetworkEquipment,
+                "{model}: {result:?}"
+            );
+            assert_eq!(result.confidence, Confidence::High);
+        }
+
+        for model in ["UDM Pro", "UXG Pro"] {
+            let result = Fixture::new().model(model).vendor("Ubiquiti Inc").run();
+            assert_eq!(
+                result.device_type,
+                DeviceType::Router,
+                "{model}: {result:?}"
+            );
+            assert_eq!(result.confidence, Confidence::High);
+        }
+    }
+
+    #[test]
+    fn dell_server_identity_is_not_reduced_to_generic_network_equipment() {
+        for model in ["PowerEdge R750", "iDRAC 9"] {
+            let result = Fixture::new()
+                .service("_http._tcp")
+                .model(model)
+                .vendor("Dell Inc")
+                .ports(&[80, 443])
+                .os("Network device")
+                .run();
+            assert_eq!(
+                result.device_type,
+                DeviceType::Computer,
+                "{model}: {result:?}"
+            );
+            assert_eq!(result.confidence, Confidence::High);
+        }
+    }
+
+    #[test]
+    fn synology_ds_identity_survives_a_full_printer_advertisement() {
+        let result = Fixture::new()
+            .service("_ipp._tcp")
+            .service("_printer._tcp")
+            .model("DS1517+")
+            .vendor("Synology")
+            .ports(&[515, 631, 9100])
+            .run();
+        assert_eq!(result.device_type, DeviceType::Nas);
+        assert_eq!(result.confidence, Confidence::High);
+        // The printer claim is kept as a conflict rather than thrown away: the
+        // services really were advertised, they just do not decide the answer.
+        assert!(result
+            .conflicts
+            .iter()
+            .any(|claim| claim.device_type == DeviceType::Printer));
+    }
+
+    #[test]
+    fn the_rest_of_the_ubiquiti_line_up_resolves_without_a_person() {
+        for (model, expected) in [
+            ("UDM-SE", DeviceType::Router),
+            ("UDM Pro Max", DeviceType::Router),
+            ("UXG-Lite", DeviceType::Router),
+            ("USW-Pro-48-PoE", DeviceType::NetworkEquipment),
+            ("USW-Lite-8-PoE", DeviceType::NetworkEquipment),
+            ("U6-Pro", DeviceType::NetworkEquipment),
+            ("U7-Pro-Max", DeviceType::NetworkEquipment),
+        ] {
+            let result = Fixture::new()
+                .service("_http._tcp")
+                .model(model)
+                .vendor("Ubiquiti Inc")
+                .ports(&[80, 443])
+                .run();
+            assert_eq!(result.device_type, expected, "{model}: {result:?}");
+            assert_eq!(result.confidence, Confidence::High, "{model}");
+        }
+    }
+
+    #[test]
+    fn a_vendor_name_on_its_own_never_invents_a_product_family() {
+        // Synology sells NAS appliances, but "made by Synology" is not evidence
+        // that this box is one: with no RS/DS model the advertised print
+        // services are the only thing said about it, and they win.
+        let nas_maker_only = Fixture::new()
+            .service("_ipp._tcp")
+            .vendor("Synology")
+            .ports(&[631])
+            .run();
+        assert_eq!(nas_maker_only.device_type, DeviceType::Printer);
+        assert!(!nas_maker_only
+            .evidence
+            .iter()
+            .any(|line| line.contains("storage family")));
+
+        // Same for the network and computer makers: no model, no family claim.
+        let network_maker_only = Fixture::new().vendor("Ubiquiti Inc").ports(&[443]).run();
+        assert_ne!(network_maker_only.device_type, DeviceType::Router);
+        assert!(!network_maker_only
+            .evidence
+            .iter()
+            .any(|line| line.contains("family")));
+
+        let computer_maker_only = Fixture::new().vendor("Dell Inc").ports(&[443]).run();
+        assert!(!computer_maker_only
+            .evidence
+            .iter()
+            .any(|line| line.contains("server identity")));
+    }
+
+    #[test]
+    fn a_family_prefix_needs_its_own_maker_behind_it() {
+        // The same model strings from a maker that does not sell that family are
+        // not promoted: identity is manufacturer AND product, never product
+        // shape alone.
+        for (vendor, model) in [
+            ("Brother", "USW-24-G2"),
+            ("Hewlett-Packard", "RS3617xs+"),
+            ("Amcrest", "PowerEdge R750"),
+            ("Espressif Inc.", "UDM-Pro"),
+        ] {
+            let result = Fixture::new().model(model).vendor(vendor).run();
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|line| line.contains("family") || line.contains("server identity")),
+                "{vendor} {model}: {result:?}"
+            );
+        }
     }
 
     #[test]

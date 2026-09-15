@@ -12,6 +12,7 @@ import {
   createHandoffId,
   destinationLabel,
   displayTokenPrefix,
+  handoffPresenceCounts,
   handoffRowsForNetwork,
   nextModeOnSend,
   parseArcAtlasError,
@@ -85,7 +86,11 @@ describe("single-network send", () => {
   it("blocks send when Inventory is showing more than one network", () => {
     const rows = [
       inventoryRow(),
-      inventoryRow({ device_id: 4, network_scope_id: 2, network_name: "Guest" }),
+      inventoryRow({
+        device_id: 4,
+        network_scope_id: 2,
+        network_name: "Guest",
+      }),
     ];
     expect(canSendSingleNetwork({ networkId: null, networkCount: 2, rows })).toBe(false);
   });
@@ -97,16 +102,23 @@ describe("single-network send", () => {
   });
 });
 
-describe("full selected-network snapshot", () => {
+describe("current selected-network snapshot", () => {
   const raw: InventoryRow[] = [
-    inventoryRow({ device_id: 1, presence: "present", display_name: "Office Printer" }),
+    inventoryRow({
+      device_id: 1,
+      presence: "present",
+      display_name: "Office Printer",
+    }),
     inventoryRow({
       device_id: 2,
       presence: "missing",
       display_name: "Spare Switch",
       custom_name: "Spare Switch",
       hostname: "spare-switch",
-      discovery: discovery({ device_type: "switch", detected_name: "Spare Switch" }),
+      discovery: discovery({
+        device_type: "switch",
+        detected_name: "Spare Switch",
+      }),
     }),
     inventoryRow({
       device_id: 3,
@@ -114,7 +126,10 @@ describe("full selected-network snapshot", () => {
       display_name: "Unknown Camera",
       custom_name: "Unknown Camera",
       hostname: "unknown-camera",
-      discovery: discovery({ device_type: "camera", detected_name: "Unknown Camera" }),
+      discovery: discovery({
+        device_type: "camera",
+        detected_name: "Unknown Camera",
+      }),
     }),
     inventoryRow({
       device_id: 4,
@@ -122,21 +137,28 @@ describe("full selected-network snapshot", () => {
       network_name: "Guest",
       display_name: "Guest AP",
       presence: "present",
-      discovery: discovery({ device_type: "access-point", detected_name: "Guest AP" }),
+      discovery: discovery({
+        device_type: "access-point",
+        detected_name: "Guest AP",
+      }),
     }),
   ];
 
-  it("View = Present still sends Present + Missing + Unknown rows from selected network", () => {
+  it("includes present devices and excludes missing and unknown devices", () => {
     const filtered = prepareInventory(
       raw,
       { ...EMPTY_INVENTORY_FILTER, view: "present", networkId: 1 },
       "device",
       "asc",
     );
-    const snapshot = handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 });
+    const snapshot = handoffRowsForNetwork({
+      rows: raw,
+      networkId: 1,
+      networkCount: 2,
+    });
     expect(filtered.map((row) => row.presence)).toEqual(["present"]);
-    expect(snapshot.map((row) => row.presence).sort()).toEqual(["missing", "present", "unknown"]);
-    expect(snapshot).toHaveLength(3);
+    expect(snapshot.map((row) => row.presence)).toEqual(["present"]);
+    expect(snapshot).toHaveLength(1);
   });
 
   it("search text does not reduce ArcAtlas snapshot", () => {
@@ -146,9 +168,13 @@ describe("full selected-network snapshot", () => {
       "device",
       "asc",
     );
-    const snapshot = handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 });
+    const snapshot = handoffRowsForNetwork({
+      rows: raw,
+      networkId: 1,
+      networkCount: 2,
+    });
     expect(filtered).toHaveLength(1);
-    expect(snapshot).toHaveLength(3);
+    expect(snapshot).toHaveLength(1);
   });
 
   it("device type filter does not reduce ArcAtlas snapshot", () => {
@@ -158,20 +184,111 @@ describe("full selected-network snapshot", () => {
       "device",
       "asc",
     );
-    const snapshot = handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 });
+    const snapshot = handoffRowsForNetwork({
+      rows: raw,
+      networkId: 1,
+      networkCount: 2,
+    });
     expect(filtered.every((row) => row.discovery?.device_type === "printer")).toBe(true);
-    expect(filtered.length).toBeLessThan(snapshot.length);
-    expect(snapshot).toHaveLength(3);
+    expect(filtered).toHaveLength(1);
+    expect(snapshot).toHaveLength(1);
   });
 
   it("selected network excludes every other network", () => {
-    const snapshot = handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 });
+    const snapshot = handoffRowsForNetwork({
+      rows: raw,
+      networkId: 1,
+      networkCount: 2,
+    });
     expect(snapshot.every((row) => row.network_scope_id === 1)).toBe(true);
     expect(snapshot.some((row) => row.network_scope_id === 2)).toBe(false);
   });
 
-  it("confirmation count equals full selected-network row count", () => {
-    const snapshot = handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 });
+  it("a network with nothing present sends nothing and counts honestly", () => {
+    const historyOnly = raw.filter((row) => row.presence !== "present");
+    const snapshot = handoffRowsForNetwork({
+      rows: historyOnly,
+      networkId: 1,
+      networkCount: 2,
+    });
+    expect(snapshot).toEqual([]);
+    expect(canSendSingleNetwork({ rows: historyOnly, networkId: 1, networkCount: 2 })).toBe(false);
+    expect(handoffPresenceCounts({ rows: historyOnly, networkId: 1, networkCount: 2 })).toEqual({
+      present: 0,
+      missing: 1,
+      unknown: 1,
+    });
+  });
+
+  it("an empty inventory is not a send", () => {
+    expect(handoffRowsForNetwork({ rows: [], networkId: 1, networkCount: 1 })).toEqual([]);
+    expect(handoffPresenceCounts({ rows: [], networkId: null, networkCount: 1 })).toEqual({
+      present: 0,
+      missing: 0,
+      unknown: 0,
+    });
+    expect(canSendSingleNetwork({ rows: [], networkId: null, networkCount: 1 })).toBe(false);
+  });
+
+  it("the single-network shortcut still excludes history, and several networks send nothing", () => {
+    const oneNetwork = raw.filter((row) => row.network_scope_id === 1);
+    // No explicit selection, but only one network exists: still present-only.
+    const implicit = handoffRowsForNetwork({
+      rows: oneNetwork,
+      networkId: null,
+      networkCount: 1,
+    });
+    expect(implicit.map((row) => row.presence)).toEqual(["present"]);
+    expect(handoffPresenceCounts({ rows: oneNetwork, networkId: null, networkCount: 1 })).toEqual({
+      present: 1,
+      missing: 1,
+      unknown: 1,
+    });
+
+    // Two networks and no selection: refuse rather than mix sites.
+    expect(handoffRowsForNetwork({ rows: raw, networkId: null, networkCount: 2 })).toEqual([]);
+    expect(handoffPresenceCounts({ rows: raw, networkId: null, networkCount: 2 })).toEqual({
+      present: 0,
+      missing: 0,
+      unknown: 0,
+    });
+  });
+
+  it("the sent envelope carries only present rows, in the exported Inventory shape", () => {
+    const envelope = buildHandoffEnvelope({
+      rows: handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 }),
+      notes: new Map(),
+      networkName: "192.168.10.0/24",
+      handoffId: "fixed-id",
+      generatedAt: "2026-09-15T09:00:00.000Z",
+      sourceVersion: "1.8.6",
+    });
+    expect(envelope.schemaVersion).toBe(1);
+    expect(envelope.inventory).toHaveLength(1);
+    // Same mapper as the Inventory JSON export, so the two cannot drift.
+    const [device] = envelope.inventory as Array<Record<string, unknown>>;
+    const exported = JSON.parse(
+      buildInventoryExport(
+        handoffRowsForNetwork({ rows: raw, networkId: 1, networkCount: 2 }),
+        "json",
+        new Map(),
+      ),
+    ) as Array<Record<string, unknown>>;
+    expect(device).toEqual(exported[0]);
+    expect(device.presence).toBe("Present in latest scan");
+    expect(
+      (envelope.inventory as Array<Record<string, unknown>>).every(
+        (row) => row.presence === "Present in latest scan",
+      ),
+    ).toBe(true);
+  });
+
+  it("confirmation separates sent and excluded presence counts", () => {
+    const counts = handoffPresenceCounts({
+      rows: raw,
+      networkId: 1,
+      networkCount: 2,
+    });
     const confirmation = sendConfirmation({
       connection: {
         ...DISCONNECTED_CONNECTION,
@@ -180,10 +297,13 @@ describe("full selected-network snapshot", () => {
         siteName: "Seattle HQ",
       },
       networkName: "192.168.10.0/24",
-      deviceCount: snapshot.length,
+      counts,
     });
-    expect(confirmation.deviceCount).toBe(3);
-    expect(confirmation.deviceCount).toBe(raw.filter((row) => row.network_scope_id === 1).length);
+    expect(confirmation).toMatchObject({
+      presentCount: 1,
+      missingExcluded: 1,
+      unknownExcluded: 1,
+    });
   });
 });
 
@@ -197,11 +317,13 @@ describe("confirmation", () => {
         siteName: "Seattle HQ",
       },
       networkName: "192.168.10.0/24",
-      deviceCount: 42,
+      counts: { present: 42, missing: 5, unknown: 7 },
     });
     expect(confirmation.destination).toBe("Cedar Ridge / Seattle HQ");
     expect(confirmation.networkName).toBe("192.168.10.0/24");
-    expect(confirmation.deviceCount).toBe(42);
+    expect(confirmation.presentCount).toBe(42);
+    expect(confirmation.missingExcluded).toBe(5);
+    expect(confirmation.unknownExcluded).toBe(7);
     expect(confirmation.explanation).toBe(SEND_EXPLANATION);
   });
 });
@@ -310,8 +432,6 @@ describe("errors and copy", () => {
 
   it("shows only a token prefix, never a full token", () => {
     expect(displayTokenPrefix("atlas_arcscan_abcd")).toBe("atlas_arcscan_abcd...");
-    expect(destinationLabel({ clientName: "Cedar Ridge", siteName: "Seattle HQ" })).toBe(
-      "Cedar Ridge / Seattle HQ",
-    );
+    expect(destinationLabel({ clientName: "Cedar Ridge", siteName: "Seattle HQ" })).toBe("Cedar Ridge / Seattle HQ");
   });
 });
