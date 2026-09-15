@@ -72,8 +72,16 @@ export interface ArcAtlasHandoffEnvelope {
 export interface SendConfirmation {
   destination: string;
   networkName: string;
-  deviceCount: number;
+  presentCount: number;
+  missingExcluded: number;
+  unknownExcluded: number;
   explanation: string;
+}
+
+export interface HandoffPresenceCounts {
+  present: number;
+  missing: number;
+  unknown: number;
 }
 
 export const DISCONNECTED_CONNECTION: ArcAtlasConnection = {
@@ -121,8 +129,9 @@ export function uniqueNetworkNames(rows: InventoryRow[]): string[] {
 /**
  * Inventory snapshot sent to ArcAtlas.
  *
- * Network selection is the only scope filter. Search, presence view,
- * classification view, device type, and sort order do not apply.
+ * Network selection and current presence are the only scope filters. Search,
+ * the visible Inventory presence view, classification view, device type, and
+ * sort order do not apply.
  */
 export function handoffRowsForNetwork(args: {
   rows: InventoryRow[];
@@ -131,11 +140,28 @@ export function handoffRowsForNetwork(args: {
 }): InventoryRow[] {
   if (args.rows.length === 0) return [];
   if (args.networkId != null) {
-    return args.rows.filter((row) => row.network_scope_id === args.networkId);
+    return args.rows.filter((row) => row.network_scope_id === args.networkId && row.presence === "present");
   }
   const networkIds = [...new Set(args.rows.map((row) => row.network_scope_id))];
   if (args.networkCount > 1 || networkIds.length > 1) return [];
-  return args.rows.slice();
+  return args.rows.filter((row) => row.presence === "present");
+}
+
+/** Counts every presence state in the selected network for confirmation copy. */
+export function handoffPresenceCounts(args: {
+  rows: InventoryRow[];
+  networkId: number | null;
+  networkCount: number;
+}): HandoffPresenceCounts {
+  const counts: HandoffPresenceCounts = { present: 0, missing: 0, unknown: 0 };
+  if (args.rows.length === 0) return counts;
+  const networkIds = [...new Set(args.rows.map((row) => row.network_scope_id))];
+  if (args.networkId == null && (args.networkCount > 1 || networkIds.length > 1)) return counts;
+  for (const row of args.rows) {
+    if (args.networkId != null && row.network_scope_id !== args.networkId) continue;
+    counts[row.presence] += 1;
+  }
+  return counts;
 }
 
 export function canSendSingleNetwork(args: {
@@ -158,12 +184,14 @@ export function nextModeOnSend(
 export function sendConfirmation(args: {
   connection: ArcAtlasConnection;
   networkName: string;
-  deviceCount: number;
+  counts: HandoffPresenceCounts;
 }): SendConfirmation {
   return {
     destination: destinationLabel(args.connection),
     networkName: args.networkName,
-    deviceCount: args.deviceCount,
+    presentCount: args.counts.present,
+    missingExcluded: args.counts.missing,
+    unknownExcluded: args.counts.unknown,
     explanation: SEND_EXPLANATION,
   };
 }
