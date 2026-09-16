@@ -52,6 +52,15 @@ import { parsePorts, serviceWithPort } from "./format";
 import type { RuntimeInfo } from "./runtime";
 import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
 import { APP_VERSION } from "../version";
+import {
+  EMPTY_CREDENTIAL_STATUS,
+  type CredentialInput,
+  type CredentialStatus,
+  type TopologyConnection,
+  type TopologyRequest,
+  type TopologyResult,
+  type TopologyTarget,
+} from "./topology";
 
 /**
  * The type vocabulary, taken from the label table so the demo cannot accept a
@@ -1589,6 +1598,11 @@ let mockArcAtlas: import("./arcatlas").ArcAtlasConnection = {
 };
 let mockArcAtlasToken: string | null = null;
 
+let mockTopologyCredentials: CredentialStatus = { ...EMPTY_CREDENTIAL_STATUS };
+let mockTopologySecret = false;
+let mockTopologyLast: TopologyResult | null = null;
+let mockTopologyCancel = false;
+
 function abortableSleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -1858,6 +1872,7 @@ export const mock = {
 
   cancelScan(): void {
     cancelRequested = true;
+    mockTopologyCancel = true;
   },
 
   previewScan(opts: ScanOptions): ScanPreview {
@@ -2289,6 +2304,86 @@ export const mock = {
       status: 201,
     };
   },
+
+  setTopologyCredentials(credentials: CredentialInput): CredentialStatus {
+    if (credentials.version === "v2c") {
+      if (!credentials.community?.trim()) {
+        throw "Enter an SNMP community string. ArcScan never tries public, private or any other default.";
+      }
+      mockTopologySecret = true;
+      mockTopologyCredentials = {
+        configured: true,
+        version: "v2c",
+        username: null,
+        authProtocol: null,
+        privProtocol: null,
+        sessionOnly: true,
+      };
+      return { ...mockTopologyCredentials };
+    }
+    if (!credentials.username?.trim() || !credentials.authProtocol?.trim() || !credentials.authPassword?.trim()) {
+      throw "ArcScan does not send SNMPv3 with noAuthNoPriv. Choose authentication, and privacy when the device requires it.";
+    }
+    mockTopologySecret = true;
+    mockTopologyCredentials = {
+      configured: true,
+      version: "v3",
+      username: "[configured]",
+      authProtocol: credentials.authProtocol,
+      privProtocol: credentials.privProtocol ?? null,
+      sessionOnly: true,
+    };
+    return { ...mockTopologyCredentials };
+  },
+
+  clearTopologyCredentials(): CredentialStatus {
+    mockTopologySecret = false;
+    mockTopologyCredentials = { ...EMPTY_CREDENTIAL_STATUS };
+    return { ...mockTopologyCredentials };
+  },
+
+  getTopologyCredentials(): CredentialStatus {
+    return { ...mockTopologyCredentials };
+  },
+
+  async discoverTopology(request: TopologyRequest): Promise<TopologyResult> {
+    if (!mockTopologyCredentials.configured || !mockTopologySecret) {
+      throw "Enter SNMP credentials before discovering topology.";
+    }
+    mockTopologyCancel = false;
+    await sleep(40);
+    if (mockTopologyCancel) {
+      const empty: TopologyResult = {
+        snapshot: { capturedAt: new Date().toISOString(), connections: [], unknownNodes: [] },
+        summary: {
+          devicesQueried: 0,
+          devicesResponded: 0,
+          devicesFailed: 0,
+          confirmed: 0,
+          strong: 0,
+          inferred: 0,
+          unknownNodes: 0,
+          durationMs: 40,
+          cancelled: true,
+          timedOut: false,
+          failures: [],
+        },
+      };
+      mockTopologyLast = empty;
+      return empty;
+    }
+    const result = demoTopologyResult(request.targets);
+    mockTopologyLast = result;
+    return result;
+  },
+
+  lastTopologySnapshot(): TopologyResult | null {
+    return mockTopologyLast;
+  },
+
+  cancelTopology(): void {
+    mockTopologyCancel = true;
+  },
 };
 
 function requireDevice(id: number): Device {
@@ -2305,6 +2400,116 @@ function requireDevice(id: number): Device {
 function withScopeName<T extends ScanSummary>(summary: T): T {
   const scope = DEMO_SCOPES.find((s) => s.id === summary.network_scope_id);
   return scope ? { ...summary, scope_name: scope.display_name } : summary;
+}
+
+/**
+ * Browser-demo topology. Mirrors the issue #42 site story against the home
+ * inventory: the gateway is confirmed via LLDP onto an unknown core switch,
+ * single-MAC access ports are strong, and a busy uplink does not mint fake
+ * endpoint links. Credentials are never copied into the snapshot.
+ */
+function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
+  const byIp = new Map(targets.filter((t) => t.ip).map((t) => [t.ip, t]));
+  const id = (ip: string) => byIp.get(ip)?.deviceId ?? null;
+  const capturedAt = "2026-09-16T12:00:00Z";
+  const unknownSwitch = "unknown:chassis:001a2b000002";
+  const connections: TopologyConnection[] = [
+    {
+      fromDeviceId: id("192.168.1.1"),
+      toDeviceId: null,
+      toUnresolvedId: unknownSwitch,
+      fromPort: "LAN",
+      toPort: "48",
+      kind: "ethernet",
+      protocol: "lldp",
+      confidence: "confirmed",
+      speedMbps: 1000,
+      vlan: "trunk",
+      nativeVlan: 10,
+      taggedVlans: [10, 20, 30],
+      evidence: [
+        "LLDP neighbour on Home Router (LAN): chassis 00:1A:2B:00:00:02, sysName core-sw, remote port 48",
+      ],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.12"),
+      fromPort: "Port 12",
+      toPort: "eth0",
+      kind: "ethernet",
+      protocol: "lldp",
+      confidence: "confirmed",
+      speedMbps: 1000,
+      vlan: "20",
+      nativeVlan: 20,
+      taggedVlans: [],
+      poe: { enabled: true, watts: 8.2 },
+      evidence: ["LLDP neighbour on core-sw (Port 12) reports macbook-air eth0"],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.50"),
+      fromPort: "Port 20",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong",
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (00:11:32:5D:A2:77) learned on access port Port 20"],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.15"),
+      fromPort: "Port 7",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong",
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (18:66:DA:70:2B:14) learned on access port Port 7"],
+    },
+  ];
+  const responded = byIp.has("192.168.1.1") ? 1 : 0;
+  const queried = Math.max(targets.length, 1);
+  return {
+    snapshot: {
+      capturedAt,
+      connections,
+      unknownNodes: [
+        {
+          id: unknownSwitch,
+          chassisId: "00:1A:2B:00:00:02",
+          sysName: "core-sw",
+          reason: "LLDP neighbour is not present in this scan's inventory.",
+          source: "lldp",
+        },
+      ],
+    },
+    summary: {
+      devicesQueried: queried,
+      devicesResponded: responded,
+      devicesFailed: Math.max(0, queried - responded),
+      confirmed: connections.filter((c) => c.confidence === "confirmed").length,
+      strong: connections.filter((c) => c.confidence === "strong").length,
+      inferred: 0,
+      unknownNodes: 1,
+      durationMs: 640,
+      cancelled: false,
+      timedOut: false,
+      failures: targets
+        .filter((t) => t.ip !== "192.168.1.1")
+        .slice(0, 3)
+        .map((t) => ({
+          ip: t.ip,
+          reason:
+            "The device did not answer SNMP in time. That can mean it is not an SNMP agent, or that the credentials are wrong — ArcScan cannot tell those apart, and will not guess another community.",
+        })),
+    },
+  };
 }
 
 /** Address count for a target, used by the mock's scan preview. */

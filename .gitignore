@@ -6,6 +6,7 @@ dist-ssr
 # Build output
 /src-tauri/target
 /src-tauri/gen
+/src-tauri/topology-engine/target
 
 # Logs
 *.log

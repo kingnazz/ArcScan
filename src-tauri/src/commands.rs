@@ -212,6 +212,7 @@ struct RemovedEvent {
 #[tauri::command]
 pub fn cancel_scan() {
     scanner::request_cancel();
+    crate::topology::engine::request_cancel();
 }
 
 /// Save a scan and return its change summary in the same call, so the UI never

@@ -20,6 +20,7 @@ import { ArcAtlasDialog, type ArcAtlasDialogMode } from "./components/ArcAtlasDi
 import { ChangesPanel } from "./components/ChangesPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ScanStart } from "./components/ScanStart";
+import { TopologyPanel } from "./components/TopologyPanel";
 import { ProgressStrip, StatusBar } from "./components/StatusBar";
 import { Button, EmptyState } from "./ui/primitives";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
@@ -77,6 +78,16 @@ import {
   type ArcAtlasError,
   type ArcAtlasSendResult,
 } from "./lib/arcatlas";
+import {
+  EMPTY_CREDENTIAL_STATUS,
+  nameLookupFromInventory,
+  nameLookupFromScan,
+  targetsFromInventory,
+  targetsFromScanRows,
+  type CredentialInput,
+  type CredentialStatus,
+  type TopologyResult,
+} from "./lib/topology";
 
 /** Below this the drawer becomes an overlay rather than a second pane. */
 const OVERLAY_BREAKPOINT = 1100;
@@ -98,7 +109,7 @@ export default function App() {
    * describes one scan against one baseline, while Changes is the persistent
    * inbox across every scan. Collapsing the two would lose the detail.
    */
-  const [scanTab, setScanTab] = useState<"devices" | "comparison">("devices");
+  const [scanTab, setScanTab] = useState<"devices" | "comparison" | "topology">("devices");
   const [target, setTarget] = useState("");
   const [profileId, setProfileId] = useState<ProfileId>("quick-lan");
   const [recents, setRecents] = useState<string[]>([]);
@@ -147,6 +158,11 @@ export default function App() {
   const [arcAtlasError, setArcAtlasError] = useState<ArcAtlasError | null>(null);
   const [arcAtlasResult, setArcAtlasResult] = useState<ArcAtlasSendResult | null>(null);
   const handoffAttempt = useRef(new HandoffAttempt());
+
+  const [topologyCredentials, setTopologyCredentials] = useState<CredentialStatus>(EMPTY_CREDENTIAL_STATUS);
+  const [topologyResult, setTopologyResult] = useState<TopologyResult | null>(null);
+  const [topologyBusy, setTopologyBusy] = useState(false);
+  const [topologyError, setTopologyError] = useState<string | null>(null);
 
   // --- Changes ------------------------------------------------------------
   const [changes, setChanges] = useState<ChangeFeed | null>(null);
@@ -241,6 +257,13 @@ export default function App() {
       .catch((error) => {
         const { message, technical } = describeError(error);
         reportError(`ArcScan could not detect this computer's networks. ${message}`, technical);
+      });
+
+    api
+      .getTopologyCredentials()
+      .then(setTopologyCredentials)
+      .catch(() => {
+        // Session credentials are optional. A failure here just means none are set.
       });
   }, [reportError]);
 
@@ -451,6 +474,56 @@ export default function App() {
     },
     [openSavedScan],
   );
+
+  const saveTopologyCredentials = useCallback(async (input: CredentialInput) => {
+    try {
+      setTopologyError(null);
+      setTopologyCredentials(await api.setTopologyCredentials(input));
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      setTopologyError(message);
+      reportError(`ArcScan could not store those SNMP credentials. ${message}`, technical);
+    }
+  }, [reportError]);
+
+  const clearTopologyCredentials = useCallback(async () => {
+    try {
+      setTopologyCredentials(await api.clearTopologyCredentials());
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      reportError(`ArcScan could not clear the SNMP credentials. ${message}`, technical);
+    }
+  }, [reportError]);
+
+  const runTopology = useCallback(async () => {
+    const fromScan = targetsFromScanRows(scan.rows);
+    const fromInventory = targetsFromInventory(inventory?.rows ?? []);
+    const targets = fromScan.length > 0 ? fromScan : fromInventory;
+    if (targets.length === 0) {
+      setTopologyError("Scan a network first. Topology uses the devices from this scan.");
+      return;
+    }
+    setTopologyBusy(true);
+    setTopologyError(null);
+    try {
+      const result = await api.discoverTopology({
+        targets,
+        networkName: inventory?.networks[0]?.name ?? target,
+        scanId: scan.meta?.scanId ?? null,
+      });
+      setTopologyResult(result);
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      setTopologyError(message);
+      reportError(`Topology discovery did not finish. ${message}`, technical);
+    } finally {
+      setTopologyBusy(false);
+    }
+  }, [scan.rows, scan.meta?.scanId, inventory, target, reportError]);
+
+  const stopTopology = useCallback(() => {
+    void api.cancelTopology();
+  }, []);
 
   const deleteScan = useCallback(
     async (summary: ScanSummary) => {
@@ -1168,7 +1241,10 @@ export default function App() {
         localNetworks={localNetworks}
         canRescan={lastOptions != null}
         onScan={runScan}
-        onStop={() => void scan.cancel()}
+        onStop={() => {
+          void scan.cancel();
+          void api.cancelTopology();
+        }}
         onRescan={rescan}
         onError={(message) => toast.error(message)}
       />
@@ -1303,9 +1379,33 @@ export default function App() {
                 onExport={(format) => void exportRows(format)}
                 onViewChanges={() => setScanTab((t) => (t === "comparison" ? "devices" : "comparison"))}
                 comparisonOpen={scanTab === "comparison"}
+                onViewTopology={() => setScanTab((t) => (t === "topology" ? "devices" : "topology"))}
+                topologyOpen={scanTab === "topology"}
                 canExport={scan.rows.length > 0}
               />
-              {scanTab === "comparison" ? (
+              {scanTab === "topology" ? (
+                <TopologyPanel
+                  credentialStatus={topologyCredentials}
+                  result={topologyResult}
+                  names={
+                    scan.rows.length > 0
+                      ? nameLookupFromScan(scan.rows)
+                      : nameLookupFromInventory(inventory?.rows ?? [])
+                  }
+                  targetCount={
+                    scan.rows.length > 0
+                      ? targetsFromScanRows(scan.rows).length
+                      : targetsFromInventory(inventory?.rows ?? []).length
+                  }
+                  busy={topologyBusy}
+                  error={topologyError}
+                  onSaveCredentials={saveTopologyCredentials}
+                  onClearCredentials={clearTopologyCredentials}
+                  onDiscover={runTopology}
+                  onCancel={stopTopology}
+                  onBack={() => setScanTab("devices")}
+                />
+              ) : scanTab === "comparison" ? (
                 scan.comparison ? (
                   <ComparisonPanel
                     comparison={scan.comparison}
