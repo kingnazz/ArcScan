@@ -207,6 +207,13 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
+    // Checked on Windows too, not only off it. It is unconditionally `Ok`
+    // today, and honouring it here means a future condition — no PowerShell,
+    // an edition without WinRM — refuses the probe rather than being
+    // discovered as a launch failure per host.
+    if let Err(reason) = platform_support() {
+        return Err(WindowsError::Unsupported(reason));
+    }
     let target = validate_target(target)?;
 
     // The account and the password are taken together, under one lock, so the
