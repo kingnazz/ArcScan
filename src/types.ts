@@ -285,6 +285,20 @@ export interface DiscoveryReport {
   ssdp_capped?: boolean;
   /** True when the description budget ran out with documents still queued. */
   descriptions_capped?: boolean;
+  // ---- v1.9 ----------------------------------------------------------
+  //
+  // All optional: a report written by an earlier build reads as "not
+  // attempted", which is exactly what those scans did.
+  /** True when the operator asked for deep probes. */
+  deep_attempted?: boolean;
+  /** Addresses a deep probe established something about. */
+  deep_devices_enriched?: number;
+  /** True when the operator asked for credentialed Windows discovery. */
+  credentialed_attempted?: boolean;
+  credentialed_answered?: number;
+  credentialed_failed?: number;
+  /** Why credentialed probes did not succeed. Reasons only, de-duplicated. */
+  credentialed_notes?: string[];
 }
 
 /** One device type, as the backend defines it. */

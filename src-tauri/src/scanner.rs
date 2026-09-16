@@ -141,6 +141,9 @@ pub enum Checkpoint {
     BeforeConfirm,
     BeforeSecondSettle,
     BeforeDiscovery,
+    /// Before the v1.9 deep pass, which is a separate cancellation point: the
+    /// multicast pass has already finished by then and its results are kept.
+    BeforeDeepScan,
     BeforeDns,
     BeforeClassify,
     BeforeFinish,
@@ -387,6 +390,18 @@ pub struct ScanOptions {
     #[serde(default)]
     pub credentialed_windows: bool,
 }
+
+/// Credentialed probes in flight at once.
+///
+/// Each one is a PowerShell process here and an authenticated management
+/// session there, so this is bounded by what is polite to both machines rather
+/// than by what the network could carry.
+const CREDENTIALED_CONCURRENCY: usize = 4;
+
+/// Distinct credentialed-failure reasons kept on a scan's report.
+///
+/// Fifty machines refusing one credential is one fact, not fifty lines.
+const MAX_CREDENTIALED_NOTES: usize = 6;
 
 fn default_timeout() -> u64 {
     900
@@ -1034,7 +1049,7 @@ pub async fn run(
     // be live, so it is not gated on the target being a local subnet: a routed
     // scan can read an HTTP banner perfectly well. It is gated on the operator
     // having asked for it.
-    checkpoint(Checkpoint::BeforeDiscovery);
+    checkpoint(Checkpoint::BeforeDeepScan);
     let deep_options = opts.deep.unwrap_or_default();
     let mut deep_notes: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
     if deep_options.enabled && !cancelled(scan_id) {
@@ -1062,9 +1077,13 @@ pub async fn run(
             .buffer_unordered(concurrency)
             .collect()
             .await;
+        discovery.report.deep_attempted = true;
         for (ip, outcome) in results {
             if outcome.evidence.is_empty() && outcome.notes.is_empty() {
                 continue;
+            }
+            if !outcome.evidence.is_empty() {
+                discovery.report.deep_devices_enriched += 1;
             }
             let entry = discovery
                 .devices
@@ -1088,6 +1107,7 @@ pub async fn run(
     // account.
     let mut credentialed_status: HashMap<Ipv4Addr, String> = HashMap::new();
     if opts.credentialed_windows && !cancelled(scan_id) {
+        discovery.report.credentialed_attempted = true;
         sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Interrogating)));
         // WinRM (5985/5986) is the transport the query uses; 445 and 3389 are
         // what says "this is probably Windows" on a host that does not expose
@@ -1098,12 +1118,40 @@ pub async fn run(
             .filter(|(_, probe)| probe.open_ports.iter().any(|p| windows_ports.contains(p)))
             .map(|(ip, _)| *ip)
             .collect();
-        for ip in targets {
-            if cancelled(scan_id) {
-                break;
-            }
-            let store = crate::discovery::windows::credential_store();
-            match crate::discovery::windows::probe(&ip.to_string(), store).await {
+        // Deliberately far lower than the sweep's concurrency. Each probe is a
+        // PowerShell process on this machine and an authenticated management
+        // session on the other, so this is bounded by what is polite to both
+        // rather than by what the network could carry. Serial would be worse
+        // than impolite: a site with fifty Windows machines and one unreachable
+        // host would spend that host's timeout with everything else waiting.
+        let results: Vec<(
+            Ipv4Addr,
+            Result<
+                crate::discovery::windows::WindowsFacts,
+                crate::discovery::windows::WindowsError,
+            >,
+        )> = stream::iter(targets)
+            .map(|ip| async move {
+                if cancelled(scan_id) {
+                    return (
+                        ip,
+                        Err(crate::discovery::windows::WindowsError::Unreadable(
+                            "the scan was stopped".into(),
+                        )),
+                    );
+                }
+                let store = crate::discovery::windows::credential_store();
+                (
+                    ip,
+                    crate::discovery::windows::probe(&ip.to_string(), store).await,
+                )
+            })
+            .buffer_unordered(CREDENTIALED_CONCURRENCY)
+            .collect()
+            .await;
+
+        for (ip, result) in results {
+            match result {
                 Ok(facts) => {
                     let summary = facts.os_summary().unwrap_or_else(|| "answered".to_string());
                     let entry = discovery
@@ -1113,13 +1161,23 @@ pub async fn run(
                     for evidence in facts.to_evidence() {
                         entry.add(evidence);
                     }
+                    discovery.report.credentialed_answered += 1;
                     credentialed_status.insert(ip, format!("Answered: {summary}"));
                 }
                 // Every failure is recorded, never swallowed. "We could not
                 // ask" and "we asked and learned nothing" are different
                 // answers, and only one of them is the operator's problem.
                 Err(error) => {
-                    credentialed_status.insert(ip, error.reason());
+                    let reason = error.reason();
+                    discovery.report.credentialed_failed += 1;
+                    // De-duplicated and capped: fifty machines refusing one
+                    // credential is one fact, not fifty lines.
+                    if discovery.report.credentialed_notes.len() < MAX_CREDENTIALED_NOTES
+                        && !discovery.report.credentialed_notes.contains(&reason)
+                    {
+                        discovery.report.credentialed_notes.push(reason.clone());
+                    }
+                    credentialed_status.insert(ip, reason);
                 }
             }
         }
@@ -2454,6 +2512,61 @@ mod tests {
             begun.elapsed() < Duration::from_secs(10),
             "the confirm pass and second settle must be skipped"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_before_the_deep_pass_skips_every_deep_probe() {
+        // Stop pressed after the sweep must not spend a deep probe's timeout
+        // on every live host. The multicast results collected before the
+        // cancel are kept, as they are at every other checkpoint.
+        let _guard = cancel_test_mutex().lock().await;
+        cancel_at(Checkpoint::BeforeDeepScan);
+        let mut o = opts("203.0.113.1-4");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        o.deep = Some(crate::discovery::deep::DeepOptions {
+            enabled: true,
+            http: true,
+            tls: true,
+            smb: true,
+            banners: true,
+        });
+        let begun = Instant::now();
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, None).await.unwrap();
+        clear_checkpoint_hook();
+
+        assert!(result.cancelled);
+        assert!(
+            begun.elapsed() < Duration::from_secs(10),
+            "the deep pass must be skipped rather than run to its timeouts"
+        );
+        // Nothing reached a deep probe, so nothing carries deep notes.
+        assert!(result
+            .hosts
+            .iter()
+            .all(|h| h.discovery.as_ref().is_none_or(|d| d.deep_notes.is_empty())));
+    }
+
+    #[tokio::test]
+    async fn a_quick_scan_never_runs_a_deep_probe() {
+        // The guarantee that keeps Quick Scan quick, asserted against the real
+        // pipeline rather than only against the options builder.
+        let _guard = cancel_test_mutex().lock().await;
+        let mut o = opts("203.0.113.1-2");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        assert!(o.deep.is_none(), "Quick Scan sends no deep options at all");
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, None).await.unwrap();
+        assert!(result
+            .hosts
+            .iter()
+            .all(|h| h.discovery.as_ref().is_none_or(|d| d.deep_notes.is_empty())));
+        assert!(result.hosts.iter().all(|h| h
+            .discovery
+            .as_ref()
+            .is_none_or(|d| d.credentialed_status.is_none())));
     }
 
     #[tokio::test]
