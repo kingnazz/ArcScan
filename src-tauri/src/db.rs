@@ -69,7 +69,7 @@ use crate::scanner::{HostResult, ScanResult};
 use crate::signature;
 
 /// Current schema version. Bump when a migration is added below.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Which generation of the naming rules wrote a device's stored detected name.
 ///
@@ -349,6 +349,49 @@ pub struct InventoryDiscovery {
     /// evidence at all, because nothing has gone stale.
     #[serde(default)]
     pub evidence_freshness: String,
+
+    // ---- v1.9 ---------------------------------------------------------
+    //
+    // Appended, all optional, and all absent on a row no deep or credentialed
+    // scan has reached. They are here rather than only in the drawer's record
+    // because an export column and a search term both need them, and both read
+    // this struct.
+    #[serde(default)]
+    pub os_family: Option<String>,
+    #[serde(default)]
+    pub os_product: Option<String>,
+    #[serde(default)]
+    pub os_edition: Option<String>,
+    #[serde(default)]
+    pub os_version: Option<String>,
+    #[serde(default)]
+    pub os_build: Option<String>,
+    #[serde(default)]
+    pub os_architecture: Option<String>,
+    /// `1`, `2` or `3`. Set only by an authenticated Windows query, and the
+    /// single fact that separates a workstation from a server.
+    #[serde(default)]
+    pub windows_product_type: Option<String>,
+    #[serde(default)]
+    pub hardware_manufacturer: Option<String>,
+    #[serde(default)]
+    pub hardware_model: Option<String>,
+    #[serde(default)]
+    pub hardware_serial: Option<String>,
+    #[serde(default)]
+    pub system_uuid: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// The identifiers this device offered, strongest first, as `kind: value`.
+    #[serde(default)]
+    pub identity_evidence: Vec<String>,
+    #[serde(default)]
+    pub identity_sources: Vec<String>,
+    /// The plain-language facts behind the detected type. Carried on the
+    /// inventory row so an export can say *why* a device is called what it is,
+    /// rather than only what it is called.
+    #[serde(default)]
+    pub type_evidence: Vec<String>,
 }
 
 /// A network as the Inventory and Changes filters offer it.
@@ -486,6 +529,40 @@ pub struct DeviceDiscovery {
     pub presentation_url: Option<String>,
     pub first_discovered_at: Option<String>,
     pub last_discovered_at: Option<String>,
+    // ---- v1.9 ---------------------------------------------------------
+    //
+    // All optional and all appended. Absent on every record an earlier build
+    // wrote, which is the honest reading of a scan that did not establish them.
+    #[serde(default)]
+    pub os_family: Option<String>,
+    #[serde(default)]
+    pub os_product: Option<String>,
+    #[serde(default)]
+    pub os_edition: Option<String>,
+    #[serde(default)]
+    pub os_version: Option<String>,
+    #[serde(default)]
+    pub os_build: Option<String>,
+    #[serde(default)]
+    pub os_architecture: Option<String>,
+    /// `1`, `2` or `3`, from an authenticated Windows query and nothing else.
+    #[serde(default)]
+    pub windows_product_type: Option<String>,
+    #[serde(default)]
+    pub hardware_manufacturer: Option<String>,
+    #[serde(default)]
+    pub hardware_model: Option<String>,
+    #[serde(default)]
+    pub hardware_serial: Option<String>,
+    #[serde(default)]
+    pub system_uuid: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// The identifiers this device offered, strongest first.
+    #[serde(default)]
+    pub identity_evidence: Vec<String>,
+    #[serde(default)]
+    pub identity_sources: Vec<String>,
     /// The durable evidence rows, newest-seen first. This is the persistent
     /// record, kept clearly apart from the per-scan observation history the
     /// drawer lists separately.
@@ -1151,6 +1228,29 @@ impl Db {
                     ),
                     last_discovered_at: row.get(33).ok().flatten(),
                     evidence_freshness: evidence_state.as_str().to_string(),
+                    // Columns 36 onward are v1.9. A database an earlier build
+                    // wrote has them as NULL, which reads through as None.
+                    os_family: row.get(36).ok().flatten(),
+                    os_product: row.get(37).ok().flatten(),
+                    os_edition: row.get(38).ok().flatten(),
+                    os_version: row.get(39).ok().flatten(),
+                    os_build: row.get(40).ok().flatten(),
+                    os_architecture: row.get(41).ok().flatten(),
+                    windows_product_type: row.get(42).ok().flatten(),
+                    hardware_manufacturer: row.get(43).ok().flatten(),
+                    hardware_model: row.get(44).ok().flatten(),
+                    hardware_serial: row.get(45).ok().flatten(),
+                    system_uuid: row.get(46).ok().flatten(),
+                    domain: row.get(47).ok().flatten(),
+                    identity_evidence: list_from_json(
+                        row.get::<_, Option<String>>(48).ok().flatten().as_deref(),
+                    ),
+                    identity_sources: list_from_json(
+                        row.get::<_, Option<String>>(49).ok().flatten().as_deref(),
+                    ),
+                    type_evidence: list_from_json(
+                        row.get::<_, Option<String>>(50).ok().flatten().as_deref(),
+                    ),
                 });
                 Ok(InventoryRow {
                     device_id,
@@ -1970,7 +2070,13 @@ SELECT d.id, d.network_scope_id, ns.display_name, d.identity_source, d.custom_na
        SUBSTR(d.notes, 1, 160) AS notes_excerpt,
        dd.detected_name, dd.device_type, dd.type_confidence, dd.manufacturer, dd.model_name,
        dd.services, dd.sources, dd.last_discovered_at,
-       d.user_device_type, f.best_misses
+       d.user_device_type, f.best_misses,
+       -- v1.9. All from the `device_discovery` row already joined below, so
+       -- these add columns and not a join.
+       dd.os_family, dd.os_product, dd.os_edition, dd.os_version, dd.os_build,
+       dd.os_architecture, dd.windows_product_type, dd.hardware_manufacturer,
+       dd.hardware_model, dd.hardware_serial, dd.system_uuid, dd.domain_membership,
+       dd.identity_evidence, dd.identity_sources, dd.type_evidence
 FROM devices d
 LEFT JOIN network_scopes ns ON ns.id = d.network_scope_id
 LEFT JOIN reference r ON r.scope_id IS d.network_scope_id
@@ -2219,6 +2325,16 @@ fn json_list(values: &[String]) -> String {
     serde_json::to_string(values).unwrap_or_else(|_| "[]".into())
 }
 
+/// A JSON list, or NULL when there is nothing to record.
+///
+/// The distinction matters where the column is written with COALESCE: an empty
+/// list stored as `"[]"` would overwrite a previous scan's findings with
+/// nothing, where NULL correctly reads as "this scan established none of
+/// these, leave what is there".
+fn json_list_or_null(values: &[String]) -> Option<String> {
+    (!values.is_empty()).then(|| json_list(values))
+}
+
 fn list_from_json(raw: Option<&str>) -> Vec<String> {
     raw.and_then(|r| serde_json::from_str::<Vec<String>>(r).ok())
         .unwrap_or_default()
@@ -2458,9 +2574,13 @@ fn write_discovery(
              type_confidence, type_evidence, type_conflicts, manufacturer, model_name,
              model_number, serial_number, mdns_hostname, ssdp_friendly_name, services,
              sources, alternate_names, ipv6_addresses, presentation_url,
-             first_discovered_at, last_discovered_at, naming_rules_version)
+             first_discovered_at, last_discovered_at, naming_rules_version,
+             os_family, os_product, os_edition, os_version, os_build, os_architecture,
+             windows_product_type, hardware_manufacturer, hardware_model, hardware_serial,
+             system_uuid, domain_membership, identity_evidence, identity_sources)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?20, ?21)
+                 ?18, ?19, ?20, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
+                 ?32, ?33, ?34, ?35)
          ON CONFLICT(device_id) DO UPDATE SET
              network_scope_id   = excluded.network_scope_id,
              detected_name      = COALESCE(excluded.detected_name, device_discovery.detected_name),
@@ -2483,7 +2603,34 @@ fn write_discovery(
              presentation_url   = COALESCE(excluded.presentation_url,
                                            device_discovery.presentation_url),
              last_discovered_at = excluded.last_discovered_at,
-             naming_rules_version = excluded.naming_rules_version",
+             naming_rules_version = excluded.naming_rules_version,
+             -- COALESCE throughout, matching how the v1.8 identity columns
+             -- behave: a Quick Scan that establishes none of these must not
+             -- erase what a Deep or credentialed scan established earlier.
+             -- A later scan that *does* establish one overwrites it, so a
+             -- genuine change still comes through.
+             os_family          = COALESCE(excluded.os_family, device_discovery.os_family),
+             os_product         = COALESCE(excluded.os_product, device_discovery.os_product),
+             os_edition         = COALESCE(excluded.os_edition, device_discovery.os_edition),
+             os_version         = COALESCE(excluded.os_version, device_discovery.os_version),
+             os_build           = COALESCE(excluded.os_build, device_discovery.os_build),
+             os_architecture    = COALESCE(excluded.os_architecture,
+                                           device_discovery.os_architecture),
+             windows_product_type = COALESCE(excluded.windows_product_type,
+                                             device_discovery.windows_product_type),
+             hardware_manufacturer = COALESCE(excluded.hardware_manufacturer,
+                                              device_discovery.hardware_manufacturer),
+             hardware_model     = COALESCE(excluded.hardware_model,
+                                           device_discovery.hardware_model),
+             hardware_serial    = COALESCE(excluded.hardware_serial,
+                                           device_discovery.hardware_serial),
+             system_uuid        = COALESCE(excluded.system_uuid, device_discovery.system_uuid),
+             domain_membership  = COALESCE(excluded.domain_membership,
+                                           device_discovery.domain_membership),
+             identity_evidence  = COALESCE(excluded.identity_evidence,
+                                           device_discovery.identity_evidence),
+             identity_sources   = COALESCE(excluded.identity_sources,
+                                           device_discovery.identity_sources)",
         params![
             device_id,
             scope_id,
@@ -2506,6 +2653,23 @@ fn write_discovery(
             discovery.presentation_url,
             now,
             NAMING_RULES_VERSION,
+            discovery.os_family,
+            discovery.os_product,
+            discovery.os_edition,
+            discovery.os_version,
+            discovery.os_build,
+            discovery.os_architecture,
+            discovery.windows_product_type,
+            discovery.hardware_manufacturer,
+            discovery.hardware_model,
+            discovery.hardware_serial,
+            discovery.system_uuid,
+            discovery.domain,
+            // Empty lists are stored as NULL rather than "[]", so the COALESCE
+            // above treats "this scan established nothing" as "leave what is
+            // there" rather than as "replace it with nothing".
+            json_list_or_null(&discovery.identity_evidence),
+            json_list_or_null(&discovery.identity_sources),
         ],
     )
     .map_err(sql_err)?;
@@ -2527,7 +2691,11 @@ fn read_device_discovery(
             "SELECT detected_name, name_source, device_type, type_confidence, type_evidence,
                     type_conflicts, manufacturer, model_name, model_number, serial_number,
                     mdns_hostname, ssdp_friendly_name, services, sources, alternate_names,
-                    ipv6_addresses, presentation_url, first_discovered_at, last_discovered_at
+                    ipv6_addresses, presentation_url, first_discovered_at, last_discovered_at,
+                    os_family, os_product, os_edition, os_version, os_build, os_architecture,
+                    windows_product_type, hardware_manufacturer, hardware_model,
+                    hardware_serial, system_uuid, domain_membership, identity_evidence,
+                    identity_sources
              FROM device_discovery WHERE device_id = ?1",
             params![device_id],
             |r| {
@@ -2551,6 +2719,20 @@ fn read_device_discovery(
                     presentation_url: r.get(16)?,
                     first_discovered_at: r.get(17)?,
                     last_discovered_at: r.get(18)?,
+                    os_family: r.get(19)?,
+                    os_product: r.get(20)?,
+                    os_edition: r.get(21)?,
+                    os_version: r.get(22)?,
+                    os_build: r.get(23)?,
+                    os_architecture: r.get(24)?,
+                    windows_product_type: r.get(25)?,
+                    hardware_manufacturer: r.get(26)?,
+                    hardware_model: r.get(27)?,
+                    hardware_serial: r.get(28)?,
+                    system_uuid: r.get(29)?,
+                    domain: r.get(30)?,
+                    identity_evidence: list_from_json(r.get::<_, Option<String>>(31)?.as_deref()),
+                    identity_sources: list_from_json(r.get::<_, Option<String>>(32)?.as_deref()),
                     evidence: Vec::new(),
                     // Both filled in below, once the evidence has been read.
                     evidence_freshness: String::new(),
@@ -3634,7 +3816,31 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
             last_discovered_at TEXT,
             -- v1.8.3: which generation of the naming rules wrote the values
             -- above. See NAMING_RULES_VERSION.
-            naming_rules_version INTEGER NOT NULL DEFAULT 0
+            naming_rules_version INTEGER NOT NULL DEFAULT 0,
+            -- v1.9. Facts a deep or credentialed scan established, all
+            -- nullable and all absent from every row an earlier build wrote.
+            -- The migration below adds the same columns to an existing
+            -- database; they are here so a fresh one does not need it.
+            os_family            TEXT,
+            os_product           TEXT,
+            os_edition           TEXT,
+            os_version           TEXT,
+            os_build             TEXT,
+            os_architecture      TEXT,
+            -- 1, 2 or 3. Only an authenticated Windows query sets this.
+            windows_product_type TEXT,
+            -- What the machine said about its own hardware, as distinct from
+            -- `manufacturer` and `model_name`, which are whatever any source
+            -- claimed.
+            hardware_manufacturer TEXT,
+            hardware_model       TEXT,
+            hardware_serial      TEXT,
+            system_uuid          TEXT,
+            domain_membership    TEXT,
+            identity_evidence    TEXT,
+            identity_sources     TEXT,
+            -- The group this device reconciles into. See discovery::reconcile.
+            physical_device_key  TEXT
         );
         "#,
     )
@@ -3686,6 +3892,45 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         "ALTER TABLE device_discovery ADD COLUMN naming_rules_version INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = conn.execute(stmt, []);
+    }
+
+    // v1.9 (schema 8). Fifteen nullable columns on `device_discovery` and
+    // nothing else, by exactly the same rule as the v1.8.3 block above: no
+    // table is rebuilt, no row is re-keyed, no device is reclassified and
+    // nothing is backfilled. Every one of them is NULL for every row an
+    // earlier build wrote, which is the honest reading — those scans did not
+    // establish these facts, and inventing a value would be worse than a blank.
+    //
+    // They are appended rather than replacing anything: `manufacturer` and
+    // `model_name` keep their v1.8 meanings of "whatever any source claimed",
+    // and the new `hardware_*` columns carry only what a machine reported
+    // about itself under authentication. A reader that wants the old columns
+    // finds them unchanged.
+    //
+    // Same idempotence rule as every migration here: SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`, so a duplicate-column error means this has
+    // already run and is ignored.
+    for column in [
+        "os_family TEXT",
+        "os_product TEXT",
+        "os_edition TEXT",
+        "os_version TEXT",
+        "os_build TEXT",
+        "os_architecture TEXT",
+        "windows_product_type TEXT",
+        "hardware_manufacturer TEXT",
+        "hardware_model TEXT",
+        "hardware_serial TEXT",
+        "system_uuid TEXT",
+        "domain_membership TEXT",
+        "identity_evidence TEXT",
+        "identity_sources TEXT",
+        "physical_device_key TEXT",
+    ] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE device_discovery ADD COLUMN {column}"),
+            [],
+        );
     }
 
     // Indexes last: the scope-aware ones only exist once the v3 shape does.
@@ -4174,6 +4419,178 @@ mod tests {
             model_name: Some("LaserFast 400".into()),
             ..Default::default()
         }
+    }
+
+    /// Everything a credentialed Windows scan would have attached to one host.
+    fn credentialed_discovery() -> crate::scanner::HostDiscovery {
+        crate::scanner::HostDiscovery {
+            device_type: Some("workstation".into()),
+            type_confidence: Some("high".into()),
+            type_evidence: vec!["Windows ProductType 1 (workstation)".into()],
+            sources: vec!["windows_credentialed".into()],
+            os_family: Some("Windows".into()),
+            os_product: Some("Windows 11".into()),
+            os_edition: Some("Pro".into()),
+            os_version: Some("24H2".into()),
+            os_build: Some("26100".into()),
+            os_architecture: Some("x64".into()),
+            windows_product_type: Some("1".into()),
+            hardware_manufacturer: Some("Dell Inc.".into()),
+            hardware_model: Some("Latitude 7450".into()),
+            hardware_serial: Some("7SZ1B43".into()),
+            system_uuid: Some("4C4C4544-0037-5A10-8051-B4C04F435331".into()),
+            domain: Some("corp.example".into()),
+            identity_evidence: vec![
+                "system UUID: 4C4C4544-0037-5A10-8051-B4C04F435331".into(),
+                "hardware serial: 7SZ1B43".into(),
+            ],
+            identity_sources: vec!["windows_credentialed".into()],
+            ..Default::default()
+        }
+    }
+
+    /// The v1.9 columns for one device, straight out of SQLite.
+    fn windows_facts(db: &Db, device_id: i64) -> (Option<String>, Option<String>, Option<String>) {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT os_product, windows_product_type, system_uuid
+             FROM device_discovery WHERE device_id = ?1",
+            params![device_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn credentialed_windows_facts_survive_a_round_trip() {
+        let db = Db::open_in_memory().unwrap();
+        let mut first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        first.discovery = Some(credentialed_discovery());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![first],
+        )))
+        .unwrap();
+
+        let rows = db.inventory().unwrap().rows;
+        let row = rows.first().expect("the device was recorded");
+        let discovery = row.discovery.as_ref().expect("with its discovery record");
+        assert_eq!(discovery.os_product.as_deref(), Some("Windows 11"));
+        assert_eq!(discovery.os_edition.as_deref(), Some("Pro"));
+        assert_eq!(discovery.os_build.as_deref(), Some("26100"));
+        assert_eq!(discovery.windows_product_type.as_deref(), Some("1"));
+        assert_eq!(discovery.hardware_model.as_deref(), Some("Latitude 7450"));
+        assert_eq!(discovery.hardware_serial.as_deref(), Some("7SZ1B43"));
+        assert_eq!(
+            discovery.system_uuid.as_deref(),
+            Some("4C4C4544-0037-5A10-8051-B4C04F435331")
+        );
+        assert_eq!(discovery.domain.as_deref(), Some("corp.example"));
+        assert!(discovery
+            .identity_evidence
+            .iter()
+            .any(|line: &String| line.starts_with("system UUID:")));
+        // And the type the product type established.
+        assert_eq!(discovery.device_type, "workstation");
+    }
+
+    #[test]
+    fn a_later_quick_scan_does_not_erase_what_a_credentialed_scan_established() {
+        // The rule the COALESCE in the upsert exists for. A technician runs one
+        // credentialed scan a month and Quick Scans daily; the daily scans must
+        // not blank the columns the monthly one filled.
+        let db = Db::open_in_memory().unwrap();
+        let mut deep = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        deep.discovery = Some(credentialed_discovery());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![deep],
+        )))
+        .unwrap();
+        let device_id = db.inventory().unwrap().rows[0].device_id;
+        assert_eq!(
+            windows_facts(&db, device_id),
+            (
+                Some("Windows 11".into()),
+                Some("1".into()),
+                Some("4C4C4544-0037-5A10-8051-B4C04F435331".into())
+            )
+        );
+
+        // Now a Quick Scan: the same host, mDNS only, none of the deep facts.
+        let mut quick = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        quick.discovery = Some(discovery_for("WS-04", "computer", "medium", &["_smb._tcp"]));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![quick],
+        )))
+        .unwrap();
+
+        assert_eq!(
+            windows_facts(&db, device_id),
+            (
+                Some("Windows 11".into()),
+                Some("1".into()),
+                Some("4C4C4544-0037-5A10-8051-B4C04F435331".into())
+            ),
+            "a Quick Scan must not blank what a credentialed scan established"
+        );
+    }
+
+    #[test]
+    fn a_device_no_deep_scan_reached_carries_no_v1_9_facts() {
+        // Blank rather than a default: "not established" and "established as
+        // empty" are different, and only one of them is honest here.
+        let db = Db::open_in_memory().unwrap();
+        let mut quiet = host("10.0.0.9", Some("aa:bb:cc:00:00:09"), Some("thing"), &[80]);
+        quiet.discovery = Some(discovery_for("thing", "unknown", "unknown", &["_http._tcp"]));
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![quiet],
+        )))
+        .unwrap();
+
+        let rows = db.inventory().unwrap().rows;
+        let discovery = rows[0].discovery.as_ref().unwrap();
+        assert_eq!(discovery.os_product, None);
+        assert_eq!(discovery.windows_product_type, None);
+        assert_eq!(discovery.system_uuid, None);
+        assert!(discovery.identity_evidence.is_empty());
+    }
+
+    #[test]
+    fn the_v1_9_migration_runs_twice_without_complaint() {
+        // Every migration here has to be safe to re-run: an interrupted upgrade
+        // leaves a database that is either before or after, never halfway.
+        let db = Db::open_in_memory().unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            migrate(&mut conn).unwrap();
+            migrate(&mut conn).unwrap();
+        }
+        let conn = db.lock().unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        // And the new columns exist exactly once.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('device_discovery')
+                 WHERE name = 'windows_product_type'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     fn discovery_types(db: &Db) -> Vec<(String, String, String)> {

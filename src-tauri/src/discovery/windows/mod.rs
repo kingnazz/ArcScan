@@ -45,6 +45,22 @@ use std::net::Ipv4Addr;
 /// Longest a single machine's credentialed probe may take.
 pub const PROBE_TIMEOUT_SECS: u64 = 30;
 
+/// The one credential store, for this run of the process.
+///
+/// Process-wide rather than threaded through the scan, because its lifetime is
+/// exactly the process's: it is created on first use, it is never written
+/// anywhere, and it ceases to exist when ArcScan exits. Giving it a narrower
+/// scope would mean copying the credential to reach the scanner, and the fewer
+/// copies of a password exist the better.
+///
+/// There is no loader. Nothing populates this except an operator typing into
+/// the credentialed-scan dialog, so there is no path by which a stored,
+/// inherited or guessed credential could appear in it.
+pub fn credential_store() -> &'static CredentialStore {
+    static STORE: std::sync::OnceLock<CredentialStore> = std::sync::OnceLock::new();
+    STORE.get_or_init(CredentialStore::new)
+}
+
 /// Why a credentialed probe did not produce facts.
 ///
 /// Every variant renders as a sentence an operator can act on. None of them
