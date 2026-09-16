@@ -75,7 +75,8 @@ export interface TopologyResult {
 export interface TopologyTarget {
   ip: string;
   mac?: string | null;
-  deviceId?: number | null;
+  /** The exact local Inventory row id. Topology never mints its own ids. */
+  deviceId: number;
   hostname?: string | null;
   detectedName?: string | null;
 }
@@ -156,7 +157,13 @@ export function credentialInputError(input: CredentialInput): string | null {
 
 export function targetsFromScanRows(rows: DeviceRow[]): TopologyTarget[] {
   return rows
-    .filter((row) => row.host.ip.trim().length > 0)
+    // A row receives its local device id when the completed scan is persisted.
+    // Waiting for that id is what makes every topology endpoint joinable to the
+    // Inventory JSON sent to ArcAtlas; an IP, hostname or array index must never
+    // become a substitute identity.
+    .filter((row): row is DeviceRow & { device_id: number } =>
+      row.host.ip.trim().length > 0 && row.device_id != null,
+    )
     .map((row) => ({
       ip: row.host.ip,
       mac: row.host.mac,

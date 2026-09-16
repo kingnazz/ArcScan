@@ -80,9 +80,7 @@ import {
 } from "./lib/arcatlas";
 import {
   EMPTY_CREDENTIAL_STATUS,
-  nameLookupFromInventory,
   nameLookupFromScan,
-  targetsFromInventory,
   targetsFromScanRows,
   type CredentialInput,
   type CredentialStatus,
@@ -161,6 +159,7 @@ export default function App() {
 
   const [topologyCredentials, setTopologyCredentials] = useState<CredentialStatus>(EMPTY_CREDENTIAL_STATUS);
   const [topologyResult, setTopologyResult] = useState<TopologyResult | null>(null);
+  const [topologyDeviceIds, setTopologyDeviceIds] = useState<number[]>([]);
   const [topologyBusy, setTopologyBusy] = useState(false);
   const [topologyError, setTopologyError] = useState<string | null>(null);
 
@@ -437,6 +436,9 @@ export default function App() {
       setRecents(pushRecentTarget(opts.target));
       setView("results");
       setScanTab("devices");
+      setTopologyResult(null);
+      setTopologyDeviceIds([]);
+      setTopologyError(null);
       setSelectedIp(null);
       setDrawerSource("scan");
       setBanner(null);
@@ -459,6 +461,9 @@ export default function App() {
         setDrawerSource("scan");
         setView("results");
         setScanTab("devices");
+        setTopologyResult(null);
+        setTopologyDeviceIds([]);
+        setTopologyError(null);
       } catch (error) {
         const { message, technical } = describeError(error);
         reportError(`ArcScan could not open that scan. ${message}`, technical);
@@ -496,22 +501,34 @@ export default function App() {
   }, [reportError]);
 
   const runTopology = useCallback(async () => {
-    const fromScan = targetsFromScanRows(scan.rows);
-    const fromInventory = targetsFromInventory(inventory?.rows ?? []);
-    const targets = fromScan.length > 0 ? fromScan : fromInventory;
+    const targets = targetsFromScanRows(scan.rows);
     if (targets.length === 0) {
-      setTopologyError("Scan a network first. Topology uses the devices from this scan.");
+      setTopologyError(
+        scan.rows.length > 0
+          ? "Wait for this scan to finish saving before discovering topology."
+          : "Scan a network first. Topology uses the devices from that scan.",
+      );
       return;
     }
+    const targetIds = new Set(targets.map((entry) => entry.deviceId));
+    const topologyNetworkNames = [
+      ...new Set(
+        (inventory?.rows ?? [])
+          .filter((row) => targetIds.has(row.device_id))
+          .map((row) => row.network_name)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ];
     setTopologyBusy(true);
     setTopologyError(null);
     try {
       const result = await api.discoverTopology({
         targets,
-        networkName: inventory?.networks[0]?.name ?? target,
+        networkName: topologyNetworkNames.length === 1 ? topologyNetworkNames[0] : (scan.meta?.target ?? target),
         scanId: scan.meta?.scanId ?? null,
       });
       setTopologyResult(result);
+      setTopologyDeviceIds(targets.map((entry) => entry.deviceId));
     } catch (error) {
       const { message, technical } = describeError(error);
       setTopologyError(message);
@@ -519,7 +536,7 @@ export default function App() {
     } finally {
       setTopologyBusy(false);
     }
-  }, [scan.rows, scan.meta?.scanId, inventory, target, reportError]);
+  }, [scan.rows, scan.meta?.scanId, scan.meta?.target, inventory?.rows, target, reportError]);
 
   const stopTopology = useCallback(() => {
     void api.cancelTopology();
@@ -745,6 +762,12 @@ export default function App() {
         notes,
         networkName: sendNetworkName,
         handoffId,
+        topology:
+          topologyResult &&
+          topologyDeviceIds.length > 0 &&
+          topologyDeviceIds.every((id) => arcAtlasRows.some((row) => row.device_id === id))
+            ? topologyResult.snapshot
+            : null,
       });
       const result = await api.sendInventoryToArcAtlas(envelope);
       handoffAttempt.current.succeed();
@@ -768,7 +791,7 @@ export default function App() {
     } finally {
       setArcAtlasBusy(false);
     }
-  }, [canSendArcAtlas, arcAtlasRows, sendNetworkName]);
+  }, [canSendArcAtlas, arcAtlasRows, sendNetworkName, topologyResult, topologyDeviceIds]);
 
   const applyBulkStatus = useCallback(
     async (ids: number[], status: DeviceStatus, verb: string) => {
@@ -1387,16 +1410,8 @@ export default function App() {
                 <TopologyPanel
                   credentialStatus={topologyCredentials}
                   result={topologyResult}
-                  names={
-                    scan.rows.length > 0
-                      ? nameLookupFromScan(scan.rows)
-                      : nameLookupFromInventory(inventory?.rows ?? [])
-                  }
-                  targetCount={
-                    scan.rows.length > 0
-                      ? targetsFromScanRows(scan.rows).length
-                      : targetsFromInventory(inventory?.rows ?? []).length
-                  }
+                  names={nameLookupFromScan(scan.rows)}
+                  targetCount={targetsFromScanRows(scan.rows).length}
                   busy={topologyBusy}
                   error={topologyError}
                   onSaveCredentials={saveTopologyCredentials}

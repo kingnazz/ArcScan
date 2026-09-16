@@ -79,8 +79,9 @@ export function TopologyPanel({
           <div>
             <h2 className="text-base font-semibold text-text">Topology discovery</h2>
             <p className="mt-1 text-[13px] leading-relaxed text-text-secondary">
-              Credentialed SNMP walk of the current devices. Quick LAN does not run this. Links
-              stay on this computer; credentials are never exported.
+              Optional credentialed SNMP discovery for the devices saved by this scan. It only runs
+              when you start it; Quick discovery never starts it automatically. Credentials stay in
+              this session and are never exported.
             </p>
           </div>
           <Button size="sm" variant="ghost" onClick={onBack}>
@@ -268,7 +269,7 @@ export function TopologyPanel({
             )}
             <p className="text-xs text-text-muted">
               {targetCount === 0
-                ? "Scan a network first. Topology uses the devices from this scan."
+                ? "Finish a scan first. Topology uses that scan's saved inventory devices."
                 : `${targetCount} device${targetCount === 1 ? "" : "s"} from this scan.`}
             </p>
           </div>

@@ -439,10 +439,9 @@ describe("errors and copy", () => {
 // ---------------------------------------------------------------------------
 // The v1.9 handoff contract
 //
-// ArcScan v1.9 adds identity and OS facts to the inventory. It does *not*
-// change the envelope: that is the topology work's to change, under issue #42,
-// and a deep-discovery branch quietly bumping schemaVersion would break the
-// coordination the three branches depend on. These tests are what says so.
+// ArcScan v1.9 adds identity and OS facts to the inventory. Without a topology
+// snapshot, the existing schemaVersion 1 envelope remains unchanged. The
+// integrated schemaVersion 2 path is covered by v1.9Integration.test.ts.
 // ---------------------------------------------------------------------------
 
 describe("v1.9 handoff compatibility", () => {
@@ -489,9 +488,8 @@ describe("v1.9 handoff compatibility", () => {
     });
 
   it("stays at schemaVersion 1 even with every new field populated", () => {
-    // The shared contract in issue #42 puts schemaVersion 2 in the topology
-    // work's hands. Deep discovery is additive inside the existing inventory
-    // array and changes nothing about the envelope.
+    // Deep discovery is additive inside the existing inventory array. A caller
+    // with no topology snapshot stays on the established v1 handoff.
     const envelope = envelopeFor([deepRow()]);
     expect(envelope.schemaVersion).toBe(1);
     expect(Object.keys(envelope).sort()).toEqual([

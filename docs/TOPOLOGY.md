@@ -1,14 +1,13 @@
 # ArcScan topology discovery (v1.9 engine)
 
-Standalone topology engine for issue #42. It does **not** rewrite device
-classification, the inventory exporter, or the current ArcAtlas handoff
-envelope. Quick Scan does not run it.
+Topology discovery for the integrated v1.9 workflow. It does **not** rewrite
+device classification or the inventory exporter. Quick Scan does not run it;
+the technician starts it explicitly from the completed scan's Topology panel.
 
 The callable surface is the Tauri commands in `src-tauri/src/topology/mod.rs`
-and the `arcscan-topology` crate under `src-tauri/topology-engine/`. Final
-ArcAtlas integration (schemaVersion 2 handoff with inventory filled in) is
-deferred until the Claude deep-discovery branch and this branch are reviewed
-together.
+and the `arcscan-topology` crate under `src-tauri/topology-engine/`. The live
+ArcAtlas builder in `src/lib/arcatlas.ts` combines the returned snapshot with
+the exact JSON rows produced by `buildInventoryExport`.
 
 ## What this engine produces
 
@@ -34,8 +33,10 @@ correlation inside the same payload. They are not ArcAtlas canonical ids.
 - Unknown or unmanaged neighbours are preserved internally. No vendor or
   model is invented.
 
-The golden serializer fixture is `topology_contract_fixture` /
-`arcscan_topology::issue42_fixture()`.
+The end-to-end integration fixture is
+`src/lib/fixtures/v1.9Integration.ts`, exercised by
+`src/lib/v1.9Integration.test.ts`. The topology crate retains its lower-level
+serializer fixture for isolated engine tests.
 
 ## Protocols and MIBs
 
@@ -132,7 +133,7 @@ IP or MAC disambiguates them.
 - Consumer gateways frequently answer IF-MIB and ignore LLDP/BRIDGE. That
   is a successful partial collect with zero links, not a failure.
 
-## Integration notes for the Claude + Grok merge
+## Integrated contract invariants
 
 - Do not fold unresolved connections into `topology.connections` for ArcAtlas.
   Use `unresolvedTopology` until the receiver is extended.

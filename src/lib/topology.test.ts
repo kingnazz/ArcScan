@@ -95,7 +95,7 @@ describe("topology helpers", () => {
     ).toBeNull();
   });
 
-  it("builds targets from scan rows without inventing device ids", () => {
+  it("waits for persisted local inventory ids instead of inventing topology ids", () => {
     const targets = targetsFromScanRows([
       scanRow("192.168.1.2", 2, "00:1A:2B:00:00:02", "core-sw"),
       scanRow("192.168.1.50", null, "AA:BB:CC:00:00:50", "workstation"),
@@ -107,13 +107,6 @@ describe("topology helpers", () => {
         deviceId: 2,
         hostname: "core-sw",
         detectedName: "core-sw",
-      },
-      {
-        ip: "192.168.1.50",
-        mac: "AA:BB:CC:00:00:50",
-        deviceId: null,
-        hostname: "workstation",
-        detectedName: "workstation",
       },
     ]);
   });

@@ -1,7 +1,8 @@
 //! ArcScan topology discovery engine.
 //!
-//! Isolated from device classification and from the ArcAtlas inventory
-//! envelope. Quick Scan does not run this.
+//! Isolated from device classification and inventory mapping. The application
+//! combines its snapshot with the real Inventory JSON for ArcAtlas. Quick Scan
+//! does not run this.
 
 pub mod ber;
 pub mod collect;
