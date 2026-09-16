@@ -1154,6 +1154,14 @@ pub async fn run(
             match result {
                 Ok(facts) => {
                     let summary = facts.os_summary().unwrap_or_else(|| "answered".to_string());
+                    // The kind the product type established, said out loud.
+                    // "Windows 11 Pro 24H2" does not by itself tell a reader
+                    // that ArcScan now knows this is a workstation and not a
+                    // server, which is the whole point of having asked.
+                    let kind = facts
+                        .device_type()
+                        .map(|kind| format!(" · {}", kind.label()))
+                        .unwrap_or_default();
                     let entry = discovery
                         .devices
                         .entry(ip)
@@ -1162,13 +1170,20 @@ pub async fn run(
                         entry.add(evidence);
                     }
                     discovery.report.credentialed_answered += 1;
-                    credentialed_status.insert(ip, format!("Answered: {summary}"));
+                    credentialed_status.insert(ip, format!("Answered: {summary}{kind}"));
                 }
                 // Every failure is recorded, never swallowed. "We could not
                 // ask" and "we asked and learned nothing" are different
                 // answers, and only one of them is the operator's problem.
                 Err(error) => {
-                    let reason = error.reason();
+                    // A retryable failure is worth saying so about: a timeout
+                    // is a different instruction to the operator than a
+                    // refused credential, which must not be retried at all.
+                    let reason = if error.retryable() {
+                        format!("{} Worth trying again.", error.reason())
+                    } else {
+                        error.reason()
+                    };
                     discovery.report.credentialed_failed += 1;
                     // De-duplicated and capped: fifty machines refusing one
                     // credential is one fact, not fifty lines.
