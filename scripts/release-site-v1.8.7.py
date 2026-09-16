@@ -26,7 +26,7 @@ release_section = '''      <!-- ================================================
               Missing and unknown historical inventory stays available in ArcScan without being treated
               as current discovery evidence. Hostname persistence and infrastructure classification are
               also more resilient.
-              <a id="release-notes-link" href="whats-new-1.8.7.html">What&rsquo;s new in 1.8.7</a>
+              <a href="whats-new-1.8.7.html">What&rsquo;s new in 1.8.7</a>
             </p>
           </div>
 
@@ -59,7 +59,19 @@ release_section = '''      <!-- ================================================
       </section>
 
 '''
-index_path.write_text(index[:start] + release_section + index[end:])
+index = index[:start] + release_section + index[end:]
+
+# The hero owns the single release-notes-link ID used by navigation tests and by
+# visitors looking for the current release. Advance it along with the visible
+# fallback version instead of creating a second ID in the release section.
+old_hero_href = 'id="release-notes-link" href="whats-new-1.8.6.html"'
+old_hero_text = '>What changed in 1.8.6</a'
+require(old_hero_href in index, "could not find the hero 1.8.6 release link")
+require(old_hero_text in index, "could not find the hero 1.8.6 release-link text")
+index = index.replace(old_hero_href, 'id="release-notes-link" href="whats-new-1.8.7.html"', 1)
+index = index.replace(old_hero_text, '>What changed in 1.8.7</a', 1)
+index = index.replace('<!-- ArcScan site build: v1.8.6 -->', '<!-- ArcScan site build: v1.8.7 -->', 1)
+index_path.write_text(index)
 
 
 # First-party release notes for the version visitors will actually download.
