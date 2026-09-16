@@ -1,0 +1,19 @@
+[package]
+name = "arcscan-topology"
+version = "1.8.7"
+description = "ArcScan topology discovery engine (SNMP/LLDP/CDP/FDB)"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+snmp2 = { version = "0.5.2", default-features = false, features = ["crypto-rust"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
