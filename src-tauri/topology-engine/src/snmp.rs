@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
@@ -26,6 +27,90 @@ pub const MAX_WALK_BINDS: usize = 4_096;
 /// GETBULK max-repetitions. Conservative so a broken agent cannot flood us.
 pub const MAX_REPETITIONS: i32 = 20;
 
+/// How many credentialed blocking SNMPv3 operations are in flight. Used to
+/// prove a cancelled run does not return while USM work is still on the wire.
+static BLOCKING_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn blocking_work_in_flight() -> usize {
+    BLOCKING_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+struct BlockingGuard;
+impl BlockingGuard {
+    fn enter() -> Self {
+        BLOCKING_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for BlockingGuard {
+    fn drop(&mut self) {
+        BLOCKING_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Shared stop / deadline for one topology run. Checked between SNMP
+/// operations so a dropped future cannot leave a 80-round v3 walk running.
+#[derive(Clone)]
+pub struct SessionControl {
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
+    pub collect_deadline: Instant,
+    pub site_deadline: Instant,
+}
+
+impl SessionControl {
+    pub fn new(
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        collect: Duration,
+        site_deadline: Instant,
+    ) -> Self {
+        Self {
+            stop,
+            collect_deadline: Instant::now() + collect,
+            site_deadline,
+        }
+    }
+
+    pub fn interrupt(&self) -> Option<TopologyError> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Some(TopologyError::Cancelled);
+        }
+        let now = Instant::now();
+        if now >= self.site_deadline || now >= self.collect_deadline {
+            return Some(TopologyError::Timeout);
+        }
+        None
+    }
+
+    pub fn check(&self) -> Result<(), TopologyError> {
+        match self.interrupt() {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Default for SessionControl {
+    fn default() -> Self {
+        Self {
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            collect_deadline: Instant::now() + Duration::from_secs(3600),
+            site_deadline: Instant::now() + Duration::from_secs(3600),
+        }
+    }
+}
+
+/// Wraps any session so cancel/deadline is checked before each get/walk.
+pub struct BudgetedSession {
+    inner: Box<dyn SnmpSession>,
+    control: SessionControl,
+}
+
+impl BudgetedSession {
+    pub fn new(inner: Box<dyn SnmpSession>, control: SessionControl) -> Self {
+        Self { inner, control }
+    }
+}
+
 pub trait SnmpSession: Send + Sync {
     fn get<'a>(
         &'a self,
@@ -40,6 +125,11 @@ pub trait SnmpSession: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<VarBind>, TopologyError>> + Send + 'a>,
     >;
+
+    /// `Some` when this run should stop starting new SNMP operations.
+    fn interrupted(&self) -> Option<TopologyError> {
+        None
+    }
 }
 
 /// In-memory SNMP table keyed by dotted OID. Deterministic, no network.
@@ -117,12 +207,43 @@ impl SnmpSession for FixtureSession {
     }
 }
 
+impl SnmpSession for BudgetedSession {
+    fn interrupted(&self) -> Option<TopologyError> {
+        self.control.interrupt()
+    }
+
+    fn get<'a>(
+        &'a self,
+        oids: &'a [Oid],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<VarBind>, TopologyError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.control.check()?;
+            self.inner.get(oids).await
+        })
+    }
+
+    fn walk<'a>(
+        &'a self,
+        root: &'a Oid,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<VarBind>, TopologyError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.control.check()?;
+            self.inner.walk(root).await
+        })
+    }
+}
+
 pub struct V2cSession {
     addr: SocketAddr,
     community: Vec<u8>,
     timeout: Duration,
     socket: UdpSocket,
     request_id: AtomicI32,
+    control: SessionControl,
 }
 
 impl V2cSession {
@@ -130,6 +251,15 @@ impl V2cSession {
         ip: Ipv4Addr,
         community: Vec<u8>,
         timeout: Duration,
+    ) -> Result<Self, TopologyError> {
+        Self::connect_with(ip, community, timeout, SessionControl::default()).await
+    }
+
+    pub async fn connect_with(
+        ip: Ipv4Addr,
+        community: Vec<u8>,
+        timeout: Duration,
+        control: SessionControl,
     ) -> Result<Self, TopologyError> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
@@ -140,6 +270,7 @@ impl V2cSession {
             timeout,
             socket,
             request_id: AtomicI32::new(1),
+            control,
         })
     }
 
@@ -207,6 +338,7 @@ impl V2cSession {
     }
 
     async fn get_inner(&self, oids: &[Oid]) -> Result<Vec<VarBind>, TopologyError> {
+        self.control.check()?;
         if oids.is_empty() {
             return Ok(Vec::new());
         }
@@ -216,9 +348,11 @@ impl V2cSession {
     }
 
     async fn walk_inner(&self, root: &Oid) -> Result<Vec<VarBind>, TopologyError> {
+        self.control.check()?;
         let mut cursor = root.clone();
         let mut out = Vec::new();
         for _ in 0..MAX_WALK_ROUNDS {
+            self.control.check()?;
             let id = self.next_id();
             let payload =
                 encode_get_bulk(&self.community, id, 0, MAX_REPETITIONS, &[cursor.clone()]);
@@ -247,6 +381,10 @@ impl V2cSession {
 }
 
 impl SnmpSession for V2cSession {
+    fn interrupted(&self) -> Option<TopologyError> {
+        self.control.interrupt()
+    }
+
     fn get<'a>(
         &'a self,
         oids: &'a [Oid],
@@ -274,15 +412,26 @@ pub struct V3Session {
     timeout: Duration,
     secret: SnmpSecret,
     inner: std::sync::Arc<std::sync::Mutex<Option<snmp2::SyncSession>>>,
+    control: SessionControl,
 }
 
 impl V3Session {
     pub fn new(ip: Ipv4Addr, timeout: Duration, secret: SnmpSecret) -> Self {
+        Self::with_control(ip, timeout, secret, SessionControl::default())
+    }
+
+    pub fn with_control(
+        ip: Ipv4Addr,
+        timeout: Duration,
+        secret: SnmpSecret,
+        control: SessionControl,
+    ) -> Self {
         Self {
             ip,
             timeout,
             secret,
             inner: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            control,
         }
     }
 
@@ -324,11 +473,16 @@ impl V3Session {
         F: FnOnce(&mut snmp2::SyncSession) -> Result<T, TopologyError> + Send + 'static,
         T: Send + 'static,
     {
+        self.control.check()?;
         let timeout = self.timeout;
         let ip = self.ip;
         let security = self.build_security()?;
         let inner = std::sync::Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        // One SNMP request (or init+request) per blocking task. The JoinHandle
+        // is always awaited so a cancelled run does not return while USM work
+        // is still issuing packets. tokio cannot abort spawn_blocking.
+        let handle = tokio::task::spawn_blocking(move || {
+            let _guard = BlockingGuard::enter();
             let mut guard = inner
                 .lock()
                 .map_err(|_| TopologyError::Internal("SNMPv3 session lock was poisoned.".into()))?;
@@ -336,16 +490,15 @@ impl V3Session {
                 let addr = format!("{ip}:161");
                 let mut sess = snmp2::SyncSession::new_v3(&addr, Some(timeout), 1, security)
                     .map_err(|_| TopologyError::Unreachable)?;
-                // Engine-id discovery. Failure here is a timeout or auth problem,
-                // not a reason to panic.
                 sess.init().map_err(map_snmp2_error)?;
                 *guard = Some(sess);
             }
             let sess = guard.as_mut().expect("session just inserted");
             op(sess)
-        })
-        .await
-        .map_err(|_| TopologyError::Internal("SNMPv3 worker stopped unexpectedly.".into()))?
+        });
+        handle
+            .await
+            .map_err(|_| TopologyError::Internal("SNMPv3 worker stopped unexpectedly.".into()))?
     }
 }
 
@@ -472,42 +625,48 @@ impl V3Session {
 
     async fn walk_inner(&self, root: &Oid) -> Result<Vec<VarBind>, TopologyError> {
         let prefix = root.0.clone();
-        self.with_session(move |sess| {
-            let mut cursor_arcs = prefix.clone();
-            let mut out = Vec::new();
-            for _ in 0..MAX_WALK_ROUNDS {
-                let cursor = oid_to_snmp2(&cursor_arcs)?;
-                let response = retry_auth(sess, |sess| {
-                    let refs = [&cursor];
-                    sess.getbulk(&refs, 0, MAX_REPETITIONS as u32)
-                })?;
-                let binds = response;
-                let mut progressed = false;
-                let mut stop = false;
-                for bind in binds {
-                    if !bind.oid.starts_with(&prefix) || bind.value.is_end() {
-                        stop = true;
-                        break;
-                    }
-                    cursor_arcs = bind.oid.0.clone();
-                    out.push(bind);
-                    progressed = true;
-                    if out.len() >= MAX_WALK_BINDS {
-                        stop = true;
-                        break;
-                    }
+        let mut cursor_arcs = prefix.clone();
+        let mut out = Vec::new();
+        for _ in 0..MAX_WALK_ROUNDS {
+            self.control.check()?;
+            let cursor = cursor_arcs.clone();
+            let binds = self
+                .with_session(move |sess| {
+                    let cursor_oid = oid_to_snmp2(&cursor)?;
+                    retry_auth(sess, |sess| {
+                        let refs = [&cursor_oid];
+                        sess.getbulk(&refs, 0, MAX_REPETITIONS as u32)
+                    })
+                })
+                .await?;
+            let mut progressed = false;
+            let mut stop = false;
+            for bind in binds {
+                if !bind.oid.starts_with(&prefix) || bind.value.is_end() {
+                    stop = true;
+                    break;
                 }
-                if stop || !progressed {
+                cursor_arcs = bind.oid.0.clone();
+                out.push(bind);
+                progressed = true;
+                if out.len() >= MAX_WALK_BINDS {
+                    stop = true;
                     break;
                 }
             }
-            Ok(out)
-        })
-        .await
+            if stop || !progressed {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 
 impl SnmpSession for V3Session {
+    fn interrupted(&self) -> Option<TopologyError> {
+        self.control.interrupt()
+    }
+
     fn get<'a>(
         &'a self,
         oids: &'a [Oid],
@@ -531,16 +690,21 @@ pub async fn open_session(
     ip: Ipv4Addr,
     secret: &SnmpSecret,
     timeout: Duration,
+    control: SessionControl,
 ) -> Result<Box<dyn SnmpSession>, TopologyError> {
     match secret.version() {
         SnmpVersion::V2c => {
             let SnmpSecret::V2c { community } = secret else {
                 return Err(TopologyError::Internal("v2c secret mismatch".into()));
             };
-            let sess = V2cSession::connect(ip, community.clone(), timeout).await?;
-            Ok(Box::new(sess))
+            let sess =
+                V2cSession::connect_with(ip, community.clone(), timeout, control.clone()).await?;
+            Ok(Box::new(BudgetedSession::new(Box::new(sess), control)))
         }
-        SnmpVersion::V3 => Ok(Box::new(V3Session::new(ip, timeout, secret.clone()))),
+        SnmpVersion::V3 => {
+            let sess = V3Session::with_control(ip, timeout, secret.clone(), control.clone());
+            Ok(Box::new(BudgetedSession::new(Box::new(sess), control)))
+        }
     }
 }
 

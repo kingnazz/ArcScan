@@ -59,6 +59,42 @@ describe("topology helpers", () => {
     expect(err).toMatch(/noAuthNoPriv/i);
   });
 
+  it("allows SNMPv3 authNoPriv when privacy is omitted", () => {
+    expect(
+      credentialInputError({
+        ...emptyCredentialInput("v3"),
+        username: "monitor",
+        authProtocol: "sha256",
+        authPassword: "auth-secret",
+        privProtocol: "",
+        privPassword: "",
+      }),
+    ).toBeNull();
+  });
+
+  it("requires a privacy password only when a privacy protocol is chosen", () => {
+    expect(
+      credentialInputError({
+        ...emptyCredentialInput("v3"),
+        username: "monitor",
+        authProtocol: "sha256",
+        authPassword: "auth-secret",
+        privProtocol: "aes128",
+        privPassword: "",
+      }),
+    ).toMatch(/privacy password/i);
+    expect(
+      credentialInputError({
+        ...emptyCredentialInput("v3"),
+        username: "monitor",
+        authProtocol: "sha256",
+        authPassword: "auth-secret",
+        privProtocol: "aes128",
+        privPassword: "priv-secret",
+      }),
+    ).toBeNull();
+  });
+
   it("builds targets from scan rows without inventing device ids", () => {
     const targets = targetsFromScanRows([
       scanRow("192.168.1.2", 2, "00:1A:2B:00:00:02", "core-sw"),

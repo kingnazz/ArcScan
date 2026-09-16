@@ -12,14 +12,27 @@ together.
 
 ## What this engine produces
 
-`TopologySnapshot` matches the additive contract in issue #42:
+`TopologySnapshot` is the **internal** ArcScan UI payload. It may contain
+unresolved neighbours as `unknownNodes` and connections with only one
+inventory endpoint.
 
-- `fromDeviceId` / `toDeviceId` are ArcScan **local inventory ids** for
-  correlation inside the same payload. They are not ArcAtlas canonical ids.
+The schemaVersion 2 **handoff** surface is stricter, matching ArcAtlas-Next #13:
+
+- `topology.connections` contain only known-to-known links.
+- Both `fromDeviceId` and `toDeviceId` exist exactly once in the same
+  `inventory` array.
+- Unresolved-id fields are omitted from those connections.
+- Unresolved evidence is preserved on the additive `unresolvedTopology`
+  object so it is not discarded. The current ArcAtlas receiver ignores
+  unknown fields.
+
+`fromDeviceId` / `toDeviceId` are ArcScan **local inventory ids** for
+correlation inside the same payload. They are not ArcAtlas canonical ids.
+
 - `confidence` is one of `confirmed`, `strong`, `inferred`. Several weak clues
   never vote an inferred link up to confirmed.
-- Unknown or unmanaged neighbours are preserved as `unknownNodes` with an
-  `unknown:…` id. No vendor or model is invented.
+- Unknown or unmanaged neighbours are preserved internally. No vendor or
+  model is invented.
 
 The golden serializer fixture is `topology_contract_fixture` /
 `arcscan_topology::issue42_fixture()`.
@@ -46,17 +59,20 @@ UniFi controller API and SonicWall API are named on the provider trait and
 
 Implemented, not faked:
 
-- `authPriv` and `authNoPriv`
+- `authPriv` and `authNoPriv` (the Topology panel exposes None (authNoPriv);
+  `noAuthNoPriv` is refused)
+- Optional SNMP context name
 - Auth: MD5, SHA-1, SHA-224, SHA-256, SHA-384, SHA-512
 - Privacy: DES, AES-128, AES-192, AES-256
-- `noAuthNoPriv` is refused
 - Engine-id discovery via `snmp2::SyncSession::init`
 - Library errors are rewritten so a password cannot leak through `Display`
 
 Known library limits, isolated behind `V3Session`:
 
-- `snmp2` is a synchronous client, so each v3 operation runs on Tokio's
-  blocking pool rather than on the async scanner runtime.
+- `snmp2` is a synchronous client. Each v3 GET/GETBULK runs on Tokio's
+  blocking pool as **one** operation. Walks check cancel/deadline between
+  rounds. The JoinHandle is always awaited, so a cancelled run does not
+  return while USM work is still issuing packets.
 - Context names are forwarded when the technician supplies one.
 - Informs/traps are out of scope.
 
@@ -86,6 +102,11 @@ to one undirected connection.
 A port with two or more learned unicast MACs is treated as an uplink/trunk and
 does **not** produce endpoint links.
 
+LLDP/CDP neighbours resolve to inventory devices by **management IP or chassis
+MAC only**. Hostname / sysName / CDP device-id is evidence for an unknown
+node and never a canonical match. Duplicate hostnames stay unresolved unless
+IP or MAC disambiguates them.
+
 ## Performance
 
 - Per-device SNMP timeout (default 800 ms, clamped 100–5000)
@@ -93,7 +114,10 @@ does **not** produce endpoint links.
 - Site wall clock (45 s)
 - Concurrency 8 (max 16)
 - Max 512 targets
-- Cancel via `cancel_topology` and via the in-flight scan Stop hook
+- Cancel via `cancel_topology` and via the in-flight scan Stop hook. Stop and
+  the site wall are noticed while probes are in flight (not only after the
+  current future completes). In-flight SNMPv3 blocking work is joined before
+  the run reports `cancelled` / `timedOut`.
 
 ## Vendor limits worth knowing at integration time
 
@@ -110,7 +134,8 @@ does **not** produce endpoint links.
 
 ## Integration notes for the Claude + Grok merge
 
-- Do not fold this snapshot into the current inventory exporter yet.
+- Do not fold unresolved connections into `topology.connections` for ArcAtlas.
+  Use `unresolvedTopology` until the receiver is extended.
 - Device ids must be the same inventory ids the deep-discovery branch emits
   in the same payload.
 - Quick Scan must stay fast. Topology stays opt-in / credentialed.

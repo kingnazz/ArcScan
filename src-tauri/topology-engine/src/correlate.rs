@@ -26,35 +26,21 @@ pub const UPLINK_MAC_THRESHOLD: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct InventoryIndex {
-    by_id: HashMap<i64, TopologyTarget>,
     by_ip: HashMap<String, i64>,
     by_mac: HashMap<String, i64>,
-    by_name: HashMap<String, i64>,
 }
 
 impl InventoryIndex {
     pub fn from_targets(targets: &[TopologyTarget]) -> Self {
         let mut idx = Self {
-            by_id: HashMap::new(),
             by_ip: HashMap::new(),
             by_mac: HashMap::new(),
-            by_name: HashMap::new(),
         };
         for t in targets {
             if let Some(id) = t.device_id {
-                idx.by_id.insert(id, t.clone());
                 idx.by_ip.insert(t.ip.clone(), id);
                 if let Some(mac) = t.mac.as_deref().and_then(normalize_mac) {
                     idx.by_mac.insert(mac, id);
-                }
-                for name in [t.hostname.as_deref(), t.detected_name.as_deref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    let key = name.trim().to_ascii_lowercase();
-                    if !key.is_empty() {
-                        idx.by_name.insert(key, id);
-                    }
                 }
             }
         }
@@ -68,9 +54,12 @@ impl InventoryIndex {
     pub fn resolve_neighbor(
         &self,
         chassis_id: Option<&str>,
-        sys_name: Option<&str>,
+        _sys_name: Option<&str>,
         management_address: Option<&str>,
     ) -> Option<i64> {
+        // Hostname / sysName is evidence for an unknown node, never a
+        // canonical inventory match. Duplicate hostnames (the case that
+        // started this v1.9 work) would otherwise wire the wrong device.
         if let Some(ip) = management_address {
             if let Some(id) = self.by_ip.get(ip) {
                 return Some(*id);
@@ -78,12 +67,6 @@ impl InventoryIndex {
         }
         if let Some(chassis) = chassis_id.and_then(normalize_mac) {
             if let Some(id) = self.by_mac.get(&chassis) {
-                return Some(*id);
-            }
-        }
-        if let Some(name) = sys_name {
-            let key = name.trim().to_ascii_lowercase();
-            if let Some(id) = self.by_name.get(&key) {
                 return Some(*id);
             }
         }
@@ -891,6 +874,113 @@ mod tests {
         assert_eq!(link.to_device_id, None);
         assert_eq!(link.to_unresolved_id.as_deref(), Some(node.id.as_str()));
         assert_eq!(link.confidence, TopologyConfidence::Confirmed);
+    }
+
+    #[test]
+    fn hostname_alone_does_not_resolve_a_neighbor() {
+        let mut core = switch_view();
+        core.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 36,
+            chassis_id: Some("DE:AD:BE:EF:00:99".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("Gi0/1".into()),
+            port_desc: None,
+            sys_name: Some("access-sw".into()),
+            sys_desc: None,
+            management_address: None,
+        });
+        let snap = correlate(&[core], &site_targets(), "t");
+        let link = snap
+            .connections
+            .iter()
+            .find(|c| c.from_device_id == Some(2))
+            .expect("LLDP evidence is kept");
+        assert_eq!(
+            link.to_device_id, None,
+            "sysName must not pick an inventory device"
+        );
+        assert!(link.to_unresolved_id.is_some());
+        assert_eq!(snap.unknown_nodes.len(), 1);
+        assert_eq!(snap.unknown_nodes[0].sys_name.as_deref(), Some("access-sw"));
+    }
+
+    #[test]
+    fn duplicate_hostnames_stay_unresolved_unless_ip_or_mac_disambiguates() {
+        let targets = vec![
+            target(10, "192.168.1.10", "00:10:00:00:00:0A", "access-sw"),
+            target(11, "192.168.1.11", "00:10:00:00:00:0B", "access-sw"),
+            target(2, "192.168.1.2", "00:1A:2B:00:00:02", "core-sw"),
+        ];
+
+        let mut by_name_only = switch_view();
+        by_name_only.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 36,
+            chassis_id: Some("DE:AD:BE:EF:00:99".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("Gi0/1".into()),
+            port_desc: None,
+            sys_name: Some("access-sw".into()),
+            sys_desc: None,
+            management_address: None,
+        });
+        let snap = correlate(&[by_name_only], &targets, "t");
+        let link = &snap.connections[0];
+        assert_eq!(link.to_device_id, None);
+        assert!(link.to_unresolved_id.is_some());
+        assert_eq!(link.confidence, TopologyConfidence::Confirmed);
+
+        let mut by_ip = switch_view();
+        by_ip.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 36,
+            chassis_id: Some("DE:AD:BE:EF:00:99".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("Gi0/1".into()),
+            port_desc: None,
+            sys_name: Some("access-sw".into()),
+            sys_desc: None,
+            management_address: Some("192.168.1.11".into()),
+        });
+        let snap = correlate(&[by_ip], &targets, "t");
+        assert_eq!(
+            snap.connections[0].to_device_id,
+            Some(11),
+            "management IP is strong identity"
+        );
+
+        let mut by_mac = switch_view();
+        by_mac.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 36,
+            chassis_id: Some("00:10:00:00:00:0A".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("Gi0/1".into()),
+            port_desc: None,
+            sys_name: Some("access-sw".into()),
+            sys_desc: None,
+            management_address: None,
+        });
+        let snap = correlate(&[by_mac], &targets, "t");
+        assert_eq!(
+            snap.connections[0].to_device_id,
+            Some(10),
+            "chassis MAC is strong identity"
+        );
+    }
+
+    #[test]
+    fn cdp_device_id_alone_does_not_resolve() {
+        let mut core = switch_view();
+        core.cdp_neighbors.push(CdpNeighbor {
+            if_index: 36,
+            device_id: Some("access-sw".into()),
+            device_port: Some("GigabitEthernet0/1".into()),
+            platform: Some("Cisco IOS".into()),
+            address: None,
+            native_vlan: Some(10),
+        });
+        let snap = correlate(&[core], &site_targets(), "t");
+        assert_eq!(snap.connections[0].to_device_id, None);
+        assert!(snap.connections[0].to_unresolved_id.is_some());
+        assert_eq!(snap.unknown_nodes[0].sys_name.as_deref(), Some("access-sw"));
     }
 
     #[test]

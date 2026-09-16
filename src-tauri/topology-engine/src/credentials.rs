@@ -541,6 +541,25 @@ mod tests {
     }
 
     #[test]
+    fn v3_auth_no_priv_is_accepted() {
+        let input = CredentialInput {
+            version: "v3".into(),
+            community: None,
+            username: Some("monitor".into()),
+            auth_protocol: Some("sha256".into()),
+            auth_password: Some("auth-secret-value".into()),
+            priv_protocol: None,
+            priv_password: None,
+            context: Some("vlan-10".into()),
+        };
+        let secret = SnmpSecret::from_input(input).unwrap();
+        let status = secret.status();
+        assert_eq!(status.auth_protocol.as_deref(), Some("sha256"));
+        assert!(status.priv_protocol.is_none());
+        assert!(!format!("{secret:?}").contains("auth-secret-value"));
+    }
+
+    #[test]
     fn debug_format_redacts_community() {
         let secret = SnmpSecret::from_input(v2c("leaky-community")).unwrap();
         let rendered = format!("{secret:?}");

@@ -12,7 +12,6 @@ use arcscan_topology::credentials::{
     CredentialInput, CredentialStatus, CredentialStore, SnmpSecret,
 };
 use arcscan_topology::engine::run_from_request;
-use arcscan_topology::error::TopologyError;
 use arcscan_topology::model::{TopologyRequest, TopologyResult};
 use arcscan_topology::serialize::{handoff_preview_to_json, issue42_fixture};
 
@@ -45,7 +44,7 @@ pub fn set_topology_credentials(
     state: State<'_, TopologyState>,
     credentials: CredentialInput,
 ) -> Result<CredentialStatus, String> {
-    let secret = SnmpSecret::from_input(credentials).map_err(TopologyError::message)?;
+    let secret = SnmpSecret::from_input(credentials).map_err(String::from)?;
     Ok(state.credentials.set(secret))
 }
 
@@ -66,7 +65,7 @@ pub async fn discover_topology(
 ) -> Result<TopologyResult, String> {
     let result = run_from_request(&state.credentials, request)
         .await
-        .map_err(TopologyError::message)?;
+        .map_err(String::from)?;
     *state.last.lock().expect("topology cache") = Some(result.clone());
     Ok(result)
 }
