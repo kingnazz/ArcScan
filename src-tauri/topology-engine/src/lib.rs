@@ -18,10 +18,14 @@ pub use credentials::{CredentialInput, CredentialStatus, CredentialStore, SnmpSe
 pub use engine::{request_cancel, run, run_from_request, set_scan_cancel_check};
 pub use error::TopologyError;
 pub use model::{
-    TopologyConfidence, TopologyConnection, TopologyHandoffPreview, TopologyRequest,
-    TopologyResult, TopologySnapshot, TopologySummary, TopologyTarget,
+    ContractConnection, ContractTopology, TopologyConfidence, TopologyConnection,
+    TopologyHandoffPreview, TopologyRequest, TopologyResult, TopologySnapshot, TopologySummary,
+    TopologyTarget, UnresolvedTopology,
 };
-pub use serialize::{handoff_preview_to_json, issue42_fixture, snapshot_to_json, SCHEMA_VERSION};
+pub use serialize::{
+    assert_arc_atlas13_contract, handoff_preview_to_json, issue42_fixture, preview_from_snapshot,
+    snapshot_to_json, split_for_contract, SCHEMA_VERSION,
+};
 
 pub fn isolated_from_classifier() -> bool {
     true

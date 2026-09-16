@@ -174,9 +174,17 @@ export function TopologyPanel({
                 <FieldRow label="Privacy" htmlFor="topo-snmp-priv">
                   <Select
                     id="topo-snmp-priv"
-                    value={form.privProtocol ?? "aes128"}
-                    onChange={(event) => setForm({ ...form, privProtocol: event.target.value })}
+                    value={form.privProtocol ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setForm({
+                        ...form,
+                        privProtocol: value,
+                        privPassword: value ? form.privPassword : "",
+                      });
+                    }}
                   >
+                    <option value="">None (authNoPriv)</option>
                     {SNMP_PRIV_PROTOCOLS.map((proto) => (
                       <option key={proto} value={proto}>
                         {proto.toUpperCase()}
@@ -184,13 +192,27 @@ export function TopologyPanel({
                     ))}
                   </Select>
                 </FieldRow>
-                <FieldRow label="Privacy password" htmlFor="topo-snmp-priv-pass">
+                {form.privProtocol ? (
+                  <FieldRow label="Privacy password" htmlFor="topo-snmp-priv-pass">
+                    <Field
+                      id="topo-snmp-priv-pass"
+                      type="password"
+                      autoComplete="off"
+                      value={form.privPassword ?? ""}
+                      onChange={(event) => setForm({ ...form, privPassword: event.target.value })}
+                    />
+                  </FieldRow>
+                ) : null}
+                <FieldRow
+                  label="Context"
+                  htmlFor="topo-snmp-context"
+                  hint="Optional SNMP context name."
+                >
                   <Field
-                    id="topo-snmp-priv-pass"
-                    type="password"
+                    id="topo-snmp-context"
                     autoComplete="off"
-                    value={form.privPassword ?? ""}
-                    onChange={(event) => setForm({ ...form, privPassword: event.target.value })}
+                    value={form.context ?? ""}
+                    onChange={(event) => setForm({ ...form, context: event.target.value })}
                   />
                 </FieldRow>
               </>

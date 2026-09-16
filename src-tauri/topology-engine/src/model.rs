@@ -160,7 +160,10 @@ pub struct TopologyConnection {
     pub evidence: Vec<String>,
 }
 
-/// Standalone topology payload. Not embedded in the current ArcAtlas envelope.
+/// Standalone topology payload used by the ArcScan UI. This is *not* the
+/// schemaVersion 2 handoff wire shape: unresolved neighbours live here so the
+/// technician can see them, even though ArcAtlas-Next #13 cannot ingest them
+/// inside `topology.connections`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TopologySnapshot {
@@ -171,9 +174,58 @@ pub struct TopologySnapshot {
     pub unknown_nodes: Vec<UnresolvedNode>,
 }
 
-/// Future additive handoff shape from issue #42. Inventory is left empty here
-/// on purpose: this crate does not rewrite the existing exporter. The final
-/// integration fills `inventory` from the current mapper.
+/// Issue #42 / ArcAtlas-Next #13 wire snapshot: only known-to-known links,
+/// both endpoint IDs required, no unresolved-id fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractTopology {
+    pub captured_at: String,
+    #[serde(default)]
+    pub connections: Vec<ContractConnection>,
+}
+
+/// A connection ArcAtlas will accept: both ends resolve exactly once in the
+/// same payload's `inventory`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractConnection {
+    pub from_device_id: i64,
+    pub to_device_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_port: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_port: Option<String>,
+    pub kind: String,
+    pub protocol: String,
+    pub confidence: TopologyConfidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_mbps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_vlan: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tagged_vlans: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poe: Option<PoeInfo>,
+    pub evidence: Vec<String>,
+}
+
+/// Additive extension the current ArcAtlas receiver can ignore. Holds the
+/// unresolved-node evidence the UI still shows internally.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedTopology {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_nodes: Vec<UnresolvedNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<TopologyConnection>,
+}
+
+/// Future additive handoff shape from issue #42. Inventory is filled by the
+/// existing exporter at integration time; this crate does not rewrite it.
+/// `topology` is the locked known-to-known contract. Unresolved evidence is
+/// preserved on `unresolvedTopology`, never as invalid `connections` entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TopologyHandoffPreview {
@@ -183,7 +235,9 @@ pub struct TopologyHandoffPreview {
     pub generated_at: String,
     pub network_name: String,
     pub inventory: Vec<serde_json::Value>,
-    pub topology: TopologySnapshot,
+    pub topology: ContractTopology,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unresolved_topology: Option<UnresolvedTopology>,
 }
 
 /// What one topology run did, for the UI summary. Contains no secrets.

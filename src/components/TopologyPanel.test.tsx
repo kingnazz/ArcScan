@@ -161,4 +161,60 @@ describe("Topology panel", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/community string/i);
     expect(screen.getByRole("alert").textContent?.toLowerCase()).not.toContain("try public");
   });
+
+  it("saves SNMPv3 authNoPriv without a privacy protocol", async () => {
+    const onSaveCredentials = vi.fn(async (_input: CredentialInput) => undefined);
+    render(
+      <TopologyPanel
+        {...noop}
+        onSaveCredentials={onSaveCredentials}
+        credentialStatus={EMPTY_CREDENTIAL_STATUS}
+        result={null}
+        names={names}
+        targetCount={4}
+        busy={false}
+        error={null}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Version"), { target: { value: "v3" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "monitor" } });
+    fireEvent.change(screen.getByLabelText("Authentication password"), {
+      target: { value: "auth-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("Privacy"), { target: { value: "" } });
+    expect(screen.queryByLabelText("Privacy password")).toBeNull();
+    expect(screen.getByLabelText("Context")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep for this session" }));
+    await waitFor(() => {
+      expect(onSaveCredentials).toHaveBeenCalled();
+    });
+    const payload = onSaveCredentials.mock.calls[0]?.[0];
+    expect(payload?.version).toBe("v3");
+    expect(payload?.username).toBe("monitor");
+    expect(payload?.authProtocol).toBe("sha256");
+    expect(payload?.authPassword).toBe("auth-secret");
+    expect(payload?.privProtocol).toBeFalsy();
+    expect(payload?.privPassword).toBeFalsy();
+  });
+
+  it("requires a privacy password for authPriv", () => {
+    render(
+      <TopologyPanel
+        {...noop}
+        credentialStatus={EMPTY_CREDENTIAL_STATUS}
+        result={null}
+        names={names}
+        targetCount={4}
+        busy={false}
+        error={null}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Version"), { target: { value: "v3" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "monitor" } });
+    fireEvent.change(screen.getByLabelText("Authentication password"), {
+      target: { value: "auth-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Keep for this session" }));
+    expect(screen.getByRole("alert").textContent).toMatch(/privacy password/i);
+  });
 });
