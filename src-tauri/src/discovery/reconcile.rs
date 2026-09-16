@@ -271,7 +271,6 @@ fn build_group(candidates: &[DeviceCandidate], members: &[usize]) -> PhysicalDev
         .collect();
     shared.sort();
 
-    let strongest = identities.iter().map(|i| i.strength).min();
     let key = identities
         .iter()
         .min()

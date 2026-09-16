@@ -244,6 +244,12 @@ pub enum ScanPhase {
     Discovering,
     /// Reading the description documents local devices offered.
     Describing,
+    /// Asking services that are already open what they are: an HTTP front page,
+    /// a TLS certificate subject, an SMB negotiation, a service greeting.
+    Inspecting,
+    /// Asking Windows machines about themselves, with credentials the operator
+    /// supplied.
+    Interrogating,
     /// Reading the ARP cache and resolving hostnames and vendors.
     Resolving,
     /// Deciding what each device is from the evidence collected.
@@ -369,6 +375,17 @@ pub struct ScanOptions {
     /// what a request from a build that predates discovery should mean.
     #[serde(default)]
     pub discovery: Option<crate::discovery::DiscoveryOptions>,
+    /// v1.9. Which unauthenticated deep probes to run against ports the sweep
+    /// already found open. Absent, and `enabled: false`, both mean Quick Scan
+    /// behaviour — which is what a request from a build that predates deep
+    /// scanning deserializes to, and what keeps Quick Scan quick.
+    #[serde(default)]
+    pub deep: Option<crate::discovery::deep::DeepOptions>,
+    /// v1.9. Whether to run credentialed Windows discovery against hosts that
+    /// look like Windows machines. Requires a credential the operator set this
+    /// session; without one, every probe reports that it was skipped.
+    #[serde(default)]
+    pub credentialed_windows: bool,
 }
 
 fn default_timeout() -> u64 {
@@ -475,6 +492,63 @@ pub struct HostDiscovery {
     pub presentation_url: Option<String>,
     #[serde(default)]
     pub last_discovered_at: Option<String>,
+
+    // ---- v1.9 ---------------------------------------------------------
+    //
+    // Every field below is optional and appended. A record written by v1.8.7
+    // deserializes with all of them absent, which is the honest reading: that
+    // scan did not establish them.
+    /// `windows`, `linux`, `macos`, `bsd`, `network_os`.
+    #[serde(default)]
+    pub os_family: Option<String>,
+    /// The marketed product, e.g. `Windows 11` or `Windows Server 2022`.
+    #[serde(default)]
+    pub os_product: Option<String>,
+    /// The edition, e.g. `Pro` or `Datacenter`.
+    #[serde(default)]
+    pub os_edition: Option<String>,
+    /// The release or NT version, e.g. `24H2`.
+    #[serde(default)]
+    pub os_version: Option<String>,
+    /// The exact build number, as a string so a future non-numeric build does
+    /// not need a schema change.
+    #[serde(default)]
+    pub os_build: Option<String>,
+    /// `x64`, `arm64`, `x86`.
+    #[serde(default)]
+    pub os_architecture: Option<String>,
+    /// `1`, `2` or `3`. Set only by an authenticated Windows query.
+    #[serde(default)]
+    pub windows_product_type: Option<String>,
+    /// The manufacturer of the hardware, as the hardware reported it. Distinct
+    /// from `manufacturer`, which is whatever any source claimed.
+    #[serde(default)]
+    pub hardware_manufacturer: Option<String>,
+    #[serde(default)]
+    pub hardware_model: Option<String>,
+    /// The service tag or chassis serial.
+    #[serde(default)]
+    pub hardware_serial: Option<String>,
+    /// The SMBIOS system UUID.
+    #[serde(default)]
+    pub system_uuid: Option<String>,
+    /// The AD domain or workgroup.
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// The strongest identifier this device offered, and what kind it was, as
+    /// `kind: value`. What reconciliation would key on.
+    #[serde(default)]
+    pub identity_evidence: Vec<String>,
+    /// Which sources contributed to the identity, sorted.
+    #[serde(default)]
+    pub identity_sources: Vec<String>,
+    /// One line per deep probe attempted, for the history view.
+    #[serde(default)]
+    pub deep_notes: Vec<String>,
+    /// What the credentialed query did, or why it did not happen. Present only
+    /// when a credentialed scan was asked for.
+    #[serde(default)]
+    pub credentialed_status: Option<String>,
 }
 
 impl HostResult {
@@ -945,9 +1019,112 @@ pub async fn run(
     if will_discover {
         sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Discovering)));
     }
-    let discovery = crate::discovery::run(&discovery_ctx).await;
+    let mut discovery = crate::discovery::run(&discovery_ctx).await;
     if will_discover && discovery.report.descriptions_fetched > 0 {
         sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Describing)));
+    }
+
+    // ---- Deep scan (v1.9) -------------------------------------------------
+    //
+    // Ask services the sweep already found open what they are. This never adds
+    // a port to the scan and never sends a credential; it reads what a device
+    // says about itself to anyone who connects.
+    //
+    // Unlike multicast discovery, this is unicast to addresses already known to
+    // be live, so it is not gated on the target being a local subnet: a routed
+    // scan can read an HTTP banner perfectly well. It is gated on the operator
+    // having asked for it.
+    checkpoint(Checkpoint::BeforeDiscovery);
+    let deep_options = opts.deep.unwrap_or_default();
+    let mut deep_notes: HashMap<Ipv4Addr, Vec<String>> = HashMap::new();
+    if deep_options.enabled && !cancelled(scan_id) {
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Inspecting)));
+        // Bounded by the same host concurrency the sweep used, so a deep scan
+        // of a /24 does not open a different order of magnitude of sockets than
+        // the scan that preceded it.
+        let concurrency = limits.host_concurrency.min(32).max(1);
+        let targets: Vec<(Ipv4Addr, Vec<u16>)> = probe_results
+            .iter()
+            .filter(|(_, probe)| !probe.open_ports.is_empty())
+            .map(|(ip, probe)| (*ip, probe.open_ports.clone()))
+            .collect();
+        let results: Vec<(Ipv4Addr, crate::discovery::deep::DeepOutcome)> = stream::iter(targets)
+            .map(|(ip, ports)| {
+                let options = deep_options;
+                async move {
+                    if cancelled(scan_id) {
+                        return (ip, crate::discovery::deep::DeepOutcome::default());
+                    }
+                    let outcome = crate::discovery::deep::probe_host(ip, &ports, &options).await;
+                    (ip, outcome)
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+        for (ip, outcome) in results {
+            if outcome.evidence.is_empty() && outcome.notes.is_empty() {
+                continue;
+            }
+            let entry = discovery
+                .devices
+                .entry(ip)
+                .or_insert_with(|| crate::discovery::DiscoveredDevice::new(ip));
+            for evidence in outcome.evidence {
+                entry.add(evidence);
+            }
+            if !outcome.notes.is_empty() {
+                deep_notes.insert(ip, outcome.notes);
+            }
+        }
+    }
+
+    // ---- Credentialed Windows discovery (v1.9) ----------------------------
+    //
+    // Only for hosts that answer on a Windows management port, only when the
+    // operator asked, and only with the one credential they supplied. There is
+    // no second attempt with a different account: a refusal is recorded and the
+    // host is left alone, which is what keeps a scan from locking out a domain
+    // account.
+    let mut credentialed_status: HashMap<Ipv4Addr, String> = HashMap::new();
+    if opts.credentialed_windows && !cancelled(scan_id) {
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Interrogating)));
+        // WinRM (5985/5986) is the transport the query uses; 445 and 3389 are
+        // what says "this is probably Windows" on a host that does not expose
+        // WinRM to the scanner.
+        let windows_ports = [5985u16, 5986, 445, 3389];
+        let targets: Vec<Ipv4Addr> = probe_results
+            .iter()
+            .filter(|(_, probe)| probe.open_ports.iter().any(|p| windows_ports.contains(p)))
+            .map(|(ip, _)| *ip)
+            .collect();
+        for ip in targets {
+            if cancelled(scan_id) {
+                break;
+            }
+            let store = crate::discovery::windows::credential_store();
+            match crate::discovery::windows::probe(&ip.to_string(), store).await {
+                Ok(facts) => {
+                    let summary = facts
+                        .os_summary()
+                        .unwrap_or_else(|| "answered".to_string());
+                    let entry = discovery
+                        .devices
+                        .entry(ip)
+                        .or_insert_with(|| crate::discovery::DiscoveredDevice::new(ip));
+                    for evidence in facts.to_evidence() {
+                        entry.add(evidence);
+                    }
+                    credentialed_status.insert(ip, format!("Answered: {summary}"));
+                }
+                // Every failure is recorded, never swallowed. "We could not
+                // ask" and "we asked and learned nothing" are different
+                // answers, and only one of them is the operator's problem.
+                Err(error) => {
+                    credentialed_status.insert(ip, error.reason());
+                }
+            }
+        }
     }
 
     // Resolve hostnames for the live hosts concurrently (bounded, with a short
@@ -1012,6 +1189,17 @@ pub async fn run(
             gateway_ip == Some(ip),
             &now,
         );
+        // The notes belong to the address rather than to the evidence, so they
+        // are attached after the build: a host whose every deep probe failed
+        // has no evidence and still has something worth saying.
+        if let Some(record) = host.discovery.as_mut() {
+            if let Some(notes) = deep_notes.remove(&ip) {
+                record.deep_notes = notes;
+            }
+            if let Some(status) = credentialed_status.remove(&ip) {
+                record.credentialed_status = Some(status);
+            }
+        }
         sink.critical(ScanEvent::HostUpdated {
             scan_id,
             host: Box::new(host.clone()),
@@ -1122,6 +1310,13 @@ impl HostDiscovery {
         .then(|| resolved.name.clone());
 
         let value = |kind: EvidenceKind| device.best(kind).map(|e| e.value.clone());
+        let keyed_value = |kind: EvidenceKind, key: &str| {
+            device
+                .of_kind(kind)
+                .find(|e| e.key == key)
+                .map(|e| e.value.clone())
+        };
+        let identity = identity_claims(device, host.mac.as_deref());
         let ssdp_value = |kind: EvidenceKind| {
             device
                 .of_kind(kind)
@@ -1171,8 +1366,123 @@ impl HostDiscovery {
             ipv6_addresses: device.ipv6.iter().map(|ip| ip.to_string()).collect(),
             presentation_url: ssdp_value(EvidenceKind::Url),
             last_discovered_at: Some(now.to_string()),
+
+            // ---- v1.9 -------------------------------------------------
+            os_family: value(EvidenceKind::OsFamily),
+            os_product: value(EvidenceKind::OsProduct),
+            os_edition: value(EvidenceKind::OsEdition),
+            // The feature-update label if there is one, and the NT version
+            // otherwise: "24H2" is what a technician asks for, and
+            // "10.0.26100" is better than nothing.
+            os_version: keyed_value(EvidenceKind::OsVersion, "release")
+                .or_else(|| keyed_value(EvidenceKind::OsVersion, "nt"))
+                .or_else(|| value(EvidenceKind::OsVersion)),
+            os_build: value(EvidenceKind::OsBuild),
+            os_architecture: value(EvidenceKind::OsArchitecture),
+            // Only an authenticated answer may set this, which is enforced
+            // where the evidence is read rather than trusted here.
+            windows_product_type: device
+                .of_kind(EvidenceKind::WindowsProductType)
+                .find(|e| e.source == crate::discovery::DiscoverySource::WindowsCredentialed)
+                .map(|e| e.value.clone()),
+            hardware_manufacturer: credentialed_value(device, EvidenceKind::Manufacturer),
+            hardware_model: credentialed_value(device, EvidenceKind::Model),
+            hardware_serial: credentialed_value(device, EvidenceKind::SerialNumber),
+            system_uuid: value(EvidenceKind::SystemUuid),
+            domain: value(EvidenceKind::DomainMembership),
+            identity_evidence: identity
+                .iter()
+                .map(|claim| format!("{}: {}", claim.strength.label(), claim.display))
+                .collect(),
+            identity_sources: identity_sources(device),
+            deep_notes: Vec::new(),
+            credentialed_status: None,
         })
     }
+}
+
+/// The strongest identifiers one device offered, strongest first.
+///
+/// This is what [`crate::discovery::reconcile`] would key on, computed here so
+/// it can be stored, exported and handed to ArcAtlas. Ordering is by strength,
+/// so the first entry is the best identity the device has.
+pub fn identity_claims(
+    device: &crate::discovery::DiscoveredDevice,
+    mac: Option<&str>,
+) -> Vec<crate::discovery::reconcile::IdentityClaim> {
+    use crate::discovery::model::EvidenceKind;
+    use crate::discovery::reconcile::{IdentityClaim, IdentityStrength};
+
+    let manufacturer = device
+        .best(EvidenceKind::Manufacturer)
+        .map(|e| e.value.clone());
+    let mut out: Vec<IdentityClaim> = Vec::new();
+
+    for evidence in device.of_kind(EvidenceKind::SystemUuid) {
+        out.extend(IdentityClaim::new(
+            IdentityStrength::SystemUuid,
+            None,
+            &evidence.value,
+        ));
+    }
+    for evidence in device.of_kind(EvidenceKind::SerialNumber) {
+        // Namespaced by manufacturer: a serial is unique to its vendor and not
+        // across vendors.
+        out.extend(IdentityClaim::new(
+            IdentityStrength::HardwareSerial,
+            manufacturer.as_deref(),
+            &evidence.value,
+        ));
+    }
+    for evidence in device.of_kind(EvidenceKind::ProtocolIdentifier) {
+        // An SMB server GUID is persistent and vendor-guaranteed unique. Other
+        // protocol identifiers are recorded for continuity and are deliberately
+        // not identities: a UPnP UDN can change when a device is factory reset.
+        if evidence.key == "smb_server_guid" {
+            out.extend(IdentityClaim::new(
+                IdentityStrength::VendorUnique,
+                Some("smb"),
+                &evidence.value,
+            ));
+        }
+    }
+    if let Some(mac) = mac {
+        out.extend(IdentityClaim::new(IdentityStrength::Mac, None, mac));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Which sources contributed an identifier, sorted and deduplicated.
+fn identity_sources(device: &crate::discovery::DiscoveredDevice) -> Vec<String> {
+    use crate::discovery::model::EvidenceKind;
+    let mut sources: std::collections::BTreeSet<&'static str> = Default::default();
+    for kind in [
+        EvidenceKind::SystemUuid,
+        EvidenceKind::SerialNumber,
+        EvidenceKind::ProtocolIdentifier,
+    ] {
+        for evidence in device.of_kind(kind) {
+            sources.insert(evidence.source.as_str());
+        }
+    }
+    sources.into_iter().map(str::to_string).collect()
+}
+
+/// A value only an authenticated query is allowed to have established.
+///
+/// The hardware columns exist to carry facts a machine reported about itself.
+/// Filling them from an SSDP banner would put a guess in a column a technician
+/// reads as an answer.
+fn credentialed_value(
+    device: &crate::discovery::DiscoveredDevice,
+    kind: crate::discovery::model::EvidenceKind,
+) -> Option<String> {
+    device
+        .of_kind(kind)
+        .find(|e| e.source == crate::discovery::DiscoverySource::WindowsCredentialed)
+        .map(|e| e.value.clone())
 }
 
 /// Progress bookkeeping shared by the probe tasks.
@@ -1650,6 +1960,8 @@ mod tests {
             profile: None,
             arp_assist: None,
             discovery: None,
+            deep: None,
+            credentialed_windows: false,
         }
     }
 
