@@ -48,9 +48,11 @@ pub mod facts;
 pub mod parse;
 pub mod release;
 pub mod script;
+pub mod transport;
 
 pub use creds::{CredentialStatus, CredentialStore, WindowsCredential};
 pub use facts::{WindowsFacts, WindowsProductType};
+pub use transport::Transport;
 
 use std::net::Ipv4Addr;
 
@@ -95,6 +97,19 @@ pub enum WindowsError {
     Unreadable(String),
     /// The machine answered with an error of its own.
     Remote(String),
+    /// No WinRM listener answered, so nothing was sent.
+    ///
+    /// Not a failure of the credential and not an error the operator has to
+    /// act on host by host: it is the ordinary state of a Windows workstation
+    /// with remote management switched off.
+    NoManagementTransport,
+    /// The scan was stopped while this probe was in flight.
+    Cancelled,
+    /// The HTTPS listener presented a certificate that did not validate.
+    ///
+    /// Its own variant because the remedy is specific and because ArcScan
+    /// deliberately will not work around it by disabling validation.
+    CertificateRejected(String),
 }
 
 impl WindowsError {
@@ -121,6 +136,16 @@ impl WindowsError {
                 format!("The machine's reply could not be read: {detail}")
             }
             WindowsError::Remote(detail) => detail.clone(),
+            WindowsError::NoManagementTransport => {
+                "No WinRM listener answered on 5985 or 5986, so no credential was sent. \
+                 Remote management is switched off on this machine."
+                    .into()
+            }
+            WindowsError::Cancelled => "The scan was stopped before this machine answered.".into(),
+            WindowsError::CertificateRejected(detail) => format!(
+                "The machine's WinRM certificate did not validate, so ArcScan stopped rather \
+                 than send a credential to an unverified listener: {detail}"
+            ),
         }
     }
 
@@ -131,6 +156,21 @@ impl WindowsError {
     /// domain account that locks out.
     pub fn retryable(&self) -> bool {
         matches!(self, WindowsError::Timeout | WindowsError::Launch(_))
+    }
+
+    /// True when nothing was sent to the machine at all.
+    ///
+    /// These are not failures to report per host: a workstation with remote
+    /// management off is the normal case, and a stopped scan is the operator's
+    /// own doing. Counting them as failures would bury a genuinely refused
+    /// credential in noise.
+    pub fn is_skip(&self) -> bool {
+        matches!(
+            self,
+            WindowsError::NoManagementTransport
+                | WindowsError::Cancelled
+                | WindowsError::NoCredential
+        )
     }
 }
 
@@ -170,6 +210,84 @@ pub fn validate_target(target: &str) -> Result<String, WindowsError> {
     }
 }
 
+/// Refuse a host name that is not a plain DNS name.
+///
+/// Like [`validate_target`], this exists because the value is interpolated
+/// into a PowerShell script. Reverse DNS is attacker-influenced on a network
+/// ArcScan does not control, so the name is held to the letters, digits,
+/// hyphens and dots a host name is made of, with the label and total length
+/// limits DNS itself imposes. Anything else falls back to the address.
+pub fn validate_hostname(hostname: &str) -> Option<String> {
+    let trimmed = hostname.trim().trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.len() > 253 {
+        return None;
+    }
+    // A name that parses as an address is an address, and belongs in the other
+    // validator.
+    if trimmed.parse::<Ipv4Addr>().is_ok() {
+        return None;
+    }
+    for label in trimmed.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return None;
+        }
+        if !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return None;
+        }
+    }
+    Some(trimmed.to_string())
+}
+
+/// Where a credentialed probe should connect, and by what name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeTarget {
+    /// The address the sweep found. Always present, and the fallback.
+    pub ip: Ipv4Addr,
+    /// A validated host name, when reverse DNS produced a usable one.
+    pub hostname: Option<String>,
+}
+
+impl ProbeTarget {
+    /// Build a target, validating the host name and discarding it if it is not
+    /// a plain DNS name.
+    pub fn new(ip: Ipv4Addr, hostname: Option<&str>) -> Self {
+        ProbeTarget {
+            ip,
+            hostname: hostname.and_then(validate_hostname),
+        }
+    }
+
+    /// The name to hand PowerShell.
+    ///
+    /// The host name wins when there is one, because Kerberos authenticates
+    /// against a service principal name built from the host name: connecting
+    /// by address cannot find an SPN, so the attempt falls back to NTLM, which
+    /// a hardened domain often refuses outright. Connecting by name is the
+    /// difference between working and "access denied" on a correctly
+    /// configured network.
+    ///
+    /// When there is no usable name the address is used and the attempt may
+    /// still succeed over NTLM; that fallback is deliberate and reported as
+    /// whatever the machine says about it.
+    pub fn connect_name(&self) -> String {
+        match &self.hostname {
+            Some(hostname) => hostname.clone(),
+            None => self.ip.to_string(),
+        }
+    }
+
+    /// True when the probe will connect by name rather than by address.
+    pub fn is_kerberos_friendly(&self) -> bool {
+        self.hostname.is_some()
+    }
+}
+
 /// Classify a failure reported by the remote machine or by PowerShell.
 ///
 /// Matched on the message because the CIM stack reports an HRESULT in prose;
@@ -191,21 +309,60 @@ pub fn classify_failure(message: &str) -> WindowsError {
     if denied.iter().any(|needle| lower.contains(needle)) {
         return WindowsError::AccessDenied(message.trim().to_string());
     }
+    // Checked before the generic cases: a certificate failure is reported as
+    // one so the operator knows the remedy is a trusted certificate rather
+    // than a different password.
+    let certificate = [
+        "certificate",
+        "ssl",
+        "cn name",
+        "x509",
+        "trust relationship",
+    ];
+    if certificate.iter().any(|needle| lower.contains(needle)) {
+        return WindowsError::CertificateRejected(message.trim().to_string());
+    }
     if lower.contains("timed out") || lower.contains("timeout") {
         return WindowsError::Timeout;
     }
     WindowsError::Remote(message.trim().to_string())
 }
 
+/// How often the in-flight wait re-checks for a stop request.
+///
+/// A probe can sit for the whole of [`PROBE_TIMEOUT_SECS`], and Stop has to
+/// take effect inside that window rather than after it.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// Ask one Windows machine about itself.
 ///
 /// The credential is borrowed under the store's lock for exactly as long as it
 /// takes to write it to the child process's stdin, and is never copied into an
 /// argument, an environment variable, a file or a log line.
+///
+/// # Child process lifecycle
+///
+/// The child is spawned with `kill_on_drop`, and on every path that does not
+/// end in the process exiting on its own — the deadline, a stop request — it is
+/// killed explicitly and reaped before this returns. Dropping a wait future is
+/// not on its own a guarantee that a WinRM session on the other machine stops,
+/// so neither is relied on alone.
+///
+/// `is_cancelled` is polled while the probe is in flight, so Stop takes effect
+/// inside the timeout window instead of leaving sessions running for the
+/// remainder of it.
 #[cfg(windows)]
-pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts, WindowsError> {
+pub async fn probe<F>(
+    target: &ProbeTarget,
+    transport: Transport,
+    store: &CredentialStore,
+    is_cancelled: F,
+) -> Result<WindowsFacts, WindowsError>
+where
+    F: Fn() -> bool,
+{
     use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Checked on Windows too, not only off it. It is unconditionally `Ok`
     // today, and honouring it here means a future condition — no PowerShell,
@@ -214,7 +371,24 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
     if let Err(reason) = platform_support() {
         return Err(WindowsError::Unsupported(reason));
     }
-    let target = validate_target(target)?;
+    if is_cancelled() {
+        return Err(WindowsError::Cancelled);
+    }
+
+    // Re-validated here even though `ProbeTarget::new` already did it: this is
+    // the last point before the value is interpolated into a script, and the
+    // check is cheap. The address is validated by parsing and re-rendering,
+    // the host name against the DNS character set.
+    let connect_name = target.connect_name();
+    let connect_name = if target.is_kerberos_friendly() {
+        validate_hostname(&connect_name).ok_or_else(|| {
+            WindowsError::InvalidTarget(format!(
+                "{connect_name} is not a host name ArcScan will query."
+            ))
+        })?
+    } else {
+        validate_target(&connect_name)?
+    };
 
     // The account and the password are taken together, under one lock, so the
     // pair cannot change between building the command and writing the secret.
@@ -224,7 +398,11 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
         return Err(WindowsError::NoCredential);
     };
 
-    let encoded = script::encode_command(&script::collection_script(&target, &account));
+    let encoded = script::encode_command(&script::collection_script(
+        &connect_name,
+        &account,
+        transport,
+    ));
 
     let mut child = crate::scanner::quiet_command("powershell.exe")
         .arg("-NoProfile")
@@ -236,50 +414,99 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // The backstop: however this function leaves, the process does not
+        // outlive the `Child`.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| WindowsError::Launch(e.to_string()))?;
 
     // stdin is the only place the password goes. The buffer is zeroed
     // immediately afterwards rather than waiting to be dropped.
     let mut password = password;
-    if let Some(mut stdin) = child.stdin.take() {
-        let write = async {
-            stdin.write_all(&password).await?;
-            stdin.write_all(b"\r\n").await?;
-            stdin.flush().await?;
-            stdin.shutdown().await
+    let write = match child.stdin.take() {
+        Some(mut stdin) => {
+            let result = async {
+                stdin.write_all(&password).await?;
+                stdin.write_all(b"\r\n").await?;
+                stdin.flush().await?;
+                stdin.shutdown().await
+            }
+            .await;
+            zeroize(&mut password);
+            result.map_err(|e| WindowsError::Launch(e.to_string()))
         }
-        .await;
-        for byte in password.iter_mut() {
-            unsafe { std::ptr::write_volatile(byte, 0) };
+        None => {
+            zeroize(&mut password);
+            Err(WindowsError::Launch(
+                "the management query would not accept input".into(),
+            ))
         }
-        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-        write.map_err(|e| WindowsError::Launch(e.to_string()))?;
-    } else {
-        for byte in password.iter_mut() {
-            unsafe { std::ptr::write_volatile(byte, 0) };
-        }
-        return Err(WindowsError::Launch(
-            "the management query would not accept input".into(),
-        ));
+    };
+    if let Err(error) = write {
+        terminate(&mut child).await;
+        return Err(error);
     }
 
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(PROBE_TIMEOUT_SECS),
-        child.wait_with_output(),
-    )
-    .await
-    {
-        Err(_) => return Err(WindowsError::Timeout),
-        Ok(Err(e)) => return Err(WindowsError::Launch(e.to_string())),
-        Ok(Ok(output)) => output,
+    // Both pipes are drained concurrently. Reading one to completion before
+    // the other would deadlock a child that fills the pipe it is not being
+    // read from, which a machine with many network adapters can do.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let drain = async move {
+        let read_stdout = async move {
+            let mut buffer = Vec::new();
+            if let Some(pipe) = stdout_pipe.as_mut() {
+                let _ = pipe.read_to_end(&mut buffer).await;
+            }
+            buffer
+        };
+        let read_stderr = async move {
+            let mut buffer = Vec::new();
+            if let Some(pipe) = stderr_pipe.as_mut() {
+                let _ = pipe.read_to_end(&mut buffer).await;
+            }
+            buffer
+        };
+        tokio::join!(read_stdout, read_stderr)
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PROBE_TIMEOUT_SECS));
+    tokio::pin!(deadline);
+    tokio::pin!(drain);
+
+    let collected = loop {
+        tokio::select! {
+            pair = &mut drain => break Some(pair),
+            _ = &mut deadline => break None,
+            _ = tokio::time::sleep(CANCEL_POLL) => {
+                if is_cancelled() {
+                    terminate(&mut child).await;
+                    return Err(WindowsError::Cancelled);
+                }
+            }
+        }
+    };
+
+    let Some((stdout, stderr)) = collected else {
+        // The deadline. Kill and reap before returning, so no WinRM session is
+        // left running for the remainder of its own timeout.
+        terminate(&mut child).await;
+        return Err(WindowsError::Timeout);
+    };
+
+    // The pipes are at EOF, so the process has finished or closed them. Reap it
+    // rather than leaving a zombie, bounded so a wedged child cannot hang the
+    // scan here either.
+    match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+        Ok(_) => {}
+        Err(_) => terminate(&mut child).await,
+    }
+
+    let text = String::from_utf8_lossy(&stdout);
+    let trimmed = text.trim();
     if trimmed.is_empty() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
+        let detail = String::from_utf8_lossy(&stderr);
+        let detail = detail.trim();
         return Err(if detail.is_empty() {
             WindowsError::Unreadable("the machine returned nothing".into())
         } else {
@@ -295,16 +522,57 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
     }
 }
 
+/// Kill a child and wait for it, so the call returns with the process gone.
+///
+/// `start_kill` then `wait`: the wait is what reaps it and what makes "this
+/// function returned" mean "that PowerShell is not still talking to a domain
+/// controller". Errors are ignored because every one of them means the process
+/// is already gone.
+#[cfg(windows)]
+async fn terminate(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+}
+
+/// Overwrite a buffer through a volatile write, so it is not optimised away.
+#[cfg(windows)]
+fn zeroize(buffer: &mut [u8]) {
+    for byte in buffer.iter_mut() {
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 /// The non-Windows answer: a clear refusal.
 ///
 /// Not an empty `WindowsFacts`, and not a silent skip. A technician running the
 /// macOS or Linux build who asks for a credentialed scan is told why it did not
 /// happen.
 #[cfg(not(windows))]
-pub async fn probe(target: &str, _store: &CredentialStore) -> Result<WindowsFacts, WindowsError> {
-    // Validated first so the refusal for a malformed address is the same on
+pub async fn probe<F>(
+    target: &ProbeTarget,
+    _transport: Transport,
+    _store: &CredentialStore,
+    is_cancelled: F,
+) -> Result<WindowsFacts, WindowsError>
+where
+    F: Fn() -> bool,
+{
+    // Validated first so the refusal for a malformed target is the same on
     // every platform, which keeps the tests honest.
-    validate_target(target)?;
+    let connect_name = target.connect_name();
+    if target.is_kerberos_friendly() {
+        validate_hostname(&connect_name).ok_or_else(|| {
+            WindowsError::InvalidTarget(format!(
+                "{connect_name} is not a host name ArcScan will query."
+            ))
+        })?;
+    } else {
+        validate_target(&connect_name)?;
+    }
+    if is_cancelled() {
+        return Err(WindowsError::Cancelled);
+    }
     Err(WindowsError::Unsupported(
         platform_support().unwrap_err_or_default(),
     ))
@@ -404,13 +672,135 @@ mod tests {
     async fn a_non_windows_build_fails_clearly_rather_than_pretending() {
         let store = CredentialStore::new();
         store.set(WindowsCredential::new("admin", None, "pw").unwrap());
-        let result = probe("10.0.0.5", &store).await;
+        let target = ProbeTarget::new(Ipv4Addr::new(10, 0, 0, 5), None);
+        let result = probe(&target, Transport::Http, &store, || false).await;
         match result {
             Err(WindowsError::Unsupported(reason)) => {
                 assert!(reason.contains("Windows build"));
             }
             other => panic!("expected a clear refusal, got {other:?}"),
         }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn a_probe_that_is_cancelled_before_it_starts_says_so() {
+        // The cancellation path is checked on every platform, because it is
+        // the one that decides whether a credential leaves the machine at all.
+        let store = CredentialStore::new();
+        store.set(WindowsCredential::new("admin", None, "pw").unwrap());
+        let target = ProbeTarget::new(Ipv4Addr::new(10, 0, 0, 5), None);
+        let result = probe(&target, Transport::Http, &store, || true).await;
+        assert!(matches!(result, Err(WindowsError::Cancelled)));
+    }
+
+    #[test]
+    fn a_probe_target_prefers_a_validated_host_name() {
+        // Kerberos authenticates against an SPN built from the host name.
+        let named = ProbeTarget::new(Ipv4Addr::new(10, 0, 0, 5), Some("APP-01.corp.example"));
+        assert_eq!(named.connect_name(), "APP-01.corp.example");
+        assert!(named.is_kerberos_friendly());
+    }
+
+    #[test]
+    fn a_probe_target_falls_back_to_the_address_when_there_is_no_name() {
+        let bare = ProbeTarget::new(Ipv4Addr::new(10, 0, 0, 5), None);
+        assert_eq!(bare.connect_name(), "10.0.0.5");
+        assert!(!bare.is_kerberos_friendly());
+    }
+
+    #[test]
+    fn a_hostname_that_could_reach_a_shell_is_discarded_not_used() {
+        // Reverse DNS is attacker-influenced on a network ArcScan does not
+        // control, and the name is interpolated into a PowerShell script.
+        for hostile in [
+            "app-01; Start-Process calc",
+            "app-01'",
+            "$(whoami)",
+            "app 01",
+            "app`01",
+            "-leading-hyphen",
+            "trailing-hyphen-",
+            "",
+            "..",
+            "10.0.0.5",
+        ] {
+            assert_eq!(
+                validate_hostname(hostile),
+                None,
+                "{hostile} must be refused"
+            );
+            // And a target built with it falls back to the address rather than
+            // carrying it forward.
+            let target = ProbeTarget::new(Ipv4Addr::new(10, 0, 0, 5), Some(hostile));
+            assert_eq!(target.connect_name(), "10.0.0.5");
+        }
+    }
+
+    #[test]
+    fn ordinary_host_names_are_accepted() {
+        for good in [
+            "APP-01",
+            "app-01.corp.example",
+            "ws_finance_04",
+            "a.b.c.d.example.com",
+        ] {
+            assert!(validate_hostname(good).is_some(), "{good} should be usable");
+        }
+        // A trailing root dot is normal in reverse DNS and is trimmed.
+        assert_eq!(
+            validate_hostname("app-01.corp.example.").as_deref(),
+            Some("app-01.corp.example")
+        );
+    }
+
+    #[test]
+    fn dns_length_limits_are_enforced() {
+        let long_label = "a".repeat(64);
+        assert_eq!(validate_hostname(&long_label), None);
+        assert!(validate_hostname(&"a".repeat(63)).is_some());
+        let long_name = std::iter::repeat_n("abcdefgh", 40)
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(long_name.len() > 253);
+        assert_eq!(validate_hostname(&long_name), None);
+    }
+
+    #[test]
+    fn a_missing_listener_is_a_skip_rather_than_a_failure() {
+        // A workstation with remote management off is the ordinary case.
+        // Counting it as a failure would bury a genuinely refused credential
+        // among every desktop on the site.
+        assert!(WindowsError::NoManagementTransport.is_skip());
+        assert!(WindowsError::Cancelled.is_skip());
+        assert!(WindowsError::NoCredential.is_skip());
+        assert!(!WindowsError::AccessDenied("denied".into()).is_skip());
+        assert!(!WindowsError::Timeout.is_skip());
+    }
+
+    #[test]
+    fn a_certificate_problem_is_reported_as_one() {
+        // So the operator knows the remedy is a trusted certificate rather
+        // than a different password.
+        for message in [
+            "The SSL certificate is signed by an unknown certificate authority",
+            "The SSL connection cannot be established",
+            "CN name does not match the passed value",
+        ] {
+            assert!(
+                matches!(
+                    classify_failure(message),
+                    WindowsError::CertificateRejected(_)
+                ),
+                "{message}"
+            );
+        }
+        // And it is not mistaken for a bad password, which would send an
+        // operator to change a credential that was never the problem.
+        assert!(!classify_failure(
+            "The SSL certificate is signed by an unknown certificate authority"
+        )
+        .is_skip());
     }
 
     #[cfg(not(windows))]

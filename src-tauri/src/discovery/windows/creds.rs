@@ -66,13 +66,38 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// How an account name was written, and how it must be written back.
+///
+/// The three forms are *not* interchangeable, which is the whole reason this
+/// is an enum rather than an `Option<String>` domain field.
+///
+/// `DOMAIN\\user` is a down-level logon name and `DOMAIN` is the NetBIOS
+/// domain name: at most 15 characters, and it cannot contain a dot.
+/// `user@corp.example` is a user principal name and the suffix is a DNS name,
+/// which is frequently *not* equal to the NetBIOS name — a forest routinely
+/// has `CORP` and `corp.example.com`, and can have UPN suffixes that
+/// correspond to no domain name at all.
+///
+/// Rewriting one form as the other is therefore not a formatting choice; it
+/// produces an account name that may not authenticate. v1.9.0 did exactly
+/// that, turning `user@corp.example` into `corp.example\\user`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountForm {
+    /// `user`. A local account on the target machine.
+    Local,
+    /// `DOMAIN\\user`. The NetBIOS domain name.
+    NetBios(String),
+    /// `user@suffix`. A user principal name with a DNS-style suffix.
+    Upn(String),
+}
+
 /// What an operator typed in the credentialed-scan dialog.
 #[derive(Debug)]
 pub struct WindowsCredential {
-    /// The user name alone, without a domain prefix.
+    /// The user name alone, without a domain prefix or a UPN suffix.
     pub username: String,
-    /// The AD domain, or `None` for a local account.
-    pub domain: Option<String>,
+    /// Which of the three forms the operator supplied.
+    pub form: AccountForm,
     pub password: Secret,
 }
 
@@ -89,37 +114,53 @@ impl WindowsCredential {
         }
         // `DOMAIN\user` and `user@domain` are both what a technician has in
         // their notes, so both are accepted and split here rather than being
-        // refused for being the wrong shape.
-        let (domain, username) = split_account(username, domain);
+        // refused for being the wrong shape — and, since v1.9.1, each is
+        // written back in the form it arrived in.
+        let (form, username) = split_account(username, domain);
         Ok(WindowsCredential {
             username,
-            domain,
+            form,
             password: Secret::new(password),
         })
     }
 
-    /// `DOMAIN\user`, or the bare user name for a local account.
+    /// The account name exactly as it must be presented to Windows.
     ///
-    /// Not a secret: this is what the status line shows and what the remote
-    /// machine logs as the connecting account.
+    /// Round-trips the form the operator supplied: a UPN stays a UPN, a
+    /// down-level name stays down-level, a local account stays bare. This
+    /// string is what reaches `New-Object PSCredential`, so a rewrite here is
+    /// an authentication failure on the remote machine.
+    ///
+    /// Not a secret: it is what the status line shows and what the target logs
+    /// as the connecting account.
     pub fn account(&self) -> String {
-        match &self.domain {
-            Some(domain) => format!("{domain}\\{}", self.username),
-            None => self.username.clone(),
+        match &self.form {
+            AccountForm::Local => self.username.clone(),
+            AccountForm::NetBios(domain) => format!("{domain}\\{}", self.username),
+            AccountForm::Upn(suffix) => format!("{}@{suffix}", self.username),
         }
     }
 }
 
-fn split_account(username: &str, domain: Option<&str>) -> (Option<String>, String) {
-    let explicit = domain.map(str::trim).filter(|d| !d.is_empty());
+/// Split an account name into its form and its bare user name.
+///
+/// An explicitly supplied domain wins over one embedded in the user name,
+/// because a separate Domain field is an operator saying which domain they
+/// mean. Its *form* is then decided by whether it looks like a DNS name: a
+/// NetBIOS domain name cannot contain a dot, so a dotted value is a UPN
+/// suffix. That is a rule about the naming scheme rather than a guess.
+fn split_account(username: &str, domain: Option<&str>) -> (AccountForm, String) {
+    let explicit = domain
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(form_for_domain);
+
     if let Some((left, right)) = username.split_once('\\') {
         let left = left.trim();
         let right = right.trim();
         if !left.is_empty() && !right.is_empty() {
             return (
-                explicit
-                    .map(str::to_string)
-                    .or_else(|| Some(left.to_string())),
+                explicit.unwrap_or_else(|| AccountForm::NetBios(left.to_string())),
                 right.to_string(),
             );
         }
@@ -128,15 +169,25 @@ fn split_account(username: &str, domain: Option<&str>) -> (Option<String>, Strin
         let left = left.trim();
         let right = right.trim();
         if !left.is_empty() && !right.is_empty() {
+            // Preserved as a UPN. Rewriting it down-level would substitute a
+            // DNS suffix for a NetBIOS name, which are not the same thing.
             return (
-                explicit
-                    .map(str::to_string)
-                    .or_else(|| Some(right.to_string())),
+                explicit.unwrap_or_else(|| AccountForm::Upn(right.to_string())),
                 left.to_string(),
             );
         }
     }
-    (explicit.map(str::to_string), username.to_string())
+    (explicit.unwrap_or(AccountForm::Local), username.to_string())
+}
+
+/// A dotted domain is a DNS suffix and belongs in a UPN; an undotted one is a
+/// NetBIOS name, which by definition cannot contain a dot.
+fn form_for_domain(domain: &str) -> AccountForm {
+    if domain.contains('.') {
+        AccountForm::Upn(domain.to_string())
+    } else {
+        AccountForm::NetBios(domain.to_string())
+    }
 }
 
 /// What the interface is allowed to know about the stored credential.
@@ -222,32 +273,82 @@ mod tests {
     }
 
     #[test]
-    fn a_backslash_account_splits_into_domain_and_user() {
+    fn a_down_level_account_stays_down_level() {
         let credential = WindowsCredential::new("CORP\\admin", None, "pw").unwrap();
-        assert_eq!(credential.domain.as_deref(), Some("CORP"));
+        assert_eq!(credential.form, AccountForm::NetBios("CORP".into()));
         assert_eq!(credential.username, "admin");
         assert_eq!(credential.account(), "CORP\\admin");
     }
 
     #[test]
-    fn a_upn_account_splits_into_domain_and_user() {
+    fn a_upn_stays_a_upn() {
+        // The v1.9.0 regression: this used to come back as
+        // `corp.example\admin`, substituting a DNS suffix for a NetBIOS name.
+        // They are different namespaces and the rewrite does not authenticate.
         let credential = WindowsCredential::new("admin@corp.example", None, "pw").unwrap();
-        assert_eq!(credential.domain.as_deref(), Some("corp.example"));
+        assert_eq!(credential.form, AccountForm::Upn("corp.example".into()));
         assert_eq!(credential.username, "admin");
+        assert_eq!(credential.account(), "admin@corp.example");
+        assert!(!credential.account().contains('\\'));
+    }
+
+    #[test]
+    fn a_upn_with_a_multi_label_suffix_is_preserved_whole() {
+        let credential =
+            WindowsCredential::new("svc-arcscan@ad.corp.example.com", None, "pw").unwrap();
+        assert_eq!(credential.account(), "svc-arcscan@ad.corp.example.com");
     }
 
     #[test]
     fn an_explicit_domain_wins_over_one_embedded_in_the_user_name() {
         let credential = WindowsCredential::new("OLD\\admin", Some("NEW"), "pw").unwrap();
-        assert_eq!(credential.domain.as_deref(), Some("NEW"));
+        assert_eq!(credential.form, AccountForm::NetBios("NEW".into()));
         assert_eq!(credential.username, "admin");
+        assert_eq!(credential.account(), "NEW\\admin");
     }
 
     #[test]
-    fn a_local_account_has_no_domain() {
+    fn an_explicit_dotted_domain_is_read_as_a_upn_suffix() {
+        // A NetBIOS domain name cannot contain a dot, so a dotted value in the
+        // Domain field is a DNS suffix. Writing `corp.example\admin` would be
+        // the same substitution this release exists to stop.
+        let credential = WindowsCredential::new("admin", Some("corp.example"), "pw").unwrap();
+        assert_eq!(credential.form, AccountForm::Upn("corp.example".into()));
+        assert_eq!(credential.account(), "admin@corp.example");
+    }
+
+    #[test]
+    fn an_explicit_domain_also_overrides_a_supplied_upn_suffix() {
+        let credential = WindowsCredential::new("admin@old.example", Some("NEW"), "pw").unwrap();
+        assert_eq!(credential.account(), "NEW\\admin");
+    }
+
+    #[test]
+    fn a_local_account_stays_bare() {
         let credential = WindowsCredential::new("Administrator", None, "pw").unwrap();
-        assert_eq!(credential.domain, None);
+        assert_eq!(credential.form, AccountForm::Local);
         assert_eq!(credential.account(), "Administrator");
+    }
+
+    #[test]
+    fn every_account_form_round_trips_through_account() {
+        // The property that matters: whatever an operator typed is what the
+        // remote machine is asked to authenticate.
+        for supplied in [
+            "Administrator",
+            "CORP\\admin",
+            "admin@corp.example",
+            "svc-arcscan@ad.corp.example.com",
+            "WORKGROUP\\guest",
+        ] {
+            let credential = WindowsCredential::new(supplied, None, "pw").unwrap();
+            assert_eq!(
+                credential.account(),
+                supplied,
+                "{supplied} was rewritten as {}",
+                credential.account()
+            );
+        }
     }
 
     #[test]

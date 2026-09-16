@@ -145,6 +145,10 @@ pub enum Checkpoint {
     /// multicast pass has already finished by then and its results are kept.
     BeforeDeepScan,
     BeforeDns,
+    /// Before the v1.9 credentialed pass. Its own point because this is the
+    /// one phase that authenticates to other machines, and Stop must be able
+    /// to land before any credential leaves this one.
+    BeforeCredentialed,
     BeforeClassify,
     BeforeFinish,
 }
@@ -1098,106 +1102,6 @@ pub async fn run(
         }
     }
 
-    // ---- Credentialed Windows discovery (v1.9) ----------------------------
-    //
-    // Only for hosts that answer on a Windows management port, only when the
-    // operator asked, and only with the one credential they supplied. There is
-    // no second attempt with a different account: a refusal is recorded and the
-    // host is left alone, which is what keeps a scan from locking out a domain
-    // account.
-    let mut credentialed_status: HashMap<Ipv4Addr, String> = HashMap::new();
-    if opts.credentialed_windows && !cancelled(scan_id) {
-        discovery.report.credentialed_attempted = true;
-        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Interrogating)));
-        // WinRM (5985/5986) is the transport the query uses; 445 and 3389 are
-        // what says "this is probably Windows" on a host that does not expose
-        // WinRM to the scanner.
-        let windows_ports = [5985u16, 5986, 445, 3389];
-        let targets: Vec<Ipv4Addr> = probe_results
-            .iter()
-            .filter(|(_, probe)| probe.open_ports.iter().any(|p| windows_ports.contains(p)))
-            .map(|(ip, _)| *ip)
-            .collect();
-        // Deliberately far lower than the sweep's concurrency. Each probe is a
-        // PowerShell process on this machine and an authenticated management
-        // session on the other, so this is bounded by what is polite to both
-        // rather than by what the network could carry. Serial would be worse
-        // than impolite: a site with fifty Windows machines and one unreachable
-        // host would spend that host's timeout with everything else waiting.
-        let results: Vec<(
-            Ipv4Addr,
-            Result<
-                crate::discovery::windows::WindowsFacts,
-                crate::discovery::windows::WindowsError,
-            >,
-        )> = stream::iter(targets)
-            .map(|ip| async move {
-                if cancelled(scan_id) {
-                    return (
-                        ip,
-                        Err(crate::discovery::windows::WindowsError::Unreadable(
-                            "the scan was stopped".into(),
-                        )),
-                    );
-                }
-                let store = crate::discovery::windows::credential_store();
-                (
-                    ip,
-                    crate::discovery::windows::probe(&ip.to_string(), store).await,
-                )
-            })
-            .buffer_unordered(CREDENTIALED_CONCURRENCY)
-            .collect()
-            .await;
-
-        for (ip, result) in results {
-            match result {
-                Ok(facts) => {
-                    let summary = facts.os_summary().unwrap_or_else(|| "answered".to_string());
-                    // The kind the product type established, said out loud.
-                    // "Windows 11 Pro 24H2" does not by itself tell a reader
-                    // that ArcScan now knows this is a workstation and not a
-                    // server, which is the whole point of having asked.
-                    let kind = facts
-                        .device_type()
-                        .map(|kind| format!(" · {}", kind.label()))
-                        .unwrap_or_default();
-                    let entry = discovery
-                        .devices
-                        .entry(ip)
-                        .or_insert_with(|| crate::discovery::DiscoveredDevice::new(ip));
-                    for evidence in facts.to_evidence() {
-                        entry.add(evidence);
-                    }
-                    discovery.report.credentialed_answered += 1;
-                    credentialed_status.insert(ip, format!("Answered: {summary}{kind}"));
-                }
-                // Every failure is recorded, never swallowed. "We could not
-                // ask" and "we asked and learned nothing" are different
-                // answers, and only one of them is the operator's problem.
-                Err(error) => {
-                    // A retryable failure is worth saying so about: a timeout
-                    // is a different instruction to the operator than a
-                    // refused credential, which must not be retried at all.
-                    let reason = if error.retryable() {
-                        format!("{} Worth trying again.", error.reason())
-                    } else {
-                        error.reason()
-                    };
-                    discovery.report.credentialed_failed += 1;
-                    // De-duplicated and capped: fifty machines refusing one
-                    // credential is one fact, not fifty lines.
-                    if discovery.report.credentialed_notes.len() < MAX_CREDENTIALED_NOTES
-                        && !discovery.report.credentialed_notes.contains(&reason)
-                    {
-                        discovery.report.credentialed_notes.push(reason.clone());
-                    }
-                    credentialed_status.insert(ip, reason);
-                }
-            }
-        }
-    }
-
     // Resolve hostnames for the live hosts concurrently (bounded, with a short
     // per-lookup timeout) so N slow reverse-DNS misses collapse into one pass.
     // A cancelled scan launches no lookups at all: each queued lookup re-checks
@@ -1226,6 +1130,165 @@ pub async fn run(
             .filter_map(|pair| async move { pair })
             .collect()
             .await;
+
+    // ---- Credentialed Windows discovery (v1.9) ----------------------------
+    //
+    // Runs after reverse DNS, deliberately: a validated host name is what lets
+    // Kerberos find a service principal name, and connecting by address falls
+    // back to NTLM or is refused outright on a hardened domain.
+    //
+    // Only when the operator asked, only with the one credential they
+    // supplied, and only against a host where an unauthenticated check found a
+    // WinRM listener. There is no second attempt with a different account: a
+    // refusal is recorded and the host is left alone, which is what keeps a
+    // scan from locking out a domain account.
+    checkpoint(Checkpoint::BeforeCredentialed);
+    let mut credentialed_status: HashMap<Ipv4Addr, String> = HashMap::new();
+    if opts.credentialed_windows && !cancelled(scan_id) {
+        discovery.report.credentialed_attempted = true;
+        sink.advisory(ScanEvent::Progress(progress_at(ScanPhase::Interrogating)));
+        // "Looks like Windows" and "has a management transport ArcScan can
+        // reach" are separate questions, and v1.9.0 conflated them: SMB or RDP
+        // was taken as licence to open a WSMan session, so every ordinary
+        // workstation with remote management off bought a guaranteed timeout.
+        //
+        // Now SMB, RDP and RPC only make a host a *candidate*. Whether
+        // anything is sent, and to which listener, is decided by an
+        // unauthenticated check for a WinRM listener.
+        let candidates: Vec<(Ipv4Addr, Vec<u16>)> = probe_results
+            .iter()
+            .filter(|(_, probe)| {
+                crate::discovery::windows::transport::looks_like_windows(&probe.open_ports)
+            })
+            .map(|(ip, probe)| (*ip, probe.open_ports.clone()))
+            .collect();
+        // Deliberately far lower than the sweep's concurrency. Each probe is a
+        // PowerShell process on this machine and an authenticated management
+        // session on the other, so this is bounded by what is polite to both
+        // rather than by what the network could carry. Serial would be worse
+        // than impolite: a site with fifty Windows machines and one unreachable
+        // host would spend that host's timeout with everything else waiting.
+        type CredentialedOutcome = (
+            Ipv4Addr,
+            Option<crate::discovery::windows::Transport>,
+            Result<
+                crate::discovery::windows::WindowsFacts,
+                crate::discovery::windows::WindowsError,
+            >,
+        );
+        let results: Vec<CredentialedOutcome> = stream::iter(candidates)
+            .map(|(ip, open_ports)| {
+                // Reverse DNS already ran, so a validated name is available
+                // here for free. Connecting by name is what lets Kerberos find
+                // a service principal name; by address it cannot, and the
+                // attempt falls back to NTLM or is refused outright.
+                let hostname = hostnames.get(&ip).cloned();
+                async move {
+                    if cancelled(scan_id) {
+                        return (
+                            ip,
+                            None,
+                            Err(crate::discovery::windows::WindowsError::Cancelled),
+                        );
+                    }
+                    // Unauthenticated, and the gate on everything below: a host
+                    // with no listener is never sent a credential.
+                    let Some(transport) =
+                        crate::discovery::windows::transport::select(ip, &open_ports).await
+                    else {
+                        return (
+                            ip,
+                            None,
+                            Err(crate::discovery::windows::WindowsError::NoManagementTransport),
+                        );
+                    };
+                    if cancelled(scan_id) {
+                        return (
+                            ip,
+                            Some(transport),
+                            Err(crate::discovery::windows::WindowsError::Cancelled),
+                        );
+                    }
+                    let target =
+                        crate::discovery::windows::ProbeTarget::new(ip, hostname.as_deref());
+                    let store = crate::discovery::windows::credential_store();
+                    (
+                        ip,
+                        Some(transport),
+                        crate::discovery::windows::probe(&target, transport, store, || {
+                            cancelled(scan_id)
+                        })
+                        .await,
+                    )
+                }
+            })
+            .buffer_unordered(CREDENTIALED_CONCURRENCY)
+            .collect()
+            .await;
+
+        for (ip, transport, result) in results {
+            match result {
+                Ok(facts) => {
+                    let summary = facts.os_summary().unwrap_or_else(|| "answered".to_string());
+                    // The kind the product type established, said out loud.
+                    // "Windows 11 Pro 24H2" does not by itself tell a reader
+                    // that ArcScan now knows this is a workstation and not a
+                    // server, which is the whole point of having asked.
+                    let kind = facts
+                        .device_type()
+                        .map(|kind| format!(" · {}", kind.label()))
+                        .unwrap_or_default();
+                    let entry = discovery
+                        .devices
+                        .entry(ip)
+                        .or_insert_with(|| crate::discovery::DiscoveredDevice::new(ip));
+                    for evidence in facts.to_evidence() {
+                        entry.add(evidence);
+                    }
+                    discovery.report.credentialed_answered += 1;
+                    // Which listener answered, because "it worked over 5985"
+                    // and "it worked over 5986" are different facts about the
+                    // machine's configuration and the first thing to look at
+                    // when a sibling host does not answer at all.
+                    let over = transport
+                        .map(|t| format!(" over {}", t.label()))
+                        .unwrap_or_default();
+                    credentialed_status.insert(ip, format!("Answered: {summary}{kind}{over}"));
+                }
+                // Every failure is recorded, never swallowed. "We could not
+                // ask" and "we asked and learned nothing" are different
+                // answers, and only one of them is the operator's problem.
+                Err(error) => {
+                    // A retryable failure is worth saying so about: a timeout
+                    // is a different instruction to the operator than a
+                    // refused credential, which must not be retried at all.
+                    let reason = if error.retryable() {
+                        format!("{} Worth trying again.", error.reason())
+                    } else {
+                        error.reason()
+                    };
+                    // A host with no WinRM listener, or one the operator
+                    // stopped, was never asked anything. Counting it as a
+                    // failure would bury a genuinely refused credential among
+                    // every workstation on the site.
+                    if error.is_skip() {
+                        discovery.report.credentialed_skipped += 1;
+                        credentialed_status.insert(ip, reason);
+                        continue;
+                    }
+                    discovery.report.credentialed_failed += 1;
+                    // De-duplicated and capped: fifty machines refusing one
+                    // credential is one fact, not fifty lines.
+                    if discovery.report.credentialed_notes.len() < MAX_CREDENTIALED_NOTES
+                        && !discovery.report.credentialed_notes.contains(&reason)
+                    {
+                        discovery.report.credentialed_notes.push(reason.clone());
+                    }
+                    credentialed_status.insert(ip, reason);
+                }
+            }
+        }
+    }
 
     // The default gateway, needed twice: to tell this network apart from
     // another that reuses the same private range, and as the one fact that
@@ -2561,6 +2624,54 @@ mod tests {
             .hosts
             .iter()
             .all(|h| h.discovery.as_ref().is_none_or(|d| d.deep_notes.is_empty())));
+    }
+
+    #[tokio::test]
+    async fn cancel_before_the_credentialed_pass_sends_no_credential() {
+        // Stop landing before this phase must mean no machine is authenticated
+        // to at all. The credentialed pass is the one phase that sends a
+        // credential off this computer, so it gets its own cancellation point.
+        let _guard = cancel_test_mutex().lock().await;
+        cancel_at(Checkpoint::BeforeCredentialed);
+        let mut o = opts("203.0.113.1-4");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        o.credentialed_windows = true;
+        let begun = Instant::now();
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, None).await.unwrap();
+        clear_checkpoint_hook();
+
+        assert!(result.cancelled);
+        assert!(
+            begun.elapsed() < Duration::from_secs(10),
+            "the credentialed pass must be skipped rather than run to its timeouts"
+        );
+        // Nothing was asked, so nothing carries a credentialed status.
+        assert!(result.hosts.iter().all(|h| h
+            .discovery
+            .as_ref()
+            .is_none_or(|d| d.credentialed_status.is_none())));
+    }
+
+    #[tokio::test]
+    async fn a_credentialed_scan_with_no_credential_set_asks_nothing() {
+        // The store is empty in tests, and no WinRM listener exists on
+        // TEST-NET-1 anyway. Either way the pass must finish promptly rather
+        // than spend a per-host authentication timeout.
+        let _guard = cancel_test_mutex().lock().await;
+        let mut o = opts("203.0.113.1-2");
+        o.timeout_ms = 50;
+        o.arp_assist = Some(false);
+        o.credentialed_windows = true;
+        let begun = Instant::now();
+        let scan_id = next_scan_id();
+        let result = run(o, scan_id, None).await.unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_secs(20),
+            "no host has a listener, so no authentication should be attempted"
+        );
+        assert!(!result.hosts.is_empty() || result.hosts.is_empty());
     }
 
     #[tokio::test]

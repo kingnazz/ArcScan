@@ -777,6 +777,11 @@ pub struct DiscoveryReport {
     /// Machines that were asked and did not answer usefully.
     #[serde(default)]
     pub credentialed_failed: usize,
+    /// Machines that were never asked: no WinRM listener answered, or the scan
+    /// was stopped. Counted apart from failures because a workstation with
+    /// remote management off is the ordinary case, not a problem to report.
+    #[serde(default)]
+    pub credentialed_skipped: usize,
     /// Why credentialed probes did not succeed, de-duplicated and capped.
     ///
     /// Reasons only. The account name is not a secret but is not diagnostic

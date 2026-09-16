@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { Check, Copy, ExternalLink, FolderOpen, KeyRound, RotateCcw } from "lucide-react";
 import { Button, Field, FieldRow, SectionHeading, Select } from "../ui/primitives";
-import { api } from "../lib/api";
+import { windowsCredentials } from "../lib/windowsCredential";
 import type { WindowsCredentialStatus } from "../types";
 import { Drawer } from "../ui/Drawer";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -711,26 +711,21 @@ function WindowsCredentialSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Subscribed, so this panel and the command bar's depth picker can never
+  // disagree about whether a credential is set.
   useEffect(() => {
-    let cancelled = false;
-    api
-      .windowsCredentialStatus()
-      .then((next) => {
-        if (!cancelled) setStatus(next);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setStatus({
-            configured: false,
-            account: null,
-            supported: false,
-            unsupported_reason: "ArcScan could not reach its credential store.",
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+    const unsubscribe = windowsCredentials.subscribe(setStatus);
+    void windowsCredentials.refresh().then((next) => {
+      if (!next) {
+        setStatus({
+          configured: false,
+          account: null,
+          supported: false,
+          unsupported_reason: "ArcScan could not reach its credential store.",
+        });
+      }
+    });
+    return unsubscribe;
   }, []);
 
   const supported = status?.supported !== false;
@@ -740,8 +735,8 @@ function WindowsCredentialSection() {
     setBusy(true);
     setError(null);
     try {
-      const next = await api.setWindowsCredential(username, null, password);
-      setStatus(next);
+      // Through the store, so every other reader is told at the same moment.
+      await windowsCredentials.set(username, null, password);
       // Cleared immediately: there is no reason for the password to stay in a
       // React state tree once the backend has it.
       setPassword("");
@@ -757,7 +752,7 @@ function WindowsCredentialSection() {
     setBusy(true);
     setError(null);
     try {
-      setStatus(await api.clearWindowsCredential());
+      await windowsCredentials.clear();
     } catch (reason) {
       setError(String(reason));
     } finally {

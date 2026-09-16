@@ -334,7 +334,13 @@ export function deepSummaryParts(report: DiscoveryReport | null): string[] {
   if (report.credentialed_attempted) {
     const answered = report.credentialed_answered ?? 0;
     const failed = report.credentialed_failed ?? 0;
-    parts.push(`Credentialed: ${answered} of ${answered + failed}`);
+    const skipped = report.credentialed_skipped ?? 0;
+    // The denominator is machines ArcScan actually asked. A workstation with
+    // no WinRM listener was never asked and is reported separately, so a
+    // wrong password reads as "0 of 12" rather than being diluted to
+    // "0 of 60" by every desktop on the site.
+    const line = `Credentialed: ${answered} of ${answered + failed}`;
+    parts.push(skipped > 0 ? `${line} · ${skipped} without WinRM` : line);
   }
   return parts;
 }
@@ -373,6 +379,7 @@ export function parseDiscoveryReport(raw: string | null | undefined): DiscoveryR
       credentialed_attempted: Boolean(parsed.credentialed_attempted),
       credentialed_answered: Number(parsed.credentialed_answered ?? 0),
       credentialed_failed: Number(parsed.credentialed_failed ?? 0),
+      credentialed_skipped: Number(parsed.credentialed_skipped ?? 0),
       credentialed_notes: Array.isArray(parsed.credentialed_notes)
         ? parsed.credentialed_notes
         : [],

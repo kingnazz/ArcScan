@@ -297,6 +297,12 @@ export interface DiscoveryReport {
   credentialed_attempted?: boolean;
   credentialed_answered?: number;
   credentialed_failed?: number;
+  /**
+   * Machines that were never asked: no WinRM listener answered, or the scan
+   * was stopped. Counted apart from failures because a workstation with remote
+   * management switched off is the ordinary case, not a problem to report.
+   */
+  credentialed_skipped?: number;
   /** Why credentialed probes did not succeed. Reasons only, de-duplicated. */
   credentialed_notes?: string[];
 }
