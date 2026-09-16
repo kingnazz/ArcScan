@@ -12,6 +12,10 @@ rust-version = "1.89"
 name = "arcscan_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[workspace]
+members = ["topology-engine"]
+resolver = "2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -38,6 +42,10 @@ dns-lookup = "2"
 url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 if-addrs = "0.13"
+
+# Topology discovery (SNMP/LLDP/CDP/FDB) lives in its own crate so its tests
+# compile without GTK. SNMPv2c is in-tree there; SNMPv3 uses snmp2.
+arcscan-topology = { path = "topology-engine" }
 
 # MessageBoxW reports a failed Portable temporary-session startup before any
 # window exists to report it in. `windows-sys` is already in Tauri's dependency

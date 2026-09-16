@@ -41,6 +41,12 @@ import { mock } from "./mock";
 import { lookupPublicIp } from "./publicIp";
 import type { RuntimeInfo } from "./runtime";
 import type { ArcAtlasConnection, ArcAtlasHandoffEnvelope, ArcAtlasSendResult } from "./arcatlas";
+import type {
+  CredentialInput,
+  CredentialStatus,
+  TopologyRequest,
+  TopologyResult,
+} from "./topology";
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -405,6 +411,39 @@ export const api = {
   async openArcAtlas(url: string): Promise<void> {
     if (isTauri()) return invoke<void>("open_arcatlas_url", { url });
     window.open(url, "_blank", "noopener");
+  },
+
+  async setTopologyCredentials(credentials: CredentialInput): Promise<CredentialStatus> {
+    if (isTauri()) return invoke<CredentialStatus>("set_topology_credentials", { credentials });
+    return mock.setTopologyCredentials(credentials);
+  },
+
+  async clearTopologyCredentials(): Promise<CredentialStatus> {
+    if (isTauri()) return invoke<CredentialStatus>("clear_topology_credentials");
+    return mock.clearTopologyCredentials();
+  },
+
+  async getTopologyCredentials(): Promise<CredentialStatus> {
+    if (isTauri()) return invoke<CredentialStatus>("get_topology_credentials");
+    return mock.getTopologyCredentials();
+  },
+
+  async discoverTopology(request: TopologyRequest): Promise<TopologyResult> {
+    if (isTauri()) return invoke<TopologyResult>("discover_topology", { request });
+    return mock.discoverTopology(request);
+  },
+
+  async lastTopologySnapshot(): Promise<TopologyResult | null> {
+    if (isTauri()) {
+      const result = await invoke<TopologyResult | null>("last_topology_snapshot");
+      return result ?? null;
+    }
+    return mock.lastTopologySnapshot();
+  },
+
+  async cancelTopology(): Promise<void> {
+    if (isTauri()) return invoke<void>("cancel_topology");
+    mock.cancelTopology();
   },
 };
 

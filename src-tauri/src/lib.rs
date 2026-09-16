@@ -12,6 +12,7 @@ mod runtime;
 mod scanner;
 mod signature;
 mod startup;
+mod topology;
 
 use tauri::Manager;
 
@@ -101,6 +102,8 @@ pub fn run() {
             app.manage(database);
             app.manage(paths.clone());
             app.manage(arcatlas::ArcAtlasState::new(&paths)?);
+            app.manage(topology::TopologyState::new());
+            arcscan_topology::set_scan_cancel_check(scanner::is_cancelled);
 
             // The window is built here rather than by Tauri's own config pass
             // (`app.windows[0].create` is false) for one reason: the portable
@@ -164,6 +167,13 @@ pub fn run() {
             arcatlas::disconnect_arcatlas_connection,
             arcatlas::send_inventory_to_arcatlas,
             arcatlas::open_arcatlas_url,
+            topology::set_topology_credentials,
+            topology::clear_topology_credentials,
+            topology::get_topology_credentials,
+            topology::discover_topology,
+            topology::last_topology_snapshot,
+            topology::cancel_topology,
+            topology::topology_contract_fixture,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ArcScan");
@@ -189,6 +199,7 @@ pub fn run() {
         let exit_code = app.run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 scanner::request_cancel();
+                topology::engine::request_cancel();
                 if let Some(database) = app.try_state::<db::Db>() {
                     if let Err(error) = database.shutdown() {
                         eprintln!("ArcScan Portable database shutdown: {error}");
