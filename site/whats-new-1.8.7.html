@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>What's new in ArcScan 1.8.7</title>
+    <meta name="description" content="ArcScan 1.8.7 makes the ArcAtlas handoff current-only, keeps historical devices out of discovery actions, repairs durable hostnames, and strengthens infrastructure classification." />
+    <link rel="canonical" href="https://kingnazz.github.io/ArcScan/whats-new-1.8.7.html" />
+    <link rel="icon" href="assets/favicon.png" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#000000" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+    <link rel="stylesheet" href="arcscan.v5.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./"><img src="assets/logo.png" width="24" height="24" alt="" /><span>ArcScan</span></a>
+        <nav aria-label="Primary"><ul class="nav-links"><li><a href="./#features">Features</a></li><li><a href="./#download">Download</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="https://github.com/kingnazz/ArcScan" rel="noopener">GitHub</a></li></ul></nav>
+      </div>
+    </header>
+    <main id="main" class="section">
+      <div class="wrap prose">
+        <p class="eyebrow">ArcScan 1.8.7</p>
+        <h1 class="page-title">ArcAtlas handoff only sends what the latest scan actually found.</h1>
+        <p class="lede">
+          1.8.7 aligns ArcScan with ArcAtlasNext's presence-aware import workflow. A network inventory can
+          still remember devices that disappeared or whose current presence is unknown, but those historical
+          rows are no longer sent as if the newest scan discovered them.
+        </p>
+
+        <h2>Present means actionable</h2>
+        <p>
+          Send to ArcAtlas now filters the selected network to rows whose current presence is
+          <strong>present</strong>. The confirmation tells you how many present devices will be sent and how
+          many missing or unknown historical devices were excluded before transfer.
+        </p>
+
+        <h2>Historical inventory stays useful</h2>
+        <p>
+          ArcScan still keeps missing and unknown devices in Inventory and history. This release changes the
+          handoff boundary, not the historical record. You can still investigate what used to be on the network
+          without turning that evidence into a current ArcAtlas discovery candidate.
+        </p>
+
+        <h2>Durable hostnames survive blank observations</h2>
+        <p>
+          A later observation with an empty or whitespace hostname is normalized to no hostname instead of
+          replacing a useful name already learned for the device. Existing databases also repair blank durable
+          hostnames from the newest recorded nonblank observation when one exists. Operator custom names remain
+          untouched and continue to win in the interface.
+        </p>
+
+        <h2>Infrastructure identity wins over incidental services</h2>
+        <p>
+          Strong manufacturer and model-family evidence for common Synology NAS, Ubiquiti gateway, switch and
+          access-point families, and Dell PowerEdge or iDRAC systems now takes precedence over generic service
+          clues. Conflicting service evidence remains visible instead of being discarded.
+        </p>
+
+        <div class="notice">
+          <div>
+            <h3>Built for the ArcAtlasNext presence workflow</h3>
+            <p>
+              Use ArcScan 1.8.7 or newer for the first production ArcScan to ArcAtlasNext test. It keeps the
+              desktop inventory historical while making the outbound discovery handoff represent the latest
+              compatible scan.
+            </p>
+          </div>
+        </div>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="./#download">Download ArcScan</a>
+          <a class="btn btn-secondary" href="https://github.com/kingnazz/ArcScan/releases" rel="noopener">Release history</a>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><div class="wrap"><p class="footer-note">ArcScan is free and open source under the MIT license. Scan only networks you own or are authorised to inspect.</p></div></footer>
+  </body>
+</html>

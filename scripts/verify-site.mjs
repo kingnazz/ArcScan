@@ -569,23 +569,20 @@ await step("structured data parses and matches the visible version", async () =>
   return `${faq.mainEntity.length} FAQ entries, version ${app.softwareVersion}`;
 });
 
-await step("the release section states the 1.8.6 improvements", async () => {
+await step("the release section states the 1.8.7 improvements", async () => {
   const section = page.locator("#whats-new");
   await section.waitFor({ timeout: 3000 });
   const text = (await section.innerText()).toLowerCase();
 
-  if (!text.includes("1.8.6")) throw new Error("the section does not name the version");
+  if (!text.includes("1.8.7")) throw new Error("the section does not name the version");
 
   const claims = [
-    [/arp -n -a|numeric.*arp/, "numeric macOS ARP discovery"],
-    [/reverse-dns|hostname lookup/, "reverse-DNS stall prevention"],
-    [/icmp|ping/, "numeric ICMP probing"],
-    [/positive icmp\/tcp|positive.*icmp|positive.*tcp/, "positive probe retention"],
-    [/proxy-arp/, "proxy-ARP protection"],
-    [/send to arcatlas|single arcatlas toolbar action/, "simplified ArcAtlas action"],
+    [/present|current devices only/, "current-only ArcAtlas handoff"],
+    [/missing|unknown|historical/, "historical rows excluded from handoff"],
+    [/hostname|identity evidence|synology|ubiquiti|dell/, "stronger durable identity evidence"],
   ];
-  for (const [pattern, label] of claims) {
-    if (!pattern.test(text)) throw new Error(`the section does not cover ${label}`);
+  for (const [claim, label] of claims) {
+    if (!claim.test(text)) throw new Error(`missing ${label}`);
   }
 
   const headings = await section.locator("h3").allInnerTexts();
@@ -593,13 +590,13 @@ await step("the release section states the 1.8.6 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.8.6 page", async () => {
+await step("the What changed link opens the local 1.8.7 page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
   // A first-party page, not GitHub: a visitor asking what changed should get
   // something written for them before they get a commit list.
-  if (href !== "whats-new-1.8.6.html") {
+  if (href !== "whats-new-1.8.7.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
   const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
@@ -682,6 +679,7 @@ await step("robots.txt and sitemap.xml are served, and the sitemap is current", 
   // find late, and the 1.8.2 entry was missed once already.
   const sitemap = await (await page.request.get(`${BASE}/sitemap.xml`)).text();
   for (const page_ of [
+    "whats-new-1.8.7.html",
     "whats-new-1.8.6.html",
     "whats-new-1.8.5.html",
     "whats-new-1.8.4.html",
@@ -1304,7 +1302,7 @@ await step("the mobile menu works on the What's New page", async () => {
 });
 
 await step("the home page and the current What's New page reach each other", async () => {
-  const currentWhatsNew = "/whats-new-1.8.6.html";
+  const currentWhatsNew = "/whats-new-1.8.7.html";
   await page.goto(`${BASE}${currentWhatsNew}`, { waitUntil: "networkidle" });
   await page.locator('.brand[href="./"]').first().click();
   await page.waitForLoadState("networkidle");
@@ -1314,10 +1312,10 @@ await step("the home page and the current What's New page reach each other", asy
   await page.locator("#release-notes-link").click();
   await page.waitForLoadState("networkidle");
   const heading = await page.locator("h1").innerText();
-  if (!/macOS LAN scans keep the devices they actually find/i.test(heading)) {
+  if (!/ArcAtlas handoff only sends what the latest scan actually found/i.test(heading)) {
     throw new Error(`the What changed link landed on: ${heading}`);
   }
-  return "home and 1.8.6 release page link both ways";
+  return "home and 1.8.7 release page link both ways";
 });
 
 // --- axe-core --------------------------------------------------------------
@@ -1339,10 +1337,10 @@ await step("axe-core finds no violations on any page", async () => {
     { label: "home desktop", path: "/", width: 1440, height: 900 },
     { label: "home mobile", path: "/", width: 390, height: 844 },
     { label: "privacy", path: "/privacy.html", width: 1440, height: 900 },
-    { label: "whats-new 1.8.6 desktop", path: "/whats-new-1.8.6.html", width: 1440, height: 900 },
-    { label: "whats-new 1.8.6 mobile", path: "/whats-new-1.8.6.html", width: 390, height: 844 },
+    { label: "whats-new 1.8.7 desktop", path: "/whats-new-1.8.7.html", width: 1440, height: 900 },
+    { label: "whats-new 1.8.7 mobile", path: "/whats-new-1.8.7.html", width: 390, height: 844 },
     // The previous release's page stays published, so it stays checked.
-    { label: "whats-new 1.8.5", path: "/whats-new-1.8.5.html", width: 1440, height: 900 },
+    { label: "whats-new 1.8.6", path: "/whats-new-1.8.6.html", width: 1440, height: 900 },
   ];
 
   for (const { label, path, width, height } of passes) {

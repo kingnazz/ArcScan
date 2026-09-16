@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ArcScan site build: v1.8.6 -->
+<!-- ArcScan site build: v1.8.7 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -72,7 +72,7 @@
         "description": "ArcScan is a free, local-first network scanner and device inventory for Windows and macOS. It discovers connected devices with their IP addresses, MAC addresses, manufacturers, hostnames and open services, keeps an inventory and lists the changes found in later scans. The Installed edition retains its inventory; Windows Portable uses a disposable session with explicit exports.",
         "url": "https://kingnazz.github.io/ArcScan/",
         "downloadUrl": "https://github.com/kingnazz/ArcScan/releases/latest",
-        "softwareVersion": "1.8.6",
+        "softwareVersion": "1.8.7",
         "license": "https://github.com/kingnazz/ArcScan/blob/main/LICENSE",
         "isAccessibleForFree": true,
         "screenshot": "https://kingnazz.github.io/ArcScan/assets/shots/inventory-dark.png",
@@ -312,15 +312,15 @@
           </div>
 
           <p class="release-line">
-            <span id="version-fallback">v1.8.6</span><span id="release-meta"></span>
+            <span id="version-fallback">v1.8.7</span><span id="release-meta"></span>
             <!--
               A local page rather than the GitHub release, so the first thing a
               curious visitor reads is written for them. The technical notes are
               one click further on, from that page.
             -->
             <span aria-hidden="true"> &middot; </span
-            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.6.html"
-              >What changed in 1.8.6</a
+            ><a class="release-link" id="release-notes-link" href="whats-new-1.8.7.html"
+              >What changed in 1.8.7</a
             >
           </p>
 
@@ -796,42 +796,43 @@
       </section>
 
       <!-- ======================================================== download -->
-      <!-- ====================================================== new in 1.8.6 -->
+      <!-- ====================================================== new in 1.8.7 -->
       <section class="section" id="whats-new">
         <div class="wrap">
           <div class="section-head">
-            <p class="eyebrow">New in 1.8.6</p>
-            <h2>More reliable local discovery on macOS.</h2>
+            <p class="eyebrow">New in 1.8.7</p>
+            <h2>Cleaner ArcAtlas handoffs from current scans.</h2>
             <p>
-              ArcScan now keeps macOS ARP and ICMP discovery numeric so reverse-DNS lookups cannot
-              consume the scanner's short liveness timeouts on a populated LAN. This targets the
-              failure mode where Inventory remembers many devices but a fresh scan ends with only a few.
-              <a href="whats-new-1.8.6.html">What&rsquo;s new in 1.8.6</a>
+              ArcScan now sends only devices the latest compatible scan actually found to ArcAtlas.
+              Missing and unknown historical inventory stays available in ArcScan without being treated
+              as current discovery evidence. Hostname persistence and infrastructure classification are
+              also more resilient.
+              <a href="whats-new-1.8.7.html">What&rsquo;s new in 1.8.7</a>
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>ARP without reverse-DNS stalls</h3>
+              <h3>Current devices only</h3>
               <p>
-                macOS neighbor-table reads now use numeric <code>arp -n -a</code> output. Hostname
-                lookups can no longer burn through the ARP-read budget and discard the local device table.
+                Send to ArcAtlas now includes only inventory rows marked present by the latest compatible
+                scan, so historical devices do not enter the normal discovery candidate set.
               </p>
             </article>
 
             <article>
-              <h3>Numeric ICMP probes</h3>
+              <h3>History stays visible, not actionable</h3>
               <p>
-                macOS ping stays numeric, uses the platform's per-reply timeout, and exits after the
-                first valid response. Positive ICMP/TCP evidence and proxy-ARP protection remain intact.
+                Missing and unknown devices remain in ArcScan Inventory for context and history, while the
+                send confirmation reports that those historical rows were excluded from the handoff.
               </p>
             </article>
 
             <article>
-              <h3>One clear ArcAtlas action</h3>
+              <h3>Stronger identity evidence</h3>
               <p>
-                Inventory now shows Send to ArcAtlas as the single ArcAtlas toolbar action. The redundant
-                neighboring ArcAtlas button is gone, while connection management remains in the send flow.
+                Blank later observations no longer erase a durable hostname, and family identity for
+                common Synology, Ubiquiti and Dell infrastructure takes precedence over incidental services.
               </p>
             </article>
           </div>
@@ -859,7 +860,7 @@
                 <dt>Architecture</dt>
                 <dd>x64 (Intel or AMD)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.6</dd>
+                <dd data-field="version">1.8.7</dd>
               </dl>
 
               <div class="dl-option">
@@ -902,7 +903,7 @@
                 <dt>Architecture</dt>
                 <dd>ARM64</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.6</dd>
+                <dd data-field="version">1.8.7</dd>
               </dl>
 
               <div class="dl-option">
@@ -945,7 +946,7 @@
                 <dt>Architecture</dt>
                 <dd>Universal (Apple Silicon and Intel)</dd>
                 <dt>Version</dt>
-                <dd data-field="version">1.8.6</dd>
+                <dd data-field="version">1.8.7</dd>
               </dl>
 
               <div class="dl-option">
