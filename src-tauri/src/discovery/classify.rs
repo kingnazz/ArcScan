@@ -372,14 +372,19 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         // the two below it are no longer both "network equipment".
         Some((DeviceType::Router, "UDM/UXG/USG gateway family".into()))
     } else if built_by(NETWORK_MAKERS)
-        && models
-            .iter()
-            .any(|model| compact_identity(model).starts_with("usw"))
+        && models.iter().any(|model| {
+            compact_identity(model).starts_with("usw")
+                // The older UniFi switch naming, still all over real sites:
+                // `US-24`, `US-48-500W`. Requiring a digit after `us` is what
+                // keeps this from matching a model that merely begins with
+                // those two letters.
+                || numbered_family(model, "us")
+        })
     {
         // v1.9: a USW is a switch. It used to read as the generic "network
         // equipment", which left the question of switch-versus-access-point to
         // whatever looked at the inventory next.
-        Some((DeviceType::Switch, "USW switch family".into()))
+        Some((DeviceType::Switch, "USW/US switch family".into()))
     } else if built_by(NETWORK_MAKERS)
         && models.iter().any(|model| {
             let compact = compact_identity(model);
