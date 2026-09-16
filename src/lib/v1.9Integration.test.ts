@@ -128,4 +128,68 @@ describe("ArcScan v1.9 integrated ArcAtlas contract", () => {
       }),
     ).toThrow(/unique local device_id/i);
   });
+
+  it("keeps same-physical-device observations out of canonical topology without losing evidence", () => {
+    const samePhysicalObservation = {
+      fromDeviceId: 21,
+      toDeviceId: 22,
+      fromPort: "Ethernet 1",
+      toPort: "Ethernet 2",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      speedMbps: 1000,
+      evidence: ["Both transport rows were observed on the same bridge"],
+    };
+    const envelope = buildHandoffEnvelope({
+      rows: V19_INTEGRATION_ROWS,
+      notes: new Map(),
+      networkName: "Site LAN",
+      handoffId: "00000000-0000-4000-8000-000000000021",
+      topology: {
+        ...V19_INTEGRATION_TOPOLOGY,
+        connections: [samePhysicalObservation, ...V19_INTEGRATION_TOPOLOGY.connections],
+      },
+    });
+
+    expect(envelope.schemaVersion).toBe(2);
+    if (envelope.schemaVersion !== 2) throw new Error("expected schema v2");
+
+    expect(envelope.topology.connections).not.toContainEqual(samePhysicalObservation);
+    expect(envelope.unresolvedTopology?.connections).toContainEqual(samePhysicalObservation);
+    expect(envelope.topology.connections).toContainEqual(
+      expect.objectContaining({ fromDeviceId: 40, toDeviceId: 22 }),
+    );
+  });
+
+  it("does not suppress known links when physical-device keys are absent or blank", () => {
+    const rowsWithoutExplicitPhysicalKeys = V19_INTEGRATION_ROWS.map((row) =>
+      row.device_id === 21 || row.device_id === 22
+        ? { ...row, physical_device_key: row.device_id === 21 ? null : "" }
+        : row,
+    );
+    const connection = {
+      fromDeviceId: 21,
+      toDeviceId: 22,
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      evidence: ["Known endpoints without an explicit physical-device key"],
+    };
+    const envelope = buildHandoffEnvelope({
+      rows: rowsWithoutExplicitPhysicalKeys,
+      notes: new Map(),
+      networkName: "Site LAN",
+      handoffId: "00000000-0000-4000-8000-000000000022",
+      topology: {
+        capturedAt: V19_INTEGRATION_TOPOLOGY.capturedAt,
+        connections: [connection],
+      },
+    });
+
+    expect(envelope.schemaVersion).toBe(2);
+    if (envelope.schemaVersion !== 2) throw new Error("expected schema v2");
+    expect(envelope.topology.connections).toContainEqual(connection);
+    expect(envelope.unresolvedTopology).toBeUndefined();
+  });
 });

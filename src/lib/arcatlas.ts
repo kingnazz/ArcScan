@@ -256,7 +256,7 @@ export function buildHandoffEnvelope(args: {
     };
   }
 
-  const idCounts = inventoryIdCounts(inventory);
+  const { idCounts, physicalDeviceById } = inventoryTopologyIndex(inventory);
   if (
     idCounts.size !== inventory.length ||
     [...idCounts.values()].some((count) => count !== 1)
@@ -270,12 +270,18 @@ export function buildHandoffEnvelope(args: {
   for (const connection of args.topology.connections) {
     const from = connection.fromDeviceId;
     const to = connection.toDeviceId;
+    const fromPhysicalDevice = from == null ? undefined : physicalDeviceById.get(from);
+    const sameExplicitPhysicalDevice =
+      fromPhysicalDevice !== undefined &&
+      to != null &&
+      fromPhysicalDevice === physicalDeviceById.get(to);
     if (
       from != null &&
       to != null &&
       from !== to &&
       idCounts.get(from) === 1 &&
-      idCounts.get(to) === 1
+      idCounts.get(to) === 1 &&
+      !sameExplicitPhysicalDevice
     ) {
       const contractConnection = { ...connection, fromDeviceId: from, toDeviceId: to };
       delete contractConnection.fromUnresolvedId;
@@ -306,15 +312,24 @@ export function buildHandoffEnvelope(args: {
   };
 }
 
-function inventoryIdCounts(inventory: unknown[]): Map<number, number> {
-  const counts = new Map<number, number>();
+function inventoryTopologyIndex(inventory: unknown[]): {
+  idCounts: Map<number, number>;
+  physicalDeviceById: Map<number, string>;
+} {
+  const idCounts = new Map<number, number>();
+  const physicalDeviceById = new Map<number, string>();
   for (const value of inventory) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const id = (value as Record<string, unknown>).device_id;
+    const record = value as Record<string, unknown>;
+    const id = record.device_id;
     if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
-    counts.set(id, (counts.get(id) ?? 0) + 1);
+    idCounts.set(id, (idCounts.get(id) ?? 0) + 1);
+    const physicalDevice = record.physical_device;
+    if (typeof physicalDevice === "string" && physicalDevice.trim()) {
+      physicalDeviceById.set(id, physicalDevice.trim());
+    }
   }
-  return counts;
+  return { idCounts, physicalDeviceById };
 }
 
 export class HandoffAttempt {
