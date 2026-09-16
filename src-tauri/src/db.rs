@@ -310,6 +310,24 @@ pub struct InventoryRow {
     pub latest_response_ms: Option<i64>,
     pub latest_icmp_ms: Option<f64>,
     pub latest_tcp_ms: Option<f64>,
+    /// The physical device this row reconciles into.
+    ///
+    /// Two rows sharing a key are two interfaces of one machine. Absent when
+    /// the device offered no identifier strong enough to group on, which is
+    /// the common case and is not a problem: a row with no key is its own
+    /// device, which is what it was before v1.9 too.
+    ///
+    /// This is a *grouping*, not a merge. ArcScan keeps both rows, both
+    /// addresses and both MACs, because a missed merge is visible and
+    /// correctable where a false one silently destroys one device's history
+    /// inside another's. What the key does is let a consumer — the export,
+    /// and ArcAtlas after it — count one box once.
+    #[serde(default)]
+    pub physical_device_key: Option<String>,
+    /// How many inventory rows reconcile into the same physical device. 1 for
+    /// almost everything; more for a multi-homed machine.
+    #[serde(default)]
+    pub physical_interface_count: usize,
     /// What local discovery established about this device, if anything. Absent
     /// for every device no discovery-capable scan has reached — which is every
     /// device on an install that has just upgraded.
@@ -1254,6 +1272,10 @@ impl Db {
                 });
                 Ok(InventoryRow {
                     device_id,
+                    // Both filled in below, once every row has been read: a
+                    // grouping cannot be decided from one row in isolation.
+                    physical_device_key: None,
+                    physical_interface_count: 1,
                     network_scope_id: row.get(1)?,
                     network_name: row.get(2)?,
                     identity_source: parse_source(&row.get::<_, String>(3)?),
@@ -1342,6 +1364,16 @@ impl Db {
         // Case-insensitive, so the filter menu reads alphabetically whatever
         // capitalisation the operator used for a network name.
         networks.sort_by_key(|network| network.name.to_lowercase());
+
+        // Reconcile interfaces into physical devices.
+        //
+        // Done here, over the whole inventory, because a grouping cannot be
+        // decided one row at a time: the second interface of a machine is only
+        // recognisable beside the first. Nothing is merged or deleted — every
+        // row keeps its identity, its history and its address — and each is
+        // stamped with the group it belongs to. See `discovery::reconcile` for
+        // why a host name never forms a group.
+        stamp_physical_devices(&mut inventory_rows);
 
         let needs_completed_scan = !inventory_rows.is_empty()
             && inventory_rows
@@ -2675,6 +2707,89 @@ fn write_discovery(
     .map_err(sql_err)?;
 
     Ok(snapshot)
+}
+
+/// Group inventory rows into physical devices and stamp each with its group.
+///
+/// A row's identifiers come from the structured columns a credentialed scan
+/// filled — the system UUID and the service tag — plus anything a deep scan
+/// recorded as identity evidence, plus the MAC. The MAC is included last and
+/// weakest, which means two rows with different MACs and nothing else in
+/// common stay apart, exactly as they did before v1.9.
+///
+/// Only groups of more than one row are stamped. A key on a device seen once
+/// would be noise in every export, and says nothing a reader does not already
+/// know from the row existing.
+fn stamp_physical_devices(rows: &mut [InventoryRow]) {
+    use crate::discovery::reconcile::{
+        claim_from_line, reconcile, DeviceCandidate, IdentityClaim, IdentityStrength,
+    };
+
+    let candidates: Vec<DeviceCandidate> = rows
+        .iter()
+        .map(|row| {
+            let discovery = row.discovery.as_ref();
+            // The manufacturer a machine reported about itself, for namespacing
+            // a serial. Falling back to the OUI vendor would namespace a Dell
+            // service tag under whoever made the network card.
+            let manufacturer = discovery
+                .and_then(|d| d.hardware_manufacturer.as_deref())
+                .or(row.vendor.as_deref());
+
+            let mut identities: Vec<IdentityClaim> = Vec::new();
+            if let Some(discovery) = discovery {
+                if let Some(uuid) = discovery.system_uuid.as_deref() {
+                    identities.extend(IdentityClaim::new(
+                        IdentityStrength::SystemUuid,
+                        None,
+                        uuid,
+                    ));
+                }
+                if let Some(serial) = discovery.hardware_serial.as_deref() {
+                    identities.extend(IdentityClaim::new(
+                        IdentityStrength::HardwareSerial,
+                        manufacturer,
+                        serial,
+                    ));
+                }
+                // Anything else recorded as identity evidence, read back
+                // through the same closed set of labels that wrote it.
+                for line in &discovery.identity_evidence {
+                    identities.extend(claim_from_line(line, manufacturer));
+                }
+            }
+            if let Some(mac) = row.mac.as_deref() {
+                identities.extend(IdentityClaim::new(IdentityStrength::Mac, None, mac));
+            }
+            identities.sort();
+            identities.dedup();
+
+            DeviceCandidate {
+                device_id: row.device_id,
+                ip: row.current_ip.clone(),
+                mac: row.mac.clone(),
+                hostname: row.hostname.clone(),
+                identities,
+            }
+        })
+        .collect();
+
+    let groups = reconcile(&candidates);
+    let mut by_device: HashMap<i64, (String, usize)> = HashMap::new();
+    for group in groups {
+        if group.members.len() < 2 {
+            continue;
+        }
+        for device_id in &group.members {
+            by_device.insert(*device_id, (group.key.clone(), group.members.len()));
+        }
+    }
+    for row in rows.iter_mut() {
+        if let Some((key, count)) = by_device.get(&row.device_id) {
+            row.physical_device_key = Some(key.clone());
+            row.physical_interface_count = *count;
+        }
+    }
 }
 
 /// Load one device's full discovery record, evidence included.
@@ -4560,6 +4675,88 @@ mod tests {
         assert_eq!(discovery.windows_product_type, None);
         assert_eq!(discovery.system_uuid, None);
         assert!(discovery.identity_evidence.is_empty());
+    }
+
+    #[test]
+    fn two_interfaces_of_one_machine_share_a_physical_device_key() {
+        // The duplicate reported from ArcAtlas, closed at the inventory layer:
+        // both rows survive with their own address and MAC, and both carry the
+        // key that says they are one box.
+        let db = Db::open_in_memory().unwrap();
+        let uuid = "4C4C4544-0037-5A10-8051-B4C04F435331";
+        let mut first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("APP-01"), &[445]);
+        first.discovery = Some(crate::scanner::HostDiscovery {
+            system_uuid: Some(uuid.into()),
+            identity_evidence: vec![format!("system UUID: {uuid}")],
+            ..credentialed_discovery()
+        });
+        let mut second = host("10.0.1.5", Some("aa:bb:cc:00:00:02"), Some("APP-01"), &[445]);
+        second.discovery = Some(crate::scanner::HostDiscovery {
+            system_uuid: Some(uuid.into()),
+            identity_evidence: vec![format!("system UUID: {uuid}")],
+            ..credentialed_discovery()
+        });
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/16",
+            Some("quick-lan"),
+            vec![first, second],
+        )))
+        .unwrap();
+
+        let rows = db.inventory().unwrap().rows;
+        assert_eq!(rows.len(), 2, "both interfaces stay in the inventory");
+        let keys: Vec<Option<String>> = rows
+            .iter()
+            .map(|r| r.physical_device_key.clone())
+            .collect();
+        assert!(keys[0].is_some(), "a grouped row carries a key");
+        assert_eq!(keys[0], keys[1], "both interfaces name the same machine");
+        assert!(rows.iter().all(|r| r.physical_interface_count == 2));
+        // Nothing was lost: two addresses and two MACs survive.
+        let mut addresses: Vec<String> =
+            rows.iter().filter_map(|r| r.current_ip.clone()).collect();
+        addresses.sort();
+        assert_eq!(addresses, vec!["10.0.0.5", "10.0.1.5"]);
+    }
+
+    #[test]
+    fn two_devices_with_one_hostname_get_no_shared_key() {
+        // The other half of the rule. A shared host name is not an identity,
+        // and a false merge is worse than a missed one.
+        let db = Db::open_in_memory().unwrap();
+        let first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("PRINTER"), &[9100]);
+        let second = host("10.0.0.6", Some("aa:bb:cc:00:00:02"), Some("PRINTER"), &[9100]);
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![first, second],
+        )))
+        .unwrap();
+
+        let rows = db.inventory().unwrap().rows;
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().all(|r| r.physical_device_key.is_none()),
+            "a shared host name must not group two devices"
+        );
+        assert!(rows.iter().all(|r| r.physical_interface_count == 1));
+    }
+
+    #[test]
+    fn an_ordinary_single_homed_device_carries_no_group_key() {
+        // A key on a device seen once says nothing, and would be noise in
+        // every export.
+        let db = Db::open_in_memory().unwrap();
+        let only = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("thing"), &[80]);
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![only],
+        )))
+        .unwrap();
+        let rows = db.inventory().unwrap().rows;
+        assert_eq!(rows[0].physical_device_key, None);
+        assert_eq!(rows[0].physical_interface_count, 1);
     }
 
     #[test]

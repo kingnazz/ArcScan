@@ -202,7 +202,46 @@ const INVENTORY_HEADERS = [
   "Advertised services",
   "Last discovered",
   "Notes",
+  // ---- v1.9 ----------------------------------------------------------
+  //
+  // Appended after every existing column, deliberately. A script that reads
+  // "Notes" as the last column keeps working, and one that reads columns by
+  // position finds every v1.8 column exactly where it was. Adding these in the
+  // middle — beside the discovery columns they belong with — would have read
+  // better and broken every such script.
+  //
+  // A cell is blank where the fact was not established, never "Unknown": a
+  // blank says "not established" where the word reads as an answer.
+  "OS family",
+  "OS product",
+  "OS edition",
+  "OS version",
+  "OS build",
+  "OS architecture",
+  "Windows product type",
+  "Hardware manufacturer",
+  "Hardware model",
+  "Hardware serial",
+  "System UUID",
+  "Domain",
+  "Identity evidence",
+  "Identity source",
+  "Classification evidence",
+  "Physical device",
+  "Interfaces",
 ];
+
+/**
+ * The words for a Windows product type.
+ *
+ * Exported alongside the number rather than instead of it: a script wants the
+ * `1`, and a person reading the spreadsheet wants the word.
+ */
+const WINDOWS_PRODUCT_TYPE_LABEL: Record<string, string> = {
+  "1": "1 (workstation)",
+  "2": "2 (domain controller)",
+  "3": "3 (server)",
+};
 
 /** Ordered so the CSV columns and the XML element names cannot drift apart. */
 function inventoryRecord(row: InventoryRow, notes: string): Record<string, string> {
@@ -252,7 +291,39 @@ function inventoryRecord(row: InventoryRow, notes: string): Record<string, strin
       .join(", "),
     last_discovered: row.discovery?.last_discovered_at ?? "",
     notes,
+    // ---- v1.9, in the same order as the headers above -----------------
+    os_family: row.discovery?.os_family ?? "",
+    os_product: row.discovery?.os_product ?? "",
+    os_edition: row.discovery?.os_edition ?? "",
+    os_version: row.discovery?.os_version ?? "",
+    os_build: row.discovery?.os_build ?? "",
+    os_architecture: row.discovery?.os_architecture ?? "",
+    windows_product_type: windowsProductTypeLabel(row.discovery?.windows_product_type),
+    hardware_manufacturer: row.discovery?.hardware_manufacturer ?? "",
+    hardware_model: row.discovery?.hardware_model ?? "",
+    hardware_serial: row.discovery?.hardware_serial ?? "",
+    system_uuid: row.discovery?.system_uuid ?? "",
+    domain: row.discovery?.domain ?? "",
+    // The identifiers the device offered, strongest first. Semicolons rather
+    // than commas because a CSV cell full of commas is hard to read even when
+    // it is correctly quoted.
+    identity_evidence: (row.discovery?.identity_evidence ?? []).join("; "),
+    identity_source: (row.discovery?.identity_sources ?? []).map(sourceLabel).join(" "),
+    // Why the device is called what it is, not only what it is called.
+    classification_evidence: (row.discovery?.type_evidence ?? []).join("; "),
+    // Blank on a device seen once: a group key on a single row says nothing.
+    physical_device: row.physical_device_key ?? "",
+    interfaces:
+      row.physical_interface_count && row.physical_interface_count > 1
+        ? String(row.physical_interface_count)
+        : "",
   };
+}
+
+/** `1 (workstation)`, or blank where no authenticated query established one. */
+function windowsProductTypeLabel(value: string | null | undefined): string {
+  if (!value) return "";
+  return WINDOWS_PRODUCT_TYPE_LABEL[value] ?? value;
 }
 
 /**

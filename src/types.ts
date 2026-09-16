@@ -23,7 +23,17 @@ export interface HostResult {
   discovery?: HostDiscovery | null;
 }
 
-/** The fourteen types ArcScan is prepared to name. */
+/**
+ * The types ArcScan is prepared to name. Mirrors `DeviceType` in Rust.
+ *
+ * The v1.9 additions are appended rather than replacing the types above them:
+ * a database written by an earlier build still holds `computer` and
+ * `network_equipment`, and both stay valid and keep their meanings. What
+ * changed is that ArcScan will now say the more precise thing when the
+ * evidence supports it — a Windows machine that reported ProductType 1 is a
+ * workstation, a USW is a switch — and still says the general thing when it
+ * does not.
+ */
 export type DeviceType =
   | "router"
   | "printer"
@@ -38,6 +48,14 @@ export type DeviceType =
   | "smart_home"
   | "network_equipment"
   | "speaker"
+  // v1.9
+  | "workstation"
+  | "server"
+  | "domain_controller"
+  | "switch"
+  | "access_point"
+  | "firewall"
+  | "management_controller"
   | "unknown";
 
 /**
@@ -51,8 +69,14 @@ export type Confidence = "high" | "medium" | "low" | "unknown";
 /** Where a detected fact came from. */
 export type DiscoverySource =
   | "user"
+  /** An authenticated Windows management query. Second only to a person. */
+  | "windows_credentialed"
   | "ssdp"
   | "mdns"
+  | "tls"
+  | "smb"
+  | "http"
+  | "banner"
   | "reverse_dns"
   | "arp_vendor"
   | "tcp_service"
@@ -80,7 +104,67 @@ export type Freshness = "current" | "aging" | "stale";
 export type TypeSource = "user" | "automatic";
 
 /** Discovery facts attached to one observation. */
-export interface HostDiscovery {
+
+/**
+ * What a deep or credentialed scan established about a device's operating
+ * system, its hardware and its identity.
+ *
+ * Every field is optional and every one is absent on a device no deep scan has
+ * reached. Absent means "not established", which is a different thing from
+ * "established as empty" and is shown as a blank rather than as a word.
+ *
+ * Shared by the three discovery records so the interface, the export and the
+ * drawer cannot drift apart on what a field means.
+ */
+export interface DeepFacts {
+  /** `windows`, `linux`, `macos`, `bsd`, `network_os`. */
+  os_family?: string | null;
+  /** The marketed product, e.g. `Windows 11` or `Windows Server 2022`. */
+  os_product?: string | null;
+  /** The edition, e.g. `Pro` or `Datacenter`. */
+  os_edition?: string | null;
+  /** The release, e.g. `24H2`, or the NT version when there is no label. */
+  os_version?: string | null;
+  os_build?: string | null;
+  /** `x64`, `arm64`, `x86`. */
+  os_architecture?: string | null;
+  /**
+   * `1`, `2` or `3`.
+   *
+   * Set only by an authenticated Windows query, and the single fact that
+   * separates a workstation from a server. 1 is a workstation, 2 a domain
+   * controller, 3 a server.
+   */
+  windows_product_type?: string | null;
+  /** What the machine said about its own hardware, under authentication. */
+  hardware_manufacturer?: string | null;
+  hardware_model?: string | null;
+  /** The service tag or chassis serial. */
+  hardware_serial?: string | null;
+  /** The SMBIOS system UUID. The strongest identity a machine can offer. */
+  system_uuid?: string | null;
+  /** The AD domain, or the workgroup for a machine joined to nothing. */
+  domain?: string | null;
+  /** The identifiers this device offered, strongest first, as `kind: value`. */
+  identity_evidence?: string[];
+  /** Which sources contributed an identifier. */
+  identity_sources?: string[];
+}
+
+/** The three levels of discovery a scan can run. */
+export type ScanDepth = "quick" | "deep" | "credentialed";
+
+/** What ArcScan knows about the Windows credential held for this session. */
+export interface WindowsCredentialStatus {
+  configured: boolean;
+  /** `DOMAIN\\user`. Never a password — there is no field for one. */
+  account: string | null;
+  /** False on builds with no Windows management stack to query through. */
+  supported: boolean;
+  unsupported_reason: string | null;
+}
+
+export interface HostDiscovery extends DeepFacts {
   detected_name: string | null;
   name_source: string | null;
   device_type: string | null;
@@ -100,10 +184,14 @@ export interface HostDiscovery {
   ipv6_addresses: string[];
   presentation_url: string | null;
   last_discovered_at: string | null;
+  /** One line per deep probe attempted, for the history view. */
+  deep_notes?: string[];
+  /** What the credentialed query did, or why it did not happen. */
+  credentialed_status?: string | null;
 }
 
 /** The discovery fields the Inventory table, search and export use. */
-export interface InventoryDiscovery {
+export interface InventoryDiscovery extends DeepFacts {
   detected_name: string | null;
   /**
    * What ArcScan detected. The type shown on screen is the row's
@@ -120,6 +208,13 @@ export interface InventoryDiscovery {
   last_discovered_at: string | null;
   /** How current the freshest claim behind this record is. */
   evidence_freshness: Freshness | string;
+  /**
+   * The plain-language facts behind the detected type.
+   *
+   * On the inventory row rather than only in the drawer so an export can say
+   * *why* a device is called what it is, not only what it is called.
+   */
+  type_evidence?: string[];
 }
 
 /** One stored claim about a device. */
@@ -138,7 +233,7 @@ export interface DiscoveryEvidenceRow {
 }
 
 /** The full discovery record for one device, as the drawer shows it. */
-export interface DeviceDiscovery {
+export interface DeviceDiscovery extends DeepFacts {
   detected_name: string | null;
   name_source: string | null;
   device_type: string;
@@ -221,6 +316,10 @@ export type ScanPhase =
   | "confirming"
   | "discovering"
   | "describing"
+  /** Asking already-open services what they are. Deep Scan only. */
+  | "inspecting"
+  /** Asking Windows machines about themselves. Credentialed Deep Scan only. */
+  | "interrogating"
   | "resolving"
   | "classifying"
   | "done"
@@ -318,6 +417,33 @@ export interface ScanOptions {
   arp_assist: boolean | null;
   /** Which parts of local discovery to run. Absent means all of them. */
   discovery?: DiscoveryOptions | null;
+  /**
+   * Which unauthenticated deep probes to run, against ports the sweep already
+   * found open. Absent, and `enabled: false`, both mean Quick Scan behaviour.
+   */
+  deep?: DeepOptions | null;
+  /**
+   * Whether to run credentialed Windows discovery. Needs a credential the
+   * operator set this session; without one every probe reports it was skipped.
+   */
+  credentialed_windows?: boolean;
+}
+
+/**
+ * Which deep probes to run. Mirrors `DeepOptions` in Rust.
+ *
+ * `enabled` is off by default, which is what keeps Quick Scan quick.
+ */
+export interface DeepOptions {
+  enabled: boolean;
+  /** Read an HTTP front page: server header, auth realm, document title. */
+  http: boolean;
+  /** Read the subject of a presented TLS certificate. */
+  tls: boolean;
+  /** Negotiate SMB2 for the dialect and the server GUID. */
+  smb: boolean;
+  /** Read the greeting from protocols that offer one unprompted. */
+  banners: boolean;
 }
 
 export interface ScanPreview {
@@ -423,6 +549,19 @@ export interface InventoryRow {
   latest_response_ms: number | null;
   latest_icmp_ms: number | null;
   latest_tcp_ms: number | null;
+  /**
+   * The physical device this row reconciles into.
+   *
+   * Two rows sharing a key are two interfaces of one machine. Absent when the
+   * device offered no identifier strong enough to group on, and absent on a
+   * device seen only once — a key on a single row says nothing.
+   *
+   * A grouping, not a merge: ArcScan keeps both rows, both addresses and both
+   * MACs. What the key does is let a consumer count one box once.
+   */
+  physical_device_key?: string | null;
+  /** How many inventory rows reconcile into the same physical device. */
+  physical_interface_count?: number;
   /** What local discovery established, if a discovery-capable scan reached it. */
   discovery?: InventoryDiscovery | null;
   /**
