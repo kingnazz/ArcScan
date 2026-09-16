@@ -8,7 +8,8 @@
 // Every read is defensive: a preferences blob written by a newer build, or
 // corrupted on disk, must never stop the app from starting.
 
-import { isProfileId, type ProfileId } from "./profiles";
+import { isProfileId, isScanDepth, type ProfileId } from "./profiles";
+import type { ScanDepth } from "../types";
 import type { InventoryColumn } from "./inventory";
 import type { SortDir, SortKey } from "./table";
 
@@ -64,6 +65,16 @@ export interface Settings {
   localDiscovery: boolean;
   /** Whether a device's advertised description URL may be read. */
   readDeviceDescriptions: boolean;
+  /**
+   * How hard the next scan works to identify what it finds.
+   *
+   * Quick is the default and is exactly the v1.8 behaviour. The level is
+   * remembered; the Windows credential a credentialed scan needs is not, and
+   * cannot be — it never leaves memory. A technician who chose Credentialed
+   * last session finds the level still selected and is asked for the password
+   * again, which is the right way round.
+   */
+  scanDepth: ScanDepth;
   reducedMotion: boolean;
   /** Cleared once the operator has seen the first-run guidance. */
   showFirstRunGuidance: boolean;
@@ -88,6 +99,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notifyOnChanges: true,
   localDiscovery: true,
   readDeviceDescriptions: true,
+  scanDepth: "quick",
   reducedMotion: false,
   showFirstRunGuidance: true,
 };
@@ -192,6 +204,9 @@ export function loadSettings(): Settings {
     // silently starting with discovery switched off.
     localDiscovery: stored.localDiscovery !== false,
     readDeviceDescriptions: stored.readDeviceDescriptions !== false,
+    // Anything unrecognised falls back to Quick rather than to a slower level:
+    // a corrupted preference must not silently start sending deep probes.
+    scanDepth: isScanDepth(stored.scanDepth) ? stored.scanDepth : "quick",
     reducedMotion: stored.reducedMotion === true,
     showFirstRunGuidance: stored.showFirstRunGuidance !== false,
   };

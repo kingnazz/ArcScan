@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PORTS,
+  DEPTHS,
+  DEPTH_ORDER,
   PROFILES,
   PROFILE_ORDER,
   buildScanOptions,
+  deepOptionsFor,
   isPrivateIpv4,
   isProfileId,
+  isScanDepth,
   profileName,
   recommendedProfile,
 } from "./profiles";
@@ -139,5 +143,92 @@ describe("profile recommendation", () => {
     expect(isPrivateIpv4("100.100.0.1")).toBe(true);
     expect(isPrivateIpv4("8.8.8.8")).toBe(false);
     expect(isPrivateIpv4("not-an-ip")).toBe(false);
+  });
+});
+
+describe("discovery depth", () => {
+  it("lists every depth exactly once, in increasing order of effort", () => {
+    expect(DEPTH_ORDER).toEqual(["quick", "deep", "credentialed"]);
+    expect(DEPTH_ORDER).toHaveLength(Object.keys(DEPTHS).length);
+  });
+
+  it("gives every depth a name, a summary and a detail", () => {
+    for (const id of DEPTH_ORDER) {
+      const depth = DEPTHS[id];
+      expect(depth.name.trim()).not.toBe("");
+      expect(depth.summary.trim()).not.toBe("");
+      expect(depth.detail.trim()).not.toBe("");
+    }
+  });
+
+  it("recognises a depth and refuses anything else", () => {
+    expect(isScanDepth("deep")).toBe(true);
+    expect(isScanDepth("quick")).toBe(true);
+    expect(isScanDepth("thorough")).toBe(false);
+    expect(isScanDepth(null)).toBe(false);
+    expect(isScanDepth(3)).toBe(false);
+  });
+
+  it("opens no deep socket at all on a Quick scan", () => {
+    // The guarantee that keeps Quick Scan quick: the level is switched off,
+    // not each probe individually.
+    const deep = deepOptionsFor("quick");
+    expect(deep.enabled).toBe(false);
+    const options = buildScanOptions("192.168.1.0/24", "quick-lan");
+    expect(options.deep?.enabled).toBe(false);
+    expect(options.credentialed_windows).toBe(false);
+  });
+
+  it("defaults to Quick when no depth is asked for", () => {
+    // A caller that predates v1.9 gets exactly the v1.8 behaviour.
+    const options = buildScanOptions("192.168.1.0/24", "quick-lan");
+    expect(options.deep?.enabled).toBe(false);
+  });
+
+  it("turns every probe on at Deep, and signs in only at Credentialed", () => {
+    const deep = buildScanOptions("192.168.1.0/24", "quick-lan", {}, undefined, "deep");
+    expect(deep.deep).toEqual({
+      enabled: true,
+      http: true,
+      tls: true,
+      smb: true,
+      banners: true,
+    });
+    expect(deep.credentialed_windows).toBe(false);
+
+    const credentialed = buildScanOptions(
+      "192.168.1.0/24",
+      "quick-lan",
+      {},
+      undefined,
+      "credentialed",
+    );
+    expect(credentialed.deep?.enabled).toBe(true);
+    expect(credentialed.credentialed_windows).toBe(true);
+  });
+
+  it("marks the credentialed level as needing a credential", () => {
+    expect(DEPTHS.credentialed.needsCredential).toBe(true);
+    expect(DEPTHS.quick.needsCredential).toBeUndefined();
+    expect(DEPTHS.deep.needsCredential).toBeUndefined();
+  });
+
+  it("keeps depth independent of the profile", () => {
+    // A fast sweep that then signs in to Windows is a sensible thing to want,
+    // and is why depth is not folded into the profile list.
+    for (const profile of PROFILE_ORDER) {
+      const options = buildScanOptions("192.168.1.0/24", profile, {}, undefined, "deep");
+      expect(options.deep?.enabled).toBe(true);
+      expect(options.profile).toBe(profile);
+    }
+  });
+
+  it("still runs deep probes on a routed scan where multicast is switched off", () => {
+    // Deep probes are unicast to addresses already known to be live, so a
+    // router between ArcScan and the device is not an obstacle the way it is
+    // for mDNS and SSDP.
+    const options = buildScanOptions("10.9.0.0/24", "remote-subnet", {}, undefined, "deep");
+    expect(options.discovery?.enabled).toBe(false);
+    expect(options.deep?.enabled).toBe(true);
   });
 });

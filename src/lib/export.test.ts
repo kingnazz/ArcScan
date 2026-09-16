@@ -163,6 +163,83 @@ function inventoryRow(patch: Partial<InventoryRow> = {}): InventoryRow {
   };
 }
 
+/** A row a credentialed Windows scan reached, with every v1.9 fact filled. */
+function credentialedRow(patch: Partial<InventoryRow> = {}): InventoryRow {
+  return inventoryRow({
+    display_name: "WS-FINANCE-04",
+    hostname: "ws-finance-04",
+    vendor: "Dell Inc",
+    user_device_type: null,
+    physical_device_key: "uuid||4c4c454400375a108051b4c04f435331",
+    physical_interface_count: 2,
+    discovery: {
+      detected_name: "WS-FINANCE-04",
+      device_type: "workstation",
+      type_confidence: "high",
+      manufacturer: "Dell Inc.",
+      model_name: "Latitude 7450",
+      services: ["_smb._tcp"],
+      sources: ["windows_credentialed"],
+      last_discovered_at: "2026-08-02T09:00:00Z",
+      evidence_freshness: "current",
+      os_family: "Windows",
+      os_product: "Windows 11",
+      os_edition: "Pro",
+      os_version: "24H2",
+      os_build: "26100",
+      os_architecture: "x64",
+      windows_product_type: "1",
+      hardware_manufacturer: "Dell Inc.",
+      hardware_model: "Latitude 7450",
+      hardware_serial: "7SZ1B43",
+      system_uuid: "4C4C4544-0037-5A10-8051-B4C04F435331",
+      domain: "corp.example",
+      identity_evidence: ["system UUID: 4C4C4544-0037-5A10-8051-B4C04F435331"],
+      identity_sources: ["windows_credentialed"],
+      type_evidence: ["Windows ProductType 1 (workstation)"],
+    },
+    ...patch,
+  });
+}
+
+/**
+ * Split one CSV line into its cells, honouring quoting.
+ *
+ * Needed rather than `split(",")` because several exported cells legitimately
+ * contain commas and are therefore quoted; splitting naively would shift every
+ * column after the first such cell and quietly make a column-alignment
+ * assertion test the wrong thing.
+ */
+function csvCells(line: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (quoted) {
+      if (char === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      cells.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
+
 function changeEvent(patch: Partial<ChangeEvent> = {}): ChangeEvent {
   return {
     id: 11,
@@ -195,10 +272,33 @@ describe("inventory export", () => {
   it("writes the documented columns, in order", () => {
     const csv = buildInventoryExport([inventoryRow()], "csv");
     const lines = csv.trimEnd().split("\n");
-    expect(lines[0]).toBe(
-      "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type source,Detected type,Detected confidence,Discovery freshness,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes",
-    );
+    expect(lines[0]).toBe("Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type source,Detected type,Detected confidence,Discovery freshness,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes," + "OS family,OS product,OS edition,OS version,OS build,OS architecture,Windows product type,Hardware manufacturer,Hardware model,Hardware serial,System UUID,Domain,Identity evidence,Identity source,Classification evidence,Physical device,Interfaces");
     expect(lines).toHaveLength(2);
+  });
+
+  // The v1.9 columns are appended after every v1.8 one so that a script
+  // reading columns by position keeps working. This is the test that says so,
+  // and the reason the new columns are not grouped with the discovery columns
+  // they belong with.
+  it("keeps every v1.8 column at the position it had", () => {
+    const csv = buildInventoryExport([inventoryRow()], "csv");
+    const headers = csvCells(csv.trimEnd().split("\n")[0]);
+    const v18 = "Network,Device,Status,Presence,Current IP,Previous IPs,MAC,Manufacturer,Hostname,OS guess,Open ports,Open services,First seen,Last seen,Observations,Detected name,Device type,Type source,Detected type,Detected confidence,Discovery freshness,Discovered by,Detected manufacturer,Model,Advertised services,Last discovered,Notes".split(",");
+    expect(headers.slice(0, v18.length)).toEqual(v18);
+  });
+
+  it("leaves the v1.9 columns blank on a row no deep scan reached", () => {
+    // Blank, never "Unknown": a blank cell says "not established", where the
+    // word reads as an answer.
+    const csv = buildInventoryExport([inventoryRow()], "csv");
+    const headers = csvCells(csv.trimEnd().split("\n")[0]);
+    const values = csvCells(csv.trimEnd().split("\n")[1]);
+    const v19 = "OS family,OS product,OS edition,OS version,OS build,OS architecture,Windows product type,Hardware manufacturer,Hardware model,Hardware serial,System UUID,Domain,Identity evidence,Identity source,Classification evidence,Physical device,Interfaces".split(",");
+    for (const column of v19) {
+      const index = headers.indexOf(column);
+      expect(index).toBeGreaterThan(-1);
+      expect(values[index] ?? "").toBe("");
+    }
   });
 
   it("spells presence and status out rather than exporting internal words", () => {
@@ -208,6 +308,94 @@ describe("inventory export", () => {
     // Never the raw enum value.
     expect(csv).not.toContain(",missing,");
     expect(csv).not.toContain(",unclassified,");
+  });
+
+  it("carries the credentialed Windows facts into the CSV", () => {
+    const csv = buildInventoryExport([credentialedRow()], "csv");
+    const headers = csvCells(csv.trimEnd().split("\n")[0]);
+    const values = csvCells(csv.trimEnd().split("\n")[1]);
+    const cell = (column: string) => values[headers.indexOf(column)];
+
+    expect(cell("OS product")).toBe("Windows 11");
+    expect(cell("OS edition")).toBe("Pro");
+    expect(cell("OS version")).toBe("24H2");
+    expect(cell("OS build")).toBe("26100");
+    expect(cell("OS architecture")).toBe("x64");
+    expect(cell("Hardware model")).toBe("Latitude 7450");
+    expect(cell("Hardware serial")).toBe("7SZ1B43");
+    expect(cell("System UUID")).toBe("4C4C4544-0037-5A10-8051-B4C04F435331");
+    expect(cell("Domain")).toBe("corp.example");
+    expect(cell("Interfaces")).toBe("2");
+  });
+
+  it("writes the Windows product type as both the number and the word", () => {
+    // A script wants the 1; a person reading the spreadsheet wants the word.
+    const csv = buildInventoryExport([credentialedRow()], "csv");
+    expect(csv).toContain("1 (workstation)");
+
+    const server = buildInventoryExport(
+      [
+        credentialedRow({
+          discovery: {
+            ...credentialedRow().discovery!,
+            windows_product_type: "3",
+            device_type: "server",
+          },
+        }),
+      ],
+      "csv",
+    );
+    expect(server).toContain("3 (server)");
+  });
+
+  it("exports the new device types with the words the interface uses", () => {
+    for (const [type, label] of [
+      ["workstation", "Workstation"],
+      ["server", "Server"],
+      ["domain_controller", "Domain controller"],
+      ["switch", "Switch"],
+      ["access_point", "Access point"],
+      ["firewall", "Firewall"],
+      ["management_controller", "Management controller"],
+    ] as const) {
+      const csv = buildInventoryExport(
+        [credentialedRow({ discovery: { ...credentialedRow().discovery!, device_type: type } })],
+        "csv",
+      );
+      expect(csv).toContain(label);
+    }
+  });
+
+  it("carries the new facts into JSON and XML too", () => {
+    const json = JSON.parse(buildInventoryExport([credentialedRow()], "json"));
+    expect(json[0].os_product).toBe("Windows 11");
+    expect(json[0].windows_product_type).toBe("1 (workstation)");
+    expect(json[0].system_uuid).toBe("4C4C4544-0037-5A10-8051-B4C04F435331");
+    expect(json[0].device_id).toBe(3);
+
+    const xml = buildInventoryExport([credentialedRow()], "xml");
+    expect(xml).toContain("<os_product>Windows 11</os_product>");
+    expect(xml).toContain("<hardware_serial>7SZ1B43</hardware_serial>");
+    // Element names are the record keys, so they stay valid XML names.
+    expect(xml).not.toMatch(/<[a-z_]* /);
+  });
+
+  it("says why a device is called what it is", () => {
+    const csv = buildInventoryExport([credentialedRow()], "csv");
+    expect(csv).toContain("Windows ProductType 1 (workstation)");
+  });
+
+  it("groups two interfaces of one machine under one physical device", () => {
+    const rows = [
+      credentialedRow({ device_id: 3, current_ip: "10.0.0.5" }),
+      credentialedRow({ device_id: 4, current_ip: "10.0.1.5" }),
+    ];
+    const json = JSON.parse(buildInventoryExport(rows, "json"));
+    // Both rows survive with their own address, and both name the same box.
+    expect(json).toHaveLength(2);
+    expect(json[0].physical_device).toBe(json[1].physical_device);
+    expect(json[0].physical_device).not.toBe("");
+    expect(json[0].current_ip).not.toBe(json[1].current_ip);
   });
 
   it("maps the unclassified status to the word the interface uses", () => {
