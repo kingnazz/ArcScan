@@ -18,7 +18,7 @@ export interface ResultsToolbarProps {
   onViewChanges: () => void;
   /** True while the comparison is showing instead of the table. */
   comparisonOpen: boolean;
-  /** Topology is a credentialed Deep Scan step, not part of Quick LAN. */
+  /** Topology is an optional post-scan step and never part of Quick discovery. */
   onViewTopology: () => void;
   topologyOpen: boolean;
   canExport: boolean;
@@ -111,7 +111,7 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
             icon={<Network className="h-3.5 w-3.5" />}
             aria-pressed={topologyOpen}
             onClick={onViewTopology}
-            title="Credentialed SNMP topology discovery. Quick LAN does not run this."
+            title="Optional SNMP topology discovery for this scan. It never runs automatically."
           >
             Topology
           </Button>

@@ -2,7 +2,8 @@
 //!
 //! The engine itself lives in the `arcscan-topology` crate so its tests do not
 //! need GTK. This module owns only process state and IPC. Quick Scan does not
-//! run this. The current ArcAtlas inventory envelope is not modified.
+//! run this. The frontend combines the returned snapshot with the real
+//! Inventory JSON when it builds a schemaVersion 2 ArcAtlas handoff.
 
 use std::sync::Mutex;
 
