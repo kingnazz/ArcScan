@@ -43,14 +43,21 @@
 //! stops it from producing change events.
 
 pub mod classify;
+pub mod deep;
 pub mod diagnostics;
 pub mod effective;
+/// Real-world regression fixtures. Test-only, and deliberately a module of its
+/// own: these are the devices v1.8 got wrong, written down so they stay right.
+#[cfg(test)]
+mod fixtures;
 pub mod http;
 pub mod mdns;
 pub mod model;
 pub mod names;
+pub mod reconcile;
 pub mod ssdp;
 pub mod urlguard;
+pub mod windows;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
