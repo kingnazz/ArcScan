@@ -17,6 +17,22 @@
 //! The generator lives here, away from the process launcher, so the shape of
 //! the command can be asserted on any platform: the tests below are what keep
 //! a future edit from moving the password onto the command line.
+//!
+//! # Why certificate validation is not disabled
+//!
+//! On the HTTPS transport the session is built with `-UseSsl` and *without*
+//! `-SkipCACheck` or `-SkipCNCheck`. Most WinRM HTTPS listeners carry a
+//! self-signed certificate, so this means some of them will fail — and the
+//! failure is reported as a certificate problem the operator can act on.
+//!
+//! The alternative is to turn validation off, which on this particular channel
+//! means handing a domain credential to whoever answers the connection. A
+//! scanner that silently accepts any certificate in order to look like it
+//! works is a credential-harvesting opportunity wearing an inventory tool's
+//! name. The 5985 transport, which is preferred whenever it exists, is already
+//! message-encrypted by Negotiate and does not have this problem at all.
+
+use super::transport::Transport;
 
 /// Build the collection script for one target and account.
 ///
@@ -24,13 +40,21 @@
 /// holds it only as a `SecureString`. Every value interpolated into the script
 /// is validated by [`super::validate_target`] and
 /// [`crate::discovery::windows::creds::WindowsCredential`] before it gets here.
-pub fn collection_script(target: &str, account: &str) -> String {
+pub fn collection_script(target: &str, account: &str, transport: Transport) -> String {
     // Single-quoted PowerShell strings interpret nothing but a doubled quote,
     // so escaping that one character is the whole escaping rule. The inputs are
     // already restricted to characters that cannot include it; this is the
     // second of the two checks.
     let target = ps_single_quote(target);
     let account = ps_single_quote(account);
+    // Built from the selected transport rather than hardcoded. `-UseSsl`
+    // carries full certificate validation; see the module note on why.
+    let session_option = if transport.uses_ssl() {
+        "New-CimSessionOption -Protocol Wsman -UseSsl"
+    } else {
+        "New-CimSessionOption -Protocol Wsman"
+    };
+    let port = transport.port();
     format!(
         r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -44,8 +68,8 @@ try {{
     [System.GC]::Collect()
     $cred = New-Object System.Management.Automation.PSCredential($account, $secure)
 
-    $opt = New-CimSessionOption -Protocol Wsman
-    $session = New-CimSession -ComputerName $target -Credential $cred -SessionOption $opt -OperationTimeoutSec 20
+    $opt = {session_option}
+    $session = New-CimSession -ComputerName $target -Credential $cred -SessionOption $opt -Port {port} -OperationTimeoutSec 20
     try {{
         $os   = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem
         $cs   = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem
@@ -147,7 +171,7 @@ mod tests {
 
     #[test]
     fn the_script_reads_the_password_from_stdin() {
-        let script = collection_script("10.0.0.5", "CORP\\admin");
+        let script = collection_script("10.0.0.5", "CORP\\admin", Transport::Http);
         assert!(script.contains("[Console]::In.ReadLine()"));
     }
 
@@ -156,7 +180,7 @@ mod tests {
         // The generator is not given one, and this is the test that says so:
         // the signature takes a target and an account, and there is no third
         // parameter for a future edit to reach for.
-        let script = collection_script("10.0.0.5", "CORP\\admin");
+        let script = collection_script("10.0.0.5", "CORP\\admin", Transport::Http);
         assert!(!script.to_lowercase().contains("hunter2"));
         assert!(script.contains("10.0.0.5"));
         assert!(script.contains("CORP\\admin"));
@@ -164,14 +188,14 @@ mod tests {
 
     #[test]
     fn the_password_is_converted_to_a_secure_string_and_the_plain_copy_dropped() {
-        let script = collection_script("10.0.0.5", "admin");
+        let script = collection_script("10.0.0.5", "admin", Transport::Http);
         assert!(script.contains("ConvertTo-SecureString"));
         assert!(script.contains("$plain = $null"));
     }
 
     #[test]
     fn the_error_path_reports_the_message_without_the_invocation() {
-        let script = collection_script("10.0.0.5", "admin");
+        let script = collection_script("10.0.0.5", "admin", Transport::Http);
         assert!(script.contains("$_.Exception.Message"));
         // A full error record would carry the command line that produced it.
         assert!(!script.contains("$_ | ConvertTo-Json"));
@@ -180,7 +204,7 @@ mod tests {
 
     #[test]
     fn the_script_collects_the_product_type() {
-        let script = collection_script("10.0.0.5", "admin");
+        let script = collection_script("10.0.0.5", "admin", Transport::Http);
         assert!(script.contains("ProductType"));
         assert!(script.contains("Win32_OperatingSystem"));
         assert!(script.contains("Win32_ComputerSystemProduct"));
@@ -189,9 +213,67 @@ mod tests {
     }
 
     #[test]
+    fn a_upn_reaches_the_script_as_a_upn() {
+        // The end-to-end half of the v1.9.0 account-form regression: what the
+        // operator typed is what New-Object PSCredential is handed. A rewrite
+        // anywhere between the dialog and here is an authentication failure on
+        // the remote machine, and it would be invisible from this side.
+        let credential =
+            crate::discovery::windows::WindowsCredential::new("admin@corp.example", None, "pw")
+                .unwrap();
+        let script = collection_script("10.0.0.5", &credential.account(), Transport::Http);
+        assert!(script.contains("$account = 'admin@corp.example'"));
+        assert!(!script.contains("corp.example\\admin"));
+    }
+
+    #[test]
+    fn a_down_level_account_reaches_the_script_unchanged_too() {
+        let credential =
+            crate::discovery::windows::WindowsCredential::new("CORP\\admin", None, "pw").unwrap();
+        let script = collection_script("10.0.0.5", &credential.account(), Transport::Http);
+        assert!(script.contains("$account = 'CORP\\admin'"));
+    }
+
+    #[test]
     fn single_quotes_in_an_account_name_cannot_break_out_of_the_string() {
-        let script = collection_script("10.0.0.5", "o'brien");
+        let script = collection_script("10.0.0.5", "o'brien", Transport::Http);
         assert!(script.contains("$account = 'o''brien'"));
+    }
+
+    #[test]
+    fn the_http_transport_targets_5985_without_ssl() {
+        let script = collection_script("10.0.0.5", "admin", Transport::Http);
+        assert!(script.contains("New-CimSessionOption -Protocol Wsman\n"));
+        assert!(!script.contains("-UseSsl"));
+        assert!(script.contains("-Port 5985"));
+    }
+
+    #[test]
+    fn the_https_transport_targets_5986_with_ssl() {
+        let script = collection_script("10.0.0.5", "admin", Transport::Https);
+        assert!(script.contains("New-CimSessionOption -Protocol Wsman -UseSsl"));
+        assert!(script.contains("-Port 5986"));
+    }
+
+    #[test]
+    fn certificate_validation_is_never_switched_off() {
+        // Turning these on would mean handing a domain credential to whoever
+        // answers the connection. A scanner that does that quietly in order to
+        // look like it works is a credential-harvesting opportunity.
+        for transport in [Transport::Http, Transport::Https] {
+            let script = collection_script("10.0.0.5", "admin", transport);
+            assert!(!script.contains("SkipCACheck"));
+            assert!(!script.contains("SkipCNCheck"));
+            assert!(!script.contains("SkipRevocationCheck"));
+        }
+    }
+
+    #[test]
+    fn a_hostname_target_reaches_the_script_for_kerberos() {
+        // Connecting by name lets Kerberos find an SPN; by address it cannot,
+        // and the attempt falls back to NTLM or is refused outright.
+        let script = collection_script("APP-01.corp.example", "admin", Transport::Http);
+        assert!(script.contains("$target = 'APP-01.corp.example'"));
     }
 
     #[test]

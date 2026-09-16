@@ -428,6 +428,37 @@ describe("deep and credentialed reporting (v1.9)", () => {
     expect(line).toContain("Credentialed: 0 of 12");
   });
 
+  it("counts hosts without a WinRM listener apart from failures", () => {
+    // A workstation with remote management off was never asked. Counting it as
+    // a failure would dilute a genuinely wrong password from "0 of 12" to
+    // "0 of 60" and bury the signal under every desktop on the site.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 3,
+        credentialed_failed: 1,
+        credentialed_skipped: 48,
+      }),
+    });
+    expect(line).toContain("Credentialed: 3 of 4");
+    expect(line).toContain("48 without WinRM");
+  });
+
+  it("says nothing about skipped hosts when there were none", () => {
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 2,
+        credentialed_failed: 0,
+        credentialed_skipped: 0,
+      }),
+    });
+    expect(line).toContain("Credentialed: 2 of 2");
+    expect(line).not.toContain("without WinRM");
+  });
+
   it("reports the deep passes even when the multicast pass was skipped", () => {
     // They are independent: a routed scan sends no multicast and can still run
     // every deep probe.

@@ -19,6 +19,7 @@ import { Button, Field, FieldRow, IconButton } from "../ui/primitives";
 import { Popover } from "../ui/Popover";
 import { api } from "../lib/api";
 import { formatCount, parsePorts } from "../lib/format";
+import { windowsCredentials } from "../lib/windowsCredential";
 import {
   DEPTHS,
   DEPTH_ORDER,
@@ -114,23 +115,22 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
     ],
   );
 
-  // The credential status, for the depth picker. Asked for once: it changes
-  // only when the operator sets or clears a credential in Settings, and
-  // re-reading it on every render would be a round trip per keystroke.
-  const [credential, setCredential] = useState<WindowsCredentialStatus | null>(null);
+  // The credential status, for the depth picker.
+  //
+  // Subscribed rather than read once on mount: Settings sets and clears the
+  // credential while this component stays mounted, and v1.9.0 read it a single
+  // time — so the picker kept saying no credential was set after one was added,
+  // and kept showing one after Forget. The warning was wrong in both
+  // directions for the rest of the session.
+  const [credential, setCredential] = useState<WindowsCredentialStatus | null>(
+    windowsCredentials.current(),
+  );
   useEffect(() => {
-    let cancelled = false;
-    api
-      .windowsCredentialStatus()
-      .then((status) => {
-        if (!cancelled) setCredential(status);
-      })
-      // A build with no credential support is not an error worth reporting
-      // here; the depth picker says so in words instead.
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    const unsubscribe = windowsCredentials.subscribe(setCredential);
+    // One read on mount to populate the very first time; every later change
+    // arrives through the subscription.
+    void windowsCredentials.refresh();
+    return unsubscribe;
   }, []);
 
   // Ask the backend what this scan would do, so the workload is visible before
@@ -413,6 +413,13 @@ function DepthPicker({
   // Only a warning, never a block: the level is still selectable, and the
   // scan reports per host that it was skipped.
   const needsCredential = depth.needsCredential === true && credential?.configured !== true;
+
+  // Re-read on open as well as on change. Opening the picker is the moment the
+  // answer matters, and this is the backstop for any future path that changes
+  // the credential without going through the store.
+  useEffect(() => {
+    if (open) void windowsCredentials.refresh();
+  }, [open]);
 
   return (
     <div className="relative shrink-0">
