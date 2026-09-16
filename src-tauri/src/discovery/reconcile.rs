@@ -93,11 +93,31 @@ pub struct IdentityClaim {
     pub display: String,
 }
 
+impl IdentityStrength {
+    /// Whether this kind of identifier needs a manufacturer to stay unique.
+    ///
+    /// A system UUID, a MAC and a vendor-guaranteed GUID are unique on their
+    /// own. A serial is unique only within its manufacturer: `7SZ1B43` from
+    /// Dell and `7SZ1B43` from a label printer are not the same machine.
+    ///
+    /// This lives on the strength rather than at the call site so that two
+    /// callers passing different namespaces for the same globally-unique
+    /// identifier cannot produce two keys for one device — which would mean a
+    /// merge silently not happening, with nothing on screen to say why.
+    fn is_namespaced(self) -> bool {
+        matches!(
+            self,
+            IdentityStrength::HardwareSerial | IdentityStrength::StableDeviceId
+        )
+    }
+}
+
 impl IdentityClaim {
     /// Build a claim, refusing anything that is not usable as an identity.
     ///
-    /// `namespace` keeps a serial unique to its manufacturer: `7SZ1B43` from
-    /// Dell and `7SZ1B43` from a label printer are not the same machine.
+    /// `namespace` is the manufacturer. It is used only for the strengths that
+    /// need one — see [`IdentityStrength::is_namespaced`] — and ignored for the
+    /// rest, so passing it is always safe.
     pub fn new(
         strength: IdentityStrength,
         namespace: Option<&str>,
@@ -122,6 +142,7 @@ impl IdentityClaim {
             return None;
         }
         let namespace = namespace
+            .filter(|_| strength.is_namespaced())
             .map(str::trim)
             .filter(|n| !n.is_empty())
             .map(|n| {
@@ -137,6 +158,32 @@ impl IdentityClaim {
             display: display.to_string(),
         })
     }
+}
+
+/// Parse a stored evidence line back into a claim.
+///
+/// The inventory stores what reconciliation found as `"<kind>: <value>"`, which
+/// is what a technician reads in the drawer. Reading it back means one closed
+/// set of labels has to round-trip, which [`IdentityStrength::label`] writes
+/// and this parses — and which the tests below pin down in both directions.
+///
+/// `namespace` is the manufacturer, needed because a hardware serial is unique
+/// to its vendor and not across vendors.
+pub fn claim_from_line(line: &str, namespace: Option<&str>) -> Option<IdentityClaim> {
+    let (label, value) = line.split_once(':')?;
+    let label = label.trim();
+    let strength = [
+        IdentityStrength::SystemUuid,
+        IdentityStrength::HardwareSerial,
+        IdentityStrength::VendorUnique,
+        IdentityStrength::StableDeviceId,
+        IdentityStrength::Mac,
+    ]
+    .into_iter()
+    .find(|candidate| candidate.label() == label)?;
+    // `IdentityClaim::new` ignores the namespace for the strengths that do not
+    // need one, so it is passed unconditionally here.
+    IdentityClaim::new(strength, namespace, value.trim())
 }
 
 /// One observation offered for reconciliation.
@@ -538,6 +585,68 @@ mod tests {
         assert_eq!(groups[0].members, vec![1, 2, 3]);
         assert_eq!(groups[0].addresses.len(), 3);
         assert_eq!(groups[0].macs.len(), 3);
+    }
+
+    #[test]
+    fn every_identity_label_round_trips_through_a_stored_line() {
+        // The property the inventory depends on: what the drawer shows is what
+        // reconciliation can read back.
+        for strength in [
+            IdentityStrength::SystemUuid,
+            IdentityStrength::HardwareSerial,
+            IdentityStrength::VendorUnique,
+            IdentityStrength::StableDeviceId,
+            IdentityStrength::Mac,
+        ] {
+            let original = IdentityClaim::new(strength, Some("Dell"), "7SZ1B43").unwrap();
+            let line = format!("{}: {}", strength.label(), original.display);
+            let parsed = claim_from_line(&line, Some("Dell")).expect("the line parses back");
+            assert_eq!(parsed, original, "{strength:?} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn a_namespace_cannot_split_a_globally_unique_identifier_in_two() {
+        // Two callers passing different namespaces for one system UUID must
+        // still produce one key, or the merge silently would not happen.
+        let uuid = "4C4C4544-0037-5A10-8051-B4C04F435331";
+        let with = IdentityClaim::new(IdentityStrength::SystemUuid, Some("Dell"), uuid).unwrap();
+        let without = IdentityClaim::new(IdentityStrength::SystemUuid, None, uuid).unwrap();
+        assert_eq!(with.key, without.key);
+
+        let mac = "aa:bb:cc:00:00:01";
+        assert_eq!(
+            IdentityClaim::new(IdentityStrength::Mac, Some("Dell"), mac).unwrap().key,
+            IdentityClaim::new(IdentityStrength::Mac, None, mac).unwrap().key
+        );
+    }
+
+    #[test]
+    fn a_serial_still_needs_its_manufacturer() {
+        let dell =
+            IdentityClaim::new(IdentityStrength::HardwareSerial, Some("Dell"), "7SZ1B43").unwrap();
+        let zebra =
+            IdentityClaim::new(IdentityStrength::HardwareSerial, Some("Zebra"), "7SZ1B43").unwrap();
+        assert_ne!(dell.key, zebra.key);
+    }
+
+    #[test]
+    fn a_line_that_is_not_an_identity_parses_to_nothing() {
+        assert!(claim_from_line("", None).is_none());
+        assert!(claim_from_line("no colon here", None).is_none());
+        assert!(claim_from_line("hostname: NAS", None).is_none());
+        assert!(claim_from_line("system UUID: ", None).is_none());
+        // A placeholder is still refused on the way back in.
+        assert!(claim_from_line("system UUID: 00000000-0000-0000-0000-000000000000", None).is_none());
+    }
+
+    #[test]
+    fn a_value_containing_a_colon_survives_the_round_trip() {
+        // A MAC is the obvious case, and the one most likely to be stored.
+        let original =
+            IdentityClaim::new(IdentityStrength::Mac, None, "aa:bb:cc:00:00:01").unwrap();
+        let line = format!("{}: {}", IdentityStrength::Mac.label(), original.display);
+        assert_eq!(claim_from_line(&line, None).unwrap(), original);
     }
 
     #[test]

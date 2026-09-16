@@ -41,6 +41,7 @@ import type {
   ScanResult,
   ScanSummary,
   ServiceInfo,
+  WindowsCredentialStatus,
 } from "../types";
 import type { ScanListeners } from "./api";
 import { DEFAULT_PORTS } from "./profiles";
@@ -1883,6 +1884,25 @@ export const mock = {
   serviceCatalog(): ServiceInfo[] {
     // Empty leaves the built-in fallback table in place.
     return [];
+  },
+
+  /**
+   * The browser has no credential store and no Windows to query, so the mock
+   * reports the feature as unsupported rather than pretending to hold a
+   * credential it could not use.
+   */
+  windowsCredentialStatus(): WindowsCredentialStatus {
+    return {
+      configured: false,
+      account: null,
+      supported: false,
+      unsupported_reason:
+        "Credentialed Windows discovery needs the desktop app. The browser preview has no way to reach a Windows management stack.",
+    };
+  },
+
+  setWindowsCredential(): WindowsCredentialStatus {
+    return this.windowsCredentialStatus();
   },
 
   save(result: ScanResult): SavedScan {

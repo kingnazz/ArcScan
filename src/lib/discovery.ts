@@ -36,7 +36,42 @@ export const DEVICE_TYPE_LABEL: Record<string, string> = {
   smart_home: "Smart-home device",
   network_equipment: "Network equipment",
   speaker: "Speaker",
+  // v1.9. Appended, never replacing: a database written by an earlier build
+  // still holds `computer` and `network_equipment`, and both keep their
+  // labels and their meanings.
+  workstation: "Workstation",
+  server: "Server",
+  domain_controller: "Domain controller",
+  switch: "Switch",
+  access_point: "Access point",
+  firewall: "Firewall",
+  management_controller: "Management controller",
   unknown: "Unknown",
+};
+
+/**
+ * What each type means, where the word alone is not enough.
+ *
+ * Only the types a technician might reasonably read two ways are here: the
+ * difference between a server and a workstation is the whole point of v1.9,
+ * and a management controller is the thing most often mistaken for the server
+ * it is bolted into.
+ */
+export const DEVICE_TYPE_HINT: Record<string, string> = {
+  workstation:
+    "A machine running a client edition of Windows. Established from the operating system's own ProductType, not from the services it exposes.",
+  server:
+    "A machine running a server edition, or server hardware. File sharing and Remote Desktop alone never reach this.",
+  domain_controller: "A server holding a domain directory role.",
+  switch: "An ethernet switch.",
+  access_point: "A wireless access point.",
+  firewall: "A dedicated firewall or security appliance.",
+  management_controller:
+    "A baseboard management controller such as an iDRAC or iLO. A separate device from the server it manages, with its own address and credentials.",
+  network_equipment:
+    "Network equipment ArcScan could not narrow to a switch, access point or firewall.",
+  computer:
+    "A general-purpose computer. Shown where nothing established whether it is a workstation or a server.",
 };
 
 /** A type ArcScan does not recognise reads as its raw value, never as blank. */
@@ -73,8 +108,15 @@ export function confidenceLabel(value: string | null | undefined): string {
 /** Where a fact came from, in words a person recognises. */
 export const SOURCE_LABEL: Record<string, string> = {
   user: "You named it",
+  // v1.9. The one authenticated source, and the only one allowed to settle an
+  // exact Windows edition or a workstation-versus-server question.
+  windows_credentialed: "Windows (signed in)",
   mdns: "mDNS",
   ssdp: "SSDP",
+  tls: "TLS certificate",
+  smb: "SMB",
+  http: "Web interface",
+  banner: "Service banner",
   reverse_dns: "Reverse DNS",
   arp_vendor: "MAC manufacturer",
   tcp_service: "Open port",
@@ -106,6 +148,18 @@ export const EVIDENCE_KIND_LABEL: Record<string, string> = {
   url: "Address",
   ipv4_address: "IPv4 address",
   ipv6_address: "IPv6 address",
+  os_family: "Operating system",
+  os_product: "OS product",
+  os_edition: "OS edition",
+  os_version: "OS version",
+  os_build: "OS build",
+  os_architecture: "Architecture",
+  windows_product_type: "Windows product type",
+  system_uuid: "System UUID",
+  domain_membership: "Domain",
+  banner: "Service banner",
+  certificate_subject: "Certificate subject",
+  page_title: "Page title",
   protocol_identifier: "Protocol identifier",
 };
 

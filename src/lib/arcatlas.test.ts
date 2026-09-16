@@ -435,3 +435,102 @@ describe("errors and copy", () => {
     expect(destinationLabel({ clientName: "Cedar Ridge", siteName: "Seattle HQ" })).toBe("Cedar Ridge / Seattle HQ");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The v1.9 handoff contract
+//
+// ArcScan v1.9 adds identity and OS facts to the inventory. It does *not*
+// change the envelope: that is the topology work's to change, under issue #42,
+// and a deep-discovery branch quietly bumping schemaVersion would break the
+// coordination the three branches depend on. These tests are what says so.
+// ---------------------------------------------------------------------------
+
+describe("v1.9 handoff compatibility", () => {
+  const deepRow = (patch: Partial<InventoryRow> = {}): InventoryRow => ({
+    ...inventoryRow({ device_id: 21, presence: "present", network_scope_id: 1 }),
+    physical_device_key: "SystemUuid||4c4c454400375a108051b4c04f435331",
+    physical_interface_count: 2,
+    discovery: {
+      detected_name: "APP-01",
+      device_type: "server",
+      type_confidence: "high",
+      manufacturer: "Dell Inc.",
+      model_name: "PowerEdge R750",
+      services: [],
+      sources: ["windows_credentialed"],
+      last_discovered_at: "2026-09-15T09:00:00.000Z",
+      evidence_freshness: "current",
+      os_product: "Windows Server 2022",
+      os_edition: "Standard",
+      os_version: "2022",
+      os_build: "20348",
+      os_architecture: "x64",
+      windows_product_type: "3",
+      hardware_manufacturer: "Dell Inc.",
+      hardware_model: "PowerEdge R750",
+      hardware_serial: "J7K2M13",
+      system_uuid: "4C4C4544-004A-3710-8054-B7C04F324D13",
+      domain: "corp.example",
+      identity_evidence: ["system UUID: 4C4C4544-004A-3710-8054-B7C04F324D13"],
+      identity_sources: ["windows_credentialed"],
+      type_evidence: ["Windows ProductType 3 (server)"],
+    },
+    ...patch,
+  });
+
+  const envelopeFor = (rows: InventoryRow[]) =>
+    buildHandoffEnvelope({
+      rows,
+      notes: new Map(),
+      networkName: "10.0.0.0/24",
+      handoffId: "fixed-id",
+      generatedAt: "2026-09-15T09:00:00.000Z",
+      sourceVersion: "1.9.0",
+    });
+
+  it("stays at schemaVersion 1 even with every new field populated", () => {
+    // The shared contract in issue #42 puts schemaVersion 2 in the topology
+    // work's hands. Deep discovery is additive inside the existing inventory
+    // array and changes nothing about the envelope.
+    const envelope = envelopeFor([deepRow()]);
+    expect(envelope.schemaVersion).toBe(1);
+    expect(Object.keys(envelope).sort()).toEqual([
+      "generatedAt",
+      "handoffId",
+      "inventory",
+      "networkName",
+      "schemaVersion",
+      "sourceVersion",
+    ]);
+  });
+
+  it("carries the new identity and OS facts inside the unchanged inventory array", () => {
+    const envelope = envelopeFor([deepRow()]);
+    const [device] = envelope.inventory as Array<Record<string, unknown>>;
+    expect(device.os_product).toBe("Windows Server 2022");
+    expect(device.windows_product_type).toBe("3 (server)");
+    expect(device.system_uuid).toBe("4C4C4544-004A-3710-8054-B7C04F324D13");
+    expect(device.hardware_serial).toBe("J7K2M13");
+    expect(device.device_type).toBe("Server");
+    // And the key that lets ArcAtlas count a multi-homed machine once.
+    expect(device.physical_device).toBe("SystemUuid||4c4c454400375a108051b4c04f435331");
+  });
+
+  it("never puts a credential in the envelope", () => {
+    // Credentials stay inside ArcScan. There is no field for one, and this is
+    // the test that keeps it that way.
+    const envelope = envelopeFor([deepRow()]);
+    const serialized = JSON.stringify(envelope).toLowerCase();
+    for (const forbidden of ["password", "credential", "secret", "passwd"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("still maps devices through the Inventory JSON exporter and nothing else", () => {
+    const rows = [deepRow()];
+    const envelope = envelopeFor(rows);
+    expect(envelope.inventory).toEqual(
+      JSON.parse(buildInventoryExport(rows, "json", new Map())),
+    );
+  });
+});
