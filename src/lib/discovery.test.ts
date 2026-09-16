@@ -10,6 +10,7 @@ import {
   discoveryModeLabel,
   hasNameConflict,
   resolveDisplayName,
+  deepSummaryParts,
   osSummary,
   serviceName,
   servicesLabel,
@@ -382,5 +383,71 @@ describe("v1.9 device types and sources", () => {
 
   it("shows an unrecognised type as its own value rather than as blank", () => {
     expect(deviceTypeLabel("something_from_a_newer_build")).toBe("something_from_a_newer_build");
+  });
+});
+
+describe("deep and credentialed reporting (v1.9)", () => {
+  const report = (patch: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      mdns_attempted: true,
+      ssdp_attempted: true,
+      mdns_responses: 4,
+      ssdp_responses: 2,
+      ...patch,
+    });
+
+  it("says nothing extra for a Quick scan", () => {
+    // A Quick Scan's summary must read exactly as it did before v1.9.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report(),
+    });
+    expect(line).toBe("Complete · 4 mDNS · 2 SSDP");
+  });
+
+  it("reports what the deep pass identified", () => {
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({ deep_attempted: true, deep_devices_enriched: 7 }),
+    });
+    expect(line).toContain("Deep: 7 identified");
+  });
+
+  it("reports a credentialed pass that answered nothing rather than staying silent", () => {
+    // The line a technician needs when they expected twelve machines and got
+    // none. Silence would let a wrong password look like a network with no
+    // Windows on it.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 0,
+        credentialed_failed: 12,
+      }),
+    });
+    expect(line).toContain("Credentialed: 0 of 12");
+  });
+
+  it("reports the deep passes even when the multicast pass was skipped", () => {
+    // They are independent: a routed scan sends no multicast and can still run
+    // every deep probe.
+    const line = discoverySummaryLine({
+      discovery_quality: "skipped",
+      discovery_quality_reason: "Not run",
+      discovery_summary: report({ deep_attempted: true, deep_devices_enriched: 3 }),
+    });
+    expect(line).toContain("Deep: 3 identified");
+  });
+
+  it("reads a report written before v1.9 as having attempted neither", () => {
+    const parsed = parseDiscoveryReport(report());
+    expect(parsed?.deep_attempted).toBe(false);
+    expect(parsed?.credentialed_attempted).toBe(false);
+    expect(deepSummaryParts(parsed)).toEqual([]);
+  });
+
+  it("survives a corrupted summary rather than throwing in a list render", () => {
+    expect(parseDiscoveryReport("not json")).toBeNull();
+    expect(deepSummaryParts(null)).toEqual([]);
   });
 });

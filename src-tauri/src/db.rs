@@ -7909,6 +7909,55 @@ mod tests {
         assert_eq!(row.discovery.as_ref().unwrap().device_type, "speaker");
     }
 
+    #[test]
+    fn an_override_survives_even_a_credentialed_scan_that_disagrees() {
+        // The strongest automatic evidence ArcScan can collect is an
+        // authenticated answer from the machine itself. It still does not
+        // overrule a technician: a person who corrected a device knows
+        // something ArcScan does not, and only that person clears it.
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "computer", "medium");
+        db.set_device_type_override(id, Some("nas".into())).unwrap();
+
+        let mut host = host("10.0.0.5", Some("aa:bb:cc:00:00:05"), Some("thing"), &[445]);
+        host.discovery = Some(credentialed_discovery());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            None,
+            vec![host],
+        )))
+        .unwrap();
+
+        let row = &db.inventory().unwrap().rows[0];
+        assert_eq!(row.user_device_type.as_deref(), Some("nas"));
+        // And ArcScan's own answer moved on underneath, so clearing the
+        // correction reveals what the credentialed scan established rather
+        // than what was there before it.
+        assert_eq!(row.discovery.as_ref().unwrap().device_type, "workstation");
+    }
+
+    #[test]
+    fn a_technician_can_correct_a_device_to_any_of_the_new_types() {
+        // The v1.9 types are real answers a person can choose, not just
+        // answers ArcScan can reach on its own.
+        let db = Db::open_in_memory().unwrap();
+        let id = device_with_detected_type(&db, "computer", "medium");
+        for chosen in [
+            "workstation",
+            "server",
+            "domain_controller",
+            "switch",
+            "access_point",
+            "firewall",
+            "management_controller",
+        ] {
+            db.set_device_type_override(id, Some(chosen.into()))
+                .unwrap_or_else(|e| panic!("{chosen} should be choosable: {e}"));
+            let row = &db.inventory().unwrap().rows[0];
+            assert_eq!(row.user_device_type.as_deref(), Some(chosen));
+        }
+    }
+
     // --- v1.8.3: evidence aging -------------------------------------------
 
     /// The miss count on one device's service claims, lowest first.

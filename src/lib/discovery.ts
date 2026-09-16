@@ -298,8 +298,8 @@ export function discoverySummaryLine(scan: {
 }): string {
   const quality = scan.discovery_quality ?? "skipped";
   const parts: string[] = [discoveryQualityLabel(quality)];
+  const report = parseDiscoveryReport(scan.discovery_summary);
   if (quality === "complete") {
-    const report = parseDiscoveryReport(scan.discovery_summary);
     if (report) {
       parts.push(`${report.mdns_responses} mDNS`);
       parts.push(`${report.ssdp_responses} SSDP`);
@@ -307,7 +307,36 @@ export function discoverySummaryLine(scan: {
   } else if (scan.discovery_quality_reason) {
     parts.push(scan.discovery_quality_reason);
   }
+  // The deep and credentialed passes are reported whatever the multicast pass
+  // did, because they are independent of it: a scan whose multicast pass was
+  // skipped for a routed target can still have run every deep probe.
+  parts.push(...deepSummaryParts(report));
   return parts.join(" · ");
+}
+
+/**
+ * What the deep and credentialed passes did, as phrases for the summary line.
+ *
+ * Empty for a Quick Scan, which is the common case and should read exactly as
+ * it did before v1.9.
+ *
+ * A credentialed pass that answered nothing is reported as a failure count
+ * rather than omitted. "Credentialed: 0 of 12" is the line a technician needs
+ * when they expected twelve machines and got none, and silence is what would
+ * have let a wrong credential look like a network with no Windows on it.
+ */
+export function deepSummaryParts(report: DiscoveryReport | null): string[] {
+  if (!report) return [];
+  const parts: string[] = [];
+  if (report.deep_attempted) {
+    parts.push(`Deep: ${report.deep_devices_enriched ?? 0} identified`);
+  }
+  if (report.credentialed_attempted) {
+    const answered = report.credentialed_answered ?? 0;
+    const failed = report.credentialed_failed ?? 0;
+    parts.push(`Credentialed: ${answered} of ${answered + failed}`);
+  }
+  return parts;
 }
 
 /**
@@ -339,6 +368,14 @@ export function parseDiscoveryReport(raw: string | null | undefined): DiscoveryR
       mdns_capped: Boolean(parsed.mdns_capped),
       ssdp_capped: Boolean(parsed.ssdp_capped),
       descriptions_capped: Boolean(parsed.descriptions_capped),
+      deep_attempted: Boolean(parsed.deep_attempted),
+      deep_devices_enriched: Number(parsed.deep_devices_enriched ?? 0),
+      credentialed_attempted: Boolean(parsed.credentialed_attempted),
+      credentialed_answered: Number(parsed.credentialed_answered ?? 0),
+      credentialed_failed: Number(parsed.credentialed_failed ?? 0),
+      credentialed_notes: Array.isArray(parsed.credentialed_notes)
+        ? parsed.credentialed_notes
+        : [],
     };
   } catch {
     return null;

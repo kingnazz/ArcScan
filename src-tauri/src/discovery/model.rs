@@ -756,6 +756,34 @@ pub struct DiscoveryReport {
     /// True when Stop landed during discovery.
     #[serde(default)]
     pub interrupted: bool,
+
+    // ---- v1.9 ---------------------------------------------------------
+    //
+    // All defaulted, so a report written by an earlier build deserializes with
+    // the deep and credentialed passes reading as "not attempted" — which is
+    // exactly what those scans did.
+    /// True when the operator asked for deep probes.
+    #[serde(default)]
+    pub deep_attempted: bool,
+    /// Addresses a deep probe established something about.
+    #[serde(default)]
+    pub deep_devices_enriched: usize,
+    /// True when the operator asked for credentialed Windows discovery.
+    #[serde(default)]
+    pub credentialed_attempted: bool,
+    /// Machines that answered the credentialed query.
+    #[serde(default)]
+    pub credentialed_answered: usize,
+    /// Machines that were asked and did not answer usefully.
+    #[serde(default)]
+    pub credentialed_failed: usize,
+    /// Why credentialed probes did not succeed, de-duplicated and capped.
+    ///
+    /// Reasons only. The account name is not a secret but is not diagnostic
+    /// either, and the password cannot reach here: [`super::windows::probe`]
+    /// returns an error type that has no field for one.
+    #[serde(default)]
+    pub credentialed_notes: Vec<String>,
 }
 
 impl DiscoveryReport {
