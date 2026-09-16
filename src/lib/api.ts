@@ -27,6 +27,7 @@ import type {
   ScanStarted,
   ScanSummary,
   ServiceInfo,
+  WindowsCredentialStatus,
 } from "../types";
 import type { ChangeEvent, InventoryRow } from "../types";
 import type { DeviceRow } from "./live";
@@ -113,6 +114,40 @@ export const api = {
   async serviceCatalog(): Promise<ServiceInfo[]> {
     if (isTauri()) return invoke<ServiceInfo[]>("service_catalog");
     return mock.serviceCatalog();
+  },
+
+  // ---- Credentialed Windows discovery (v1.9) --------------------------
+  //
+  // The password crosses this boundary exactly once, in `setWindowsCredential`,
+  // and is never returned by anything. `windowsCredentialStatus` carries the
+  // account name and nothing else, because there is no legitimate caller for a
+  // password read-back. Outside Tauri there is no credential store and no
+  // Windows to query, so the mock reports the feature as unsupported rather
+  // than pretending to hold one.
+
+  async setWindowsCredential(
+    username: string,
+    domain: string | null,
+    password: string,
+  ): Promise<WindowsCredentialStatus> {
+    if (isTauri()) {
+      return invoke<WindowsCredentialStatus>("set_windows_credential", {
+        username,
+        domain,
+        password,
+      });
+    }
+    return mock.setWindowsCredential();
+  },
+
+  async clearWindowsCredential(): Promise<WindowsCredentialStatus> {
+    if (isTauri()) return invoke<WindowsCredentialStatus>("clear_windows_credential");
+    return mock.windowsCredentialStatus();
+  },
+
+  async windowsCredentialStatus(): Promise<WindowsCredentialStatus> {
+    if (isTauri()) return invoke<WindowsCredentialStatus>("windows_credential_status");
+    return mock.windowsCredentialStatus();
   },
 
   async save(result: ScanResult): Promise<SavedScan> {

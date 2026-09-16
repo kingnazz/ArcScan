@@ -8,7 +8,7 @@
 // Profile ids are persisted with every scan and are what decides whether two
 // scans may be compared, so they are stable strings and must not be renamed.
 
-import type { ScanOptions } from "../types";
+import type { DeepOptions, ScanDepth, ScanOptions } from "../types";
 
 export type ProfileId = "quick-lan" | "reliable-lan" | "full-tcp" | "remote-subnet" | "custom";
 
@@ -126,6 +126,72 @@ export function profileName(id: string | null | undefined): string {
   return isProfileId(id) ? PROFILES[id].name : id;
 }
 
+// ---------------------------------------------------------------------------
+// Discovery depth (v1.9)
+//
+// Depth is a separate axis from the profile, and deliberately so. A profile
+// decides how hard ArcScan sweeps for *hosts* — which ports, how long to wait,
+// how many at once. Depth decides how hard it works to identify the hosts it
+// found. They compose: Quick LAN at credentialed depth is a fast sweep that
+// then asks every Windows machine about itself, and that is a sensible thing to
+// want.
+//
+// Folding depth into the profile list would have made nine profiles out of
+// three, and would have made "Quick" mean two different things.
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryDepth {
+  id: ScanDepth;
+  name: string;
+  summary: string;
+  detail: string;
+  /** True where the level cannot run without a Windows credential. */
+  needsCredential?: boolean;
+}
+
+export const DEPTHS: Record<ScanDepth, DiscoveryDepth> = {
+  quick: {
+    id: "quick",
+    name: "Quick",
+    summary: "Address, MAC, name, vendor, ports",
+    detail:
+      "What a fast sweep establishes, plus the names and services devices broadcast on the local link. The right choice for a routine look at what is connected, and the fastest.",
+  },
+  deep: {
+    id: "deep",
+    name: "Deep",
+    summary: "Also asks open services what they are",
+    detail:
+      "Adds a question to each service the sweep already found open: a web interface's front page, a TLS certificate's subject, an SMB negotiation, a service greeting. It opens no ports the sweep did not already find and sends no credentials. Slower than Quick, and identifies far more appliances by name and model.",
+  },
+  credentialed: {
+    id: "credentialed",
+    name: "Credentialed",
+    summary: "Also signs in to Windows machines",
+    detail:
+      "Everything Deep does, and then asks Windows machines about themselves using a credential you supply. This is the only level that can report an exact Windows edition, version and build, and the only one that can tell a workstation from a server with certainty. The credential is held in memory for this session only and is never written anywhere, never sent to ArcAtlas, and never included in an export.",
+    needsCredential: true,
+  },
+};
+
+export const DEPTH_ORDER: ScanDepth[] = ["quick", "deep", "credentialed"];
+
+export function isScanDepth(value: unknown): value is ScanDepth {
+  return typeof value === "string" && value in DEPTHS;
+}
+
+/**
+ * The deep-probe settings for a depth.
+ *
+ * Quick switches the whole level off rather than switching each probe off, so
+ * a Quick Scan opens no deep socket at all and its timing is exactly what it
+ * was before v1.9.
+ */
+export function deepOptionsFor(depth: ScanDepth): DeepOptions {
+  const enabled = depth !== "quick";
+  return { enabled, http: enabled, tls: enabled, smb: enabled, banners: enabled };
+}
+
 /** The settings a profile overrides, for building scan options. */
 /** Which parts of local discovery the operator has left switched on. */
 export interface DiscoveryPreference {
@@ -153,6 +219,7 @@ export function buildScanOptions(
   profileId: ProfileId,
   overrides: ProfileOverrides = {},
   discovery: DiscoveryPreference = { enabled: true, descriptions: true },
+  depth: ScanDepth = "quick",
 ): ScanOptions {
   const profile = PROFILES[profileId];
   const tunable = profileId === "custom" || profileId === "full-tcp";
@@ -182,6 +249,11 @@ export function buildScanOptions(
       ssdp: true,
       descriptions: discovery.descriptions,
     },
+    // Deep probes are unicast to addresses already known to be live, so unlike
+    // multicast discovery they are not switched off for a routed scan: reading
+    // a web banner across a router works perfectly well.
+    deep: deepOptionsFor(depth),
+    credentialed_windows: depth === "credentialed",
   };
 }
 

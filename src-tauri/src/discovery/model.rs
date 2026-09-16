@@ -21,10 +21,25 @@ pub enum DiscoverySource {
     /// A name the operator typed. Never produced by discovery, only compared
     /// against, and it outranks everything.
     User,
+    /// An authenticated Windows management query (WMI/CIM over WinRM or DCOM).
+    ///
+    /// Second only to the operator, and above every unauthenticated protocol:
+    /// the machine was asked directly, with credentials it accepted, and it
+    /// answered about itself. This is the only source allowed to settle what
+    /// edition of Windows something runs.
+    WindowsCredentialed,
     /// A UPnP device description document fetched from a validated local URL.
     Ssdp,
     /// A multicast DNS record.
     Mdns,
+    /// Metadata read from a TLS certificate the device presented.
+    Tls,
+    /// An SMB protocol negotiation response.
+    Smb,
+    /// An HTTP response header, status or document title.
+    Http,
+    /// A plain-text service banner offered on connect.
+    Banner,
     /// A PTR record from the system resolver.
     ReverseDns,
     /// The OUI table applied to an observed MAC address.
@@ -39,8 +54,13 @@ impl DiscoverySource {
     pub fn as_str(self) -> &'static str {
         match self {
             DiscoverySource::User => "user",
+            DiscoverySource::WindowsCredentialed => "windows_credentialed",
             DiscoverySource::Ssdp => "ssdp",
             DiscoverySource::Mdns => "mdns",
+            DiscoverySource::Tls => "tls",
+            DiscoverySource::Smb => "smb",
+            DiscoverySource::Http => "http",
+            DiscoverySource::Banner => "banner",
             DiscoverySource::ReverseDns => "reverse_dns",
             DiscoverySource::ArpVendor => "arp_vendor",
             DiscoverySource::TcpService => "tcp_service",
@@ -51,8 +71,13 @@ impl DiscoverySource {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "user" => DiscoverySource::User,
+            "windows_credentialed" => DiscoverySource::WindowsCredentialed,
             "ssdp" => DiscoverySource::Ssdp,
             "mdns" => DiscoverySource::Mdns,
+            "tls" => DiscoverySource::Tls,
+            "smb" => DiscoverySource::Smb,
+            "http" => DiscoverySource::Http,
+            "banner" => DiscoverySource::Banner,
             "reverse_dns" => DiscoverySource::ReverseDns,
             "arp_vendor" => DiscoverySource::ArpVendor,
             "tcp_service" => DiscoverySource::TcpService,
@@ -81,6 +106,40 @@ pub enum EvidenceKind {
     /// A protocol-level identifier such as a UPnP UDN or an mDNS instance name.
     /// Recorded for continuity checks, never used as a device identity key.
     ProtocolIdentifier,
+    // ---- v1.9 ----------------------------------------------------------
+    //
+    // Appended, for the same reason the new `DeviceType` variants are: the
+    // derived `Ord` decides the stored order of a device's evidence, and a
+    // variant inserted in the middle would rewrite every existing record's
+    // sort position for no gain.
+    /// `windows`, `linux`, `macos`, `bsd`, `ios`, `android`, `network_os`.
+    OsFamily,
+    /// The marketed product, e.g. `Windows 11` or `Windows Server 2022`.
+    OsProduct,
+    /// The edition within a product, e.g. `Pro`, `Enterprise`, `Datacenter`.
+    OsEdition,
+    /// The release or version string, e.g. `24H2` or `10.0.26100`.
+    OsVersion,
+    /// The exact build number, e.g. `26100`.
+    OsBuild,
+    /// `x64`, `arm64`, `x86`.
+    OsArchitecture,
+    /// Windows `Win32_OperatingSystem.ProductType`: `1`, `2` or `3`.
+    ///
+    /// Its own kind rather than a note on the OS, because it is the single
+    /// fact that separates a workstation from a server, and burying it in a
+    /// version string would make it unusable for classification.
+    WindowsProductType,
+    /// The SMBIOS system UUID. The strongest identity a machine can offer.
+    SystemUuid,
+    /// The AD domain or workgroup the machine belongs to.
+    DomainMembership,
+    /// A plain-text service banner, keyed by port.
+    Banner,
+    /// The subject or issuer of a presented TLS certificate.
+    CertificateSubject,
+    /// The `<title>` of a device's own web page.
+    PageTitle,
 }
 
 impl EvidenceKind {
@@ -99,6 +158,18 @@ impl EvidenceKind {
             EvidenceKind::Ipv4Address => "ipv4_address",
             EvidenceKind::Ipv6Address => "ipv6_address",
             EvidenceKind::ProtocolIdentifier => "protocol_identifier",
+            EvidenceKind::OsFamily => "os_family",
+            EvidenceKind::OsProduct => "os_product",
+            EvidenceKind::OsEdition => "os_edition",
+            EvidenceKind::OsVersion => "os_version",
+            EvidenceKind::OsBuild => "os_build",
+            EvidenceKind::OsArchitecture => "os_architecture",
+            EvidenceKind::WindowsProductType => "windows_product_type",
+            EvidenceKind::SystemUuid => "system_uuid",
+            EvidenceKind::DomainMembership => "domain_membership",
+            EvidenceKind::Banner => "banner",
+            EvidenceKind::CertificateSubject => "certificate_subject",
+            EvidenceKind::PageTitle => "page_title",
         }
     }
 
@@ -117,6 +188,18 @@ impl EvidenceKind {
             "ipv4_address" => EvidenceKind::Ipv4Address,
             "ipv6_address" => EvidenceKind::Ipv6Address,
             "protocol_identifier" => EvidenceKind::ProtocolIdentifier,
+            "os_family" => EvidenceKind::OsFamily,
+            "os_product" => EvidenceKind::OsProduct,
+            "os_edition" => EvidenceKind::OsEdition,
+            "os_version" => EvidenceKind::OsVersion,
+            "os_build" => EvidenceKind::OsBuild,
+            "os_architecture" => EvidenceKind::OsArchitecture,
+            "windows_product_type" => EvidenceKind::WindowsProductType,
+            "system_uuid" => EvidenceKind::SystemUuid,
+            "domain_membership" => EvidenceKind::DomainMembership,
+            "banner" => EvidenceKind::Banner,
+            "certificate_subject" => EvidenceKind::CertificateSubject,
+            "page_title" => EvidenceKind::PageTitle,
             _ => return None,
         })
     }
@@ -189,6 +272,34 @@ pub enum DeviceType {
     SmartHome,
     NetworkEquipment,
     Speaker,
+    // ---- v1.9 ----------------------------------------------------------
+    //
+    // Appended rather than slotted in beside their relatives on purpose. The
+    // derived `Ord` is a tie-break in `classify::finish`, and inserting a
+    // variant in the middle would silently re-order every existing claim that
+    // ties. Where a new type must beat its own generalisation the rule is
+    // written down in [`DeviceType::specificity`], which is read before the
+    // ordinal is.
+    /// A Windows or desktop machine a person sits at. Only ever reached from a
+    /// declaration of the kind (Windows `ProductType` 1), never from SMB or RDP.
+    Workstation,
+    /// A server operating system, declared as such. `ProductType` 3.
+    Server,
+    /// A server holding a domain directory role. `ProductType` 2.
+    DomainController,
+    /// An ethernet switch, as distinct from the general "network equipment"
+    /// bucket that could not tell one from an access point.
+    Switch,
+    /// A wireless access point.
+    AccessPoint,
+    /// A dedicated firewall or security appliance.
+    Firewall,
+    /// A baseboard management controller (iDRAC, iLO, IMM, CIMC, XClarity).
+    ///
+    /// Deliberately its own type rather than a server: a BMC has its own
+    /// address, its own MAC and its own credentials, and calling it the server
+    /// it is bolted into is exactly the confusion this type exists to prevent.
+    ManagementController,
     /// The default, and the answer preferred over an unsupported guess.
     #[default]
     Unknown,
@@ -210,6 +321,13 @@ impl DeviceType {
             DeviceType::SmartHome => "smart_home",
             DeviceType::NetworkEquipment => "network_equipment",
             DeviceType::Speaker => "speaker",
+            DeviceType::Workstation => "workstation",
+            DeviceType::Server => "server",
+            DeviceType::DomainController => "domain_controller",
+            DeviceType::Switch => "switch",
+            DeviceType::AccessPoint => "access_point",
+            DeviceType::Firewall => "firewall",
+            DeviceType::ManagementController => "management_controller",
             DeviceType::Unknown => "unknown",
         }
     }
@@ -229,6 +347,13 @@ impl DeviceType {
             "smart_home" => DeviceType::SmartHome,
             "network_equipment" => DeviceType::NetworkEquipment,
             "speaker" => DeviceType::Speaker,
+            "workstation" => DeviceType::Workstation,
+            "server" => DeviceType::Server,
+            "domain_controller" => DeviceType::DomainController,
+            "switch" => DeviceType::Switch,
+            "access_point" => DeviceType::AccessPoint,
+            "firewall" => DeviceType::Firewall,
+            "management_controller" => DeviceType::ManagementController,
             _ => DeviceType::Unknown,
         }
     }
@@ -250,6 +375,13 @@ impl DeviceType {
             DeviceType::SmartHome => "Smart-home device",
             DeviceType::NetworkEquipment => "Network equipment",
             DeviceType::Speaker => "Speaker",
+            DeviceType::Workstation => "Workstation",
+            DeviceType::Server => "Server",
+            DeviceType::DomainController => "Domain controller",
+            DeviceType::Switch => "Switch",
+            DeviceType::AccessPoint => "Access point",
+            DeviceType::Firewall => "Firewall",
+            DeviceType::ManagementController => "Management controller",
             DeviceType::Unknown => "Unknown",
         }
     }
@@ -267,7 +399,7 @@ impl DeviceType {
     }
 
     /// Every type, for exhaustive tests and for the interface's filter list.
-    pub const ALL: [DeviceType; 14] = [
+    pub const ALL: [DeviceType; 21] = [
         DeviceType::Router,
         DeviceType::Printer,
         DeviceType::Computer,
@@ -281,8 +413,73 @@ impl DeviceType {
         DeviceType::SmartHome,
         DeviceType::NetworkEquipment,
         DeviceType::Speaker,
+        DeviceType::Workstation,
+        DeviceType::Server,
+        DeviceType::DomainController,
+        DeviceType::Switch,
+        DeviceType::AccessPoint,
+        DeviceType::Firewall,
+        DeviceType::ManagementController,
         DeviceType::Unknown,
     ];
+
+    /// How precise a type is about the same underlying thing.
+    ///
+    /// Two claims at equal confidence are not equally useful when one is a
+    /// refinement of the other: "Domain controller" and "Computer" do not
+    /// disagree, and answering "Computer" because it sorts first would throw
+    /// away the only part worth knowing. Higher wins.
+    ///
+    /// This is *not* a confidence and never substitutes for one. A Low-
+    /// confidence Server claim still loses to a Medium-confidence Computer,
+    /// because being more specific about a guess does not make it truer.
+    pub fn specificity(self) -> u8 {
+        match self {
+            DeviceType::DomainController => 2,
+            DeviceType::Workstation
+            | DeviceType::Server
+            | DeviceType::Switch
+            | DeviceType::AccessPoint
+            | DeviceType::Firewall
+            | DeviceType::ManagementController => 1,
+            _ => 0,
+        }
+    }
+
+    /// The broader type this one refines, if any.
+    ///
+    /// Used to keep the drawer's conflict list honest: "Workstation, and it
+    /// might also be a Computer" is not a disagreement worth showing a
+    /// technician, so a generalisation of the winner is dropped rather than
+    /// listed beside genuinely competing claims.
+    pub fn generalization(self) -> Option<DeviceType> {
+        match self {
+            DeviceType::Workstation | DeviceType::Server => Some(DeviceType::Computer),
+            DeviceType::DomainController => Some(DeviceType::Server),
+            DeviceType::Switch | DeviceType::AccessPoint | DeviceType::Firewall => {
+                Some(DeviceType::NetworkEquipment)
+            }
+            _ => None,
+        }
+    }
+
+    /// True when `self` is `other`, or any number of refinement steps below it.
+    pub fn is_refinement_of(self, other: DeviceType) -> bool {
+        let mut current = self;
+        // Bounded by the depth of the chain above; the loop cannot cycle
+        // because every step moves strictly towards a type with no
+        // generalisation of its own.
+        for _ in 0..4 {
+            if current == other {
+                return true;
+            }
+            match current.generalization() {
+                Some(next) => current = next,
+                None => return false,
+            }
+        }
+        false
+    }
 }
 
 /// One claim about one device, from one source.
@@ -559,6 +756,39 @@ pub struct DiscoveryReport {
     /// True when Stop landed during discovery.
     #[serde(default)]
     pub interrupted: bool,
+
+    // ---- v1.9 ---------------------------------------------------------
+    //
+    // All defaulted, so a report written by an earlier build deserializes with
+    // the deep and credentialed passes reading as "not attempted" — which is
+    // exactly what those scans did.
+    /// True when the operator asked for deep probes.
+    #[serde(default)]
+    pub deep_attempted: bool,
+    /// Addresses a deep probe established something about.
+    #[serde(default)]
+    pub deep_devices_enriched: usize,
+    /// True when the operator asked for credentialed Windows discovery.
+    #[serde(default)]
+    pub credentialed_attempted: bool,
+    /// Machines that answered the credentialed query.
+    #[serde(default)]
+    pub credentialed_answered: usize,
+    /// Machines that were asked and did not answer usefully.
+    #[serde(default)]
+    pub credentialed_failed: usize,
+    /// Machines that were never asked: no WinRM listener answered, or the scan
+    /// was stopped. Counted apart from failures because a workstation with
+    /// remote management off is the ordinary case, not a problem to report.
+    #[serde(default)]
+    pub credentialed_skipped: usize,
+    /// Why credentialed probes did not succeed, de-duplicated and capped.
+    ///
+    /// Reasons only. The account name is not a secret but is not diagnostic
+    /// either, and the password cannot reach here: [`super::windows::probe`]
+    /// returns an error type that has no field for one.
+    #[serde(default)]
+    pub credentialed_notes: Vec<String>,
 }
 
 impl DiscoveryReport {

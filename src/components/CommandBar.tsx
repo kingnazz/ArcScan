@@ -6,18 +6,35 @@
 // they are one click away without competing for attention.
 
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Crosshair, Play, RotateCw, Settings2, Square } from "lucide-react";
+import {
+  ChevronDown,
+  Crosshair,
+  KeyRound,
+  Play,
+  RotateCw,
+  Settings2,
+  Square,
+} from "lucide-react";
 import { Button, Field, FieldRow, IconButton } from "../ui/primitives";
 import { Popover } from "../ui/Popover";
 import { api } from "../lib/api";
 import { formatCount, parsePorts } from "../lib/format";
+import { windowsCredentials } from "../lib/windowsCredential";
 import {
+  DEPTHS,
+  DEPTH_ORDER,
   PROFILES,
   PROFILE_ORDER,
   buildScanOptions,
   type ProfileId,
 } from "../lib/profiles";
-import type { LocalNetwork, ScanOptions, ScanPreview } from "../types";
+import type {
+  LocalNetwork,
+  ScanDepth,
+  ScanOptions,
+  ScanPreview,
+  WindowsCredentialStatus,
+} from "../types";
 import type { Settings } from "../lib/prefs";
 
 export interface CommandBarProps {
@@ -82,6 +99,7 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
           enabled: settings.localDiscovery,
           descriptions: settings.readDeviceDescriptions,
         },
+        settings.scanDepth,
       ),
     [
       target,
@@ -93,8 +111,27 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
       settings.pingConcurrency,
       settings.localDiscovery,
       settings.readDeviceDescriptions,
+      settings.scanDepth,
     ],
   );
+
+  // The credential status, for the depth picker.
+  //
+  // Subscribed rather than read once on mount: Settings sets and clears the
+  // credential while this component stays mounted, and v1.9.0 read it a single
+  // time — so the picker kept saying no credential was set after one was added,
+  // and kept showing one after Forget. The warning was wrong in both
+  // directions for the rest of the session.
+  const [credential, setCredential] = useState<WindowsCredentialStatus | null>(
+    windowsCredentials.current(),
+  );
+  useEffect(() => {
+    const unsubscribe = windowsCredentials.subscribe(setCredential);
+    // One read on mount to populate the very first time; every later change
+    // arrives through the subscription.
+    void windowsCredentials.refresh();
+    return unsubscribe;
+  }, []);
 
   // Ask the backend what this scan would do, so the workload is visible before
   // the operator commits. Debounced, because it runs on every keystroke.
@@ -146,6 +183,13 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
       className="flex items-center gap-2 border-b border-border bg-surface px-3 py-2"
     >
       <ProfilePicker value={profileId} onChange={onProfileChange} disabled={scanning} />
+
+      <DepthPicker
+        value={settings.scanDepth}
+        onChange={(scanDepth) => onSettingsChange({ scanDepth })}
+        disabled={scanning}
+        credential={credential}
+      />
 
       <div className="min-w-0 flex-1">
         <Field
@@ -334,6 +378,120 @@ function ProfilePicker({
             );
           })}
         </ul>
+      </Popover>
+    </div>
+  );
+}
+
+/**
+ * How hard the scan works to identify what it finds.
+ *
+ * Beside the profile picker rather than inside Advanced, because it changes
+ * what a scan *establishes* rather than how it is tuned, and because a
+ * technician choosing to sign in to Windows machines should be making that
+ * choice visibly rather than in a popover.
+ *
+ * The credentialed level stays selectable without a credential set: choosing
+ * it is how a person finds out they need one, and the panel says where to put
+ * it. What it must not do is fail silently at scan time, so the warning is
+ * here, before the scan, and the scan itself records the skip per host.
+ */
+function DepthPicker({
+  value,
+  onChange,
+  disabled,
+  credential,
+}: {
+  value: ScanDepth;
+  onChange: (depth: ScanDepth) => void;
+  disabled: boolean;
+  credential: WindowsCredentialStatus | null;
+}) {
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const depth = DEPTHS[value];
+  // Only a warning, never a block: the level is still selectable, and the
+  // scan reports per host that it was skipped.
+  const needsCredential = depth.needsCredential === true && credential?.configured !== true;
+
+  // Re-read on open as well as on change. Opening the picker is the moment the
+  // answer matters, and this is the backstop for any future path that changes
+  // the credential without going through the store.
+  useEffect(() => {
+    if (open) void windowsCredentials.refresh();
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={button}
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        title="How hard the scan works to identify what it finds"
+        className="btn btn-secondary btn-lg w-[8.5rem] justify-between disabled:opacity-45"
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {depth.needsCredential ? (
+            <KeyRound className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+          ) : null}
+          <span className="truncate">{depth.name}</span>
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" aria-hidden />
+      </button>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={button}
+        align="start"
+        label="Discovery depth"
+        className="w-[23rem] p-1"
+      >
+        <ul role="listbox" aria-label="Discovery depth">
+          {DEPTH_ORDER.map((id) => {
+            const item = DEPTHS[id];
+            const selected = id === value;
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onChange(id);
+                    setOpen(false);
+                    button.current?.focus();
+                  }}
+                  className={`w-full rounded-md px-2.5 py-2 text-left transition-colors duration-fast hover:bg-surface-hover ${
+                    selected ? "bg-accent-subtle" : ""
+                  }`}
+                >
+                  <span className="flex items-baseline gap-2">
+                    <span className="text-[13px] font-medium text-text">{item.name}</span>
+                    {selected ? (
+                      <span className="text-[10.5px] font-semibold uppercase tracking-wide text-accent-text">
+                        Selected
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-text-secondary">
+                    {item.detail}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {needsCredential ? (
+          <p className="border-t border-border px-2.5 py-2 text-xs leading-relaxed text-text-muted">
+            {credential?.supported === false
+              ? (credential.unsupported_reason ??
+                "Credentialed Windows discovery is unavailable in this build.")
+              : "No Windows credential is set. Add one in Settings, or this level behaves as Deep and records that each machine was skipped."}
+          </p>
+        ) : null}
       </Popover>
     </div>
   );

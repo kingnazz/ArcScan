@@ -72,6 +72,18 @@ pub struct ClassifyFacts<'a> {
     pub os_guess: Option<&'a str>,
 }
 
+/// Ports that, together, only a directory service has open.
+///
+/// Kerberos and LDAP are what a domain controller *is*, as opposed to what a
+/// file server merely offers. Neither alone says anything — plenty of
+/// appliances speak LDAP — but a host answering Kerberos, LDAP and SMB at once
+/// is running the directory rather than consuming it.
+const KERBEROS_PORT: u16 = 88;
+const LDAP_PORT: u16 = 389;
+const LDAPS_PORT: u16 = 636;
+const GLOBAL_CATALOG_PORT: u16 = 3268;
+const SMB_PORT: u16 = 445;
+
 /// Manufacturer keywords, grouped by what they make.
 ///
 /// Matched as whole words against a lowercased manufacturer string. A maker that
@@ -202,6 +214,14 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     let mut services: BTreeSet<String> = BTreeSet::new();
     let mut upnp_types: BTreeSet<String> = BTreeSet::new();
     let mut models: BTreeSet<String> = BTreeSet::new();
+    // v1.9: manufacturers discovery established, as distinct from the one the
+    // OUI table derived from the MAC. A deep scan that read `Canon HTTP Server`
+    // off a web server knows more than the OUI prefix does, and a rule that
+    // only consulted the prefix would ignore it.
+    let mut manufacturers: BTreeSet<String> = BTreeSet::new();
+    // v1.9: the credentialed answer. One field, and it outranks every rule
+    // below it.
+    let mut product_type: Option<crate::discovery::windows::WindowsProductType> = None;
 
     if let Some(d) = discovery {
         for e in d.of_kind(EvidenceKind::Service) {
@@ -221,6 +241,26 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
                 models.insert(e.normalized_value.clone());
             }
         }
+        for e in d.of_kind(EvidenceKind::Manufacturer) {
+            manufacturers.insert(e.normalized_value.clone());
+        }
+        // Only an authenticated answer may set this. An unauthenticated source
+        // claiming a ProductType would be claiming to have asked a question it
+        // has no way to ask, so it is ignored rather than trusted.
+        for e in d.of_kind(EvidenceKind::WindowsProductType) {
+            if e.source != DiscoverySource::WindowsCredentialed {
+                continue;
+            }
+            if let Some(found) = e
+                .value
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .and_then(crate::discovery::windows::WindowsProductType::from_code)
+            {
+                product_type = Some(found);
+            }
+        }
     }
 
     let model_text = models.iter().cloned().collect::<Vec<_>>().join(" ");
@@ -231,6 +271,25 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
     let has_upnp = |needle: &str| upnp_types.iter().any(|t| t.contains(needle));
     let model_says = |needle: &str| model_text.contains(needle);
 
+    // The manufacturer, from the OUI table *or* from anything discovery read
+    // off the device itself. `made_by` on its own still means the OUI answer,
+    // so every existing rule keeps its exact behaviour; rules that want the
+    // wider view ask for it.
+    let built_by = |makers: &[&str]| {
+        made_by(facts.vendor, makers)
+            || manufacturers
+                .iter()
+                .any(|m| makers.iter().any(|maker| has_word(m, maker)))
+    };
+    // The best name for the manufacturer, for an evidence line.
+    let maker_name = || {
+        facts
+            .vendor
+            .map(str::to_string)
+            .or_else(|| manufacturers.iter().next().cloned())
+            .unwrap_or_default()
+    };
+
     let mut claims: Vec<TypeClaim> = Vec::new();
     let mut claim = |device_type: DeviceType, confidence: Confidence, evidence: Vec<String>| {
         claims.push(TypeClaim {
@@ -240,10 +299,58 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         });
     };
 
+    // ---- Credentialed Windows identity ------------------------------------
+    //
+    // First, and above everything below it. `ProductType` is the operating
+    // system reporting its own kind over a channel it authenticated. Every
+    // other rule in this file infers; this one was told.
+    //
+    // This is the fix for the failure v1.9 exists to correct: a Windows
+    // workstation with file sharing and Remote Desktop switched on is
+    // indistinguishable from a server from the outside, and no combination of
+    // open ports settles it. One authenticated field does.
+    if let Some(product_type) = product_type {
+        claim(
+            product_type.device_type(),
+            Confidence::High,
+            vec![
+                product_type.label().to_string(),
+                "Reported by the machine itself over an authenticated management query".into(),
+            ],
+        );
+    }
+
+    // ---- Management controllers -------------------------------------------
+    //
+    // Before the server-hardware rule, deliberately. An iDRAC names Dell and a
+    // PowerEdge in almost everything it says, and typing it as the server it is
+    // bolted into is the exact confusion this ordering prevents: the controller
+    // has its own address, its own MAC and its own credentials, and a
+    // technician who reboots the wrong one has a bad afternoon.
+    let bmc_model = models.iter().any(|model| {
+        let compact = compact_identity(model);
+        compact.contains("idrac")
+            || compact.contains("integratedlightsout")
+            || compact.contains("xclarity")
+            || compact.contains("cimc")
+            || numbered_family(model, "ilo")
+    }) || model_says("ilo")
+        || model_says("ipmi");
+    if bmc_model {
+        claim(
+            DeviceType::ManagementController,
+            Confidence::High,
+            vec![
+                "The model names a baseboard management controller (iDRAC, iLO or equivalent)"
+                    .into(),
+            ],
+        );
+    }
+
     // Strong manufacturer + product-family identity is more durable than an
     // incidental service. NAS appliances often advertise IPP, and management
     // controllers expose HTTP; neither fact changes what the hardware is.
-    let strong_identity_type = if made_by(facts.vendor, NAS_MAKERS)
+    let strong_identity_type = if built_by(NAS_MAKERS)
         && models
             .iter()
             .any(|model| numbered_family(model, "rs") || numbered_family(model, "ds"))
@@ -255,44 +362,108 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
                 facts.vendor.unwrap_or("Synology")
             ),
         ))
-    } else if made_by(facts.vendor, NETWORK_MAKERS)
+    } else if built_by(NETWORK_MAKERS)
         && models.iter().any(|model| {
             let compact = compact_identity(model);
-            compact.starts_with("udm") || compact.starts_with("uxg")
+            compact.starts_with("udm") || compact.starts_with("uxg") || compact.starts_with("usg")
         })
     {
-        Some((DeviceType::Router, "UDM/UXG gateway family".into()))
-    } else if made_by(facts.vendor, NETWORK_MAKERS)
-        && models
-            .iter()
-            .any(|model| compact_identity(model).starts_with("usw"))
+        // v1.9: a gateway is a router, and always was. The change here is that
+        // the two below it are no longer both "network equipment".
+        Some((DeviceType::Router, "UDM/UXG/USG gateway family".into()))
+    } else if built_by(NETWORK_MAKERS)
+        && models.iter().any(|model| {
+            compact_identity(model).starts_with("usw")
+                // The older UniFi switch naming, still all over real sites:
+                // `US-24`, `US-48-500W`. Requiring a digit after `us` is what
+                // keeps this from matching a model that merely begins with
+                // those two letters.
+                || numbered_family(model, "us")
+        })
     {
-        Some((DeviceType::NetworkEquipment, "USW switch family".into()))
-    } else if made_by(facts.vendor, NETWORK_MAKERS)
+        // v1.9: a USW is a switch. It used to read as the generic "network
+        // equipment", which left the question of switch-versus-access-point to
+        // whatever looked at the inventory next.
+        Some((DeviceType::Switch, "USW/US switch family".into()))
+    } else if built_by(NETWORK_MAKERS)
         && models.iter().any(|model| {
             let compact = compact_identity(model);
-            compact.starts_with("u6") || compact.starts_with("u7")
+            compact.starts_with("uap")
+                || numbered_family(model, "u")
+                || compact.starts_with("nanohd")
+                || compact.starts_with("nanostation")
         })
     {
+        // v1.9: U6, U7 and UAP are access points, and are now named as such.
         Some((
-            DeviceType::NetworkEquipment,
-            "U6/U7 access-point family".into(),
+            DeviceType::AccessPoint,
+            "U6/U7/UAP access-point family".into(),
         ))
-    } else if made_by(facts.vendor, COMPUTER_MAKERS)
+    } else if built_by(COMPUTER_MAKERS)
         && models.iter().any(|model| {
             let compact = compact_identity(model);
-            compact.contains("poweredge") || compact.contains("idrac")
+            compact.contains("poweredge") || compact.contains("proliant")
         })
+        && !bmc_model
     {
+        // v1.9: server hardware is a Server, not the generic Computer it used
+        // to be. Medium rather than High: the chassis is a server, and only
+        // ProductType can say the operating system agrees.
         Some((
-            DeviceType::Computer,
-            "Dell PowerEdge/iDRAC server identity".into(),
+            DeviceType::Server,
+            "PowerEdge/ProLiant server hardware".into(),
         ))
     } else {
         None
     };
     if let Some((device_type, evidence)) = &strong_identity_type {
-        claim(*device_type, Confidence::High, vec![evidence.clone()]);
+        let confidence = if *device_type == DeviceType::Server {
+            Confidence::Medium
+        } else {
+            Confidence::High
+        };
+        claim(*device_type, confidence, vec![evidence.clone()]);
+    }
+
+    // ---- Firewalls and security appliances --------------------------------
+    //
+    // These name themselves in their model or their web interface, and none of
+    // the strings is ambiguous.
+    let firewall_model = model_says("pfsense")
+        || model_says("opnsense")
+        || model_says("fortigate")
+        || model_says("sonicwall")
+        || model_says("pan-os")
+        || model_says("panos")
+        || model_says("firepower")
+        || model_says("watchguard");
+    if firewall_model {
+        claim(
+            DeviceType::Firewall,
+            Confidence::High,
+            vec!["The model names a firewall appliance".into()],
+        );
+    }
+
+    // ---- Domain controllers, without credentials --------------------------
+    //
+    // Kerberos, LDAP and SMB together are what a directory service looks like
+    // from outside. Medium and never High: these are open ports, and the
+    // authenticated `ProductType 2` above is the only thing that makes it
+    // certain. When both fire, the credentialed claim wins on confidence, which
+    // is the right way round.
+    let directory_ports = ports.contains(&KERBEROS_PORT)
+        && (ports.contains(&LDAP_PORT) || ports.contains(&LDAPS_PORT))
+        && ports.contains(&SMB_PORT);
+    if directory_ports && product_type.is_none() {
+        let mut evidence = vec![
+            "TCP 88 (Kerberos), 389 (LDAP) and 445 (SMB) all open".into(),
+            "Only a directory service offers all three".into(),
+        ];
+        if ports.contains(&GLOBAL_CATALOG_PORT) {
+            evidence.push("TCP 3268 (global catalog) open".into());
+        }
+        claim(DeviceType::DomainController, Confidence::Medium, evidence);
     }
 
     // ---- Router -----------------------------------------------------------
@@ -346,6 +517,9 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         || has_service("_pdl-datastream._tcp")
         || has_upnp("printer");
     let print_port = ports.contains(&9100) || ports.contains(&631) || ports.contains(&515);
+    // Ports only a printer listens on. 631 is excluded on purpose: it is CUPS,
+    // and CUPS runs on desktops.
+    let dedicated_print_port = ports.contains(&9100) || ports.contains(&515);
     if printer_service && (made_by(facts.vendor, PRINTER_MAKERS) || print_port) {
         let mut evidence = vec![printer_service_label(&services)];
         if let Some(vendor) = facts
@@ -371,6 +545,24 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             DeviceType::Printer,
             Confidence::Medium,
             vec![printer_service_label(&services)],
+        );
+    } else if built_by(PRINTER_MAKERS) && dedicated_print_port {
+        // v1.9. The Canon case from live testing: a printer whose mDNS is
+        // switched off or unreachable, which used to fall through to Low and
+        // then to nothing, and was liable to be read as a server for want of
+        // anything better.
+        //
+        // Two independent facts: a manufacturer that makes printers, and a
+        // port that only printers listen on. Deliberately *not* port 631 on
+        // its own — CUPS listens there on every Linux desktop, and a
+        // workstation that can print is not a printer.
+        claim(
+            DeviceType::Printer,
+            Confidence::Medium,
+            vec![
+                format!("{} manufacturer", maker_name()),
+                format!("TCP {} (raw printing) open", print_ports_label(&ports)),
+            ],
         );
     } else if ports.contains(&9100) && ports.contains(&631) {
         // Two printing ports and nothing else is still only two ports, but a
@@ -579,7 +771,7 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         || model_says("nvr")
         || model_says("cam ");
     let camera_declared = has_upnp("camera") || has_upnp("digitalsecuritycamera");
-    if camera_declared && made_by(facts.vendor, CAMERA_MAKERS) {
+    if camera_declared && built_by(CAMERA_MAKERS) {
         claim(
             DeviceType::Camera,
             Confidence::High,
@@ -594,12 +786,12 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             Confidence::Medium,
             vec!["SSDP camera device".into()],
         );
-    } else if made_by(facts.vendor, CAMERA_MAKERS) && ports.contains(&554) {
+    } else if built_by(CAMERA_MAKERS) && ports.contains(&554) {
         claim(
             DeviceType::Camera,
             Confidence::Medium,
             vec![
-                format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+                format!("{} manufacturer", maker_name()),
                 "TCP 554 (RTSP) open".into(),
             ],
         );
@@ -638,7 +830,11 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         || model_says("nas")
         || model_says("terramaster")
         || model_says("asustor");
-    let nas_maker = made_by(facts.vendor, NAS_MAKERS);
+    // v1.9: `built_by` rather than `made_by`, so a Synology identified by its
+    // TLS certificate or its web server counts the same as one identified by
+    // its MAC prefix. A NAS behind a router that rewrites the OUI, or on a
+    // bonded interface, has no useful prefix at all.
+    let nas_maker = built_by(NAS_MAKERS);
 
     if smb && nas_maker && (nas_admin || has_upnp("mediaserver") || nas_model) {
         // v1.8.3: three independent facts — file sharing, a storage maker, and
@@ -646,7 +842,7 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         // to a declaration as a NAS ever gets, so it earns High.
         let mut evidence = vec![
             "File sharing over SMB".into(),
-            format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+            format!("{} manufacturer", maker_name()),
         ];
         if has_upnp("mediaserver") {
             evidence.push("SSDP MediaServer".into());
@@ -662,7 +858,7 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
             Confidence::Medium,
             vec![
                 "File sharing over SMB".into(),
-                format!("{} manufacturer", facts.vendor.unwrap_or_default()),
+                format!("{} manufacturer", maker_name()),
             ],
         );
     } else if smb && nas_model {
@@ -906,10 +1102,19 @@ fn print_ports_label(ports: &BTreeSet<u16>) -> String {
 
 /// Pick the winning claim and file the rest as conflicts.
 ///
-/// Ordering is total and stable: confidence first, then the type's own order,
-/// then the evidence text. Two runs over the same facts therefore produce the
-/// same winner *and* the same conflict list, which is what keeps a device's type
-/// from flickering between scans.
+/// Ordering is total and stable: confidence first, then how specific the type
+/// is, then the type's own order, then the evidence text. Two runs over the
+/// same facts therefore produce the same winner *and* the same conflict list,
+/// which is what keeps a device's type from flickering between scans.
+///
+/// # Why specificity sits below confidence and not above it
+///
+/// "Domain controller" and "Computer" do not disagree — one refines the other —
+/// so at equal confidence the refinement is the more useful answer and wins.
+/// But being more specific about a *guess* does not make the guess truer, so a
+/// Low-confidence Server claim still loses to a Medium-confidence Computer.
+/// Confidence is about how much the evidence is worth; specificity only breaks
+/// a tie between claims already worth the same.
 fn finish(mut claims: Vec<TypeClaim>) -> Classification {
     claims.retain(|c| c.device_type != DeviceType::Unknown);
     if claims.is_empty() {
@@ -918,6 +1123,12 @@ fn finish(mut claims: Vec<TypeClaim>) -> Classification {
     claims.sort_by(|a, b| {
         a.confidence
             .cmp(&b.confidence)
+            // Higher specificity first, hence the reversed operands.
+            .then(
+                b.device_type
+                    .specificity()
+                    .cmp(&a.device_type.specificity()),
+            )
             .then(a.device_type.cmp(&b.device_type))
             .then(a.evidence.cmp(&b.evidence))
     });
@@ -926,6 +1137,11 @@ fn finish(mut claims: Vec<TypeClaim>) -> Classification {
     claims.retain(|c| seen.insert(c.device_type));
 
     let winner = claims.remove(0);
+    // A claim the winner already refines is not a competing answer. "It is a
+    // domain controller, and it might also be a computer" is not a
+    // disagreement a technician needs to read, and showing it beside genuine
+    // conflicts would teach them to ignore the list.
+    claims.retain(|c| !winner.device_type.is_refinement_of(c.device_type));
     Classification {
         device_type: winner.device_type,
         confidence: winner.confidence,
@@ -1479,18 +1695,22 @@ mod tests {
 
     #[test]
     fn ubiquiti_product_families_beat_incidental_services() {
-        for model in ["U7 Pro", "U6 LR", "USW-24-G2", "USW Lite 8 PoE"] {
+        // v1.9: these used to all read as the generic "network equipment",
+        // which left switch-versus-access-point for whatever looked at the
+        // inventory next. The model settles it, so ArcScan settles it.
+        for (model, expected) in [
+            ("U7 Pro", DeviceType::AccessPoint),
+            ("U6 LR", DeviceType::AccessPoint),
+            ("USW-24-G2", DeviceType::Switch),
+            ("USW Lite 8 PoE", DeviceType::Switch),
+        ] {
             let result = Fixture::new()
                 .service("_ipp._tcp")
                 .model(model)
                 .vendor("Ubiquiti Inc")
                 .ports(&[631])
                 .run();
-            assert_eq!(
-                result.device_type,
-                DeviceType::NetworkEquipment,
-                "{model}: {result:?}"
-            );
+            assert_eq!(result.device_type, expected, "{model}: {result:?}");
             assert_eq!(result.confidence, Confidence::High);
         }
 
@@ -1507,7 +1727,17 @@ mod tests {
 
     #[test]
     fn dell_server_identity_is_not_reduced_to_generic_network_equipment() {
-        for model in ["PowerEdge R750", "iDRAC 9"] {
+        // v1.9: the chassis and its management controller are told apart.
+        // Before, both read as "Computer", which meant a technician looking for
+        // the server and a technician looking for the BMC saw the same word.
+        for (model, expected, confidence) in [
+            ("PowerEdge R750", DeviceType::Server, Confidence::Medium),
+            (
+                "iDRAC 9",
+                DeviceType::ManagementController,
+                Confidence::High,
+            ),
+        ] {
             let result = Fixture::new()
                 .service("_http._tcp")
                 .model(model)
@@ -1515,12 +1745,28 @@ mod tests {
                 .ports(&[80, 443])
                 .os("Network device")
                 .run();
+            assert_eq!(result.device_type, expected, "{model}: {result:?}");
+            assert_eq!(result.confidence, confidence, "{model}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_management_controller_never_reads_as_the_server_it_is_bolted_into() {
+        // An iDRAC names Dell and frequently names the chassis too. It is still
+        // a separate device with its own address, its own MAC and its own
+        // credentials, and rebooting the wrong one ruins an afternoon.
+        for model in ["iDRAC9", "iDRAC 9", "Integrated Lights-Out 5", "iLO5"] {
+            let result = Fixture::new()
+                .model(model)
+                .vendor("Dell Inc")
+                .ports(&[443])
+                .run();
             assert_eq!(
                 result.device_type,
-                DeviceType::Computer,
+                DeviceType::ManagementController,
                 "{model}: {result:?}"
             );
-            assert_eq!(result.confidence, Confidence::High);
+            assert_ne!(result.device_type, DeviceType::Server, "{model}");
         }
     }
 
@@ -1549,10 +1795,11 @@ mod tests {
             ("UDM-SE", DeviceType::Router),
             ("UDM Pro Max", DeviceType::Router),
             ("UXG-Lite", DeviceType::Router),
-            ("USW-Pro-48-PoE", DeviceType::NetworkEquipment),
-            ("USW-Lite-8-PoE", DeviceType::NetworkEquipment),
-            ("U6-Pro", DeviceType::NetworkEquipment),
-            ("U7-Pro-Max", DeviceType::NetworkEquipment),
+            ("USW-Pro-48-PoE", DeviceType::Switch),
+            ("USW-Lite-8-PoE", DeviceType::Switch),
+            ("U6-Pro", DeviceType::AccessPoint),
+            ("U7-Pro-Max", DeviceType::AccessPoint),
+            ("UAP-AC-Pro", DeviceType::AccessPoint),
         ] {
             let result = Fixture::new()
                 .service("_http._tcp")
