@@ -738,11 +738,8 @@ pub fn set_windows_credential(
     // Refused up front on a build that cannot use it, so an operator is told
     // now rather than discovering it one scan later.
     crate::discovery::windows::platform_support()?;
-    let credential = crate::discovery::windows::WindowsCredential::new(
-        &username,
-        domain.as_deref(),
-        &password,
-    )?;
+    let credential =
+        crate::discovery::windows::WindowsCredential::new(&username, domain.as_deref(), &password)?;
     let store = crate::discovery::windows::credential_store();
     store.set(credential);
     Ok(store.status())

@@ -174,10 +174,19 @@ mod tests {
 
     #[test]
     fn strings_decode_from_every_flavour_certificates_use() {
-        assert_eq!(decode_string(0x13, b"DiskStation").as_deref(), Some("DiskStation"));
-        assert_eq!(decode_string(0x0C, "iDRAC-7SZ1B43".as_bytes()).as_deref(), Some("iDRAC-7SZ1B43"));
+        assert_eq!(
+            decode_string(0x13, b"DiskStation").as_deref(),
+            Some("DiskStation")
+        );
+        assert_eq!(
+            decode_string(0x0C, "iDRAC-7SZ1B43".as_bytes()).as_deref(),
+            Some("iDRAC-7SZ1B43")
+        );
         // BMPString: "Hi" in UTF-16BE.
-        assert_eq!(decode_string(0x1E, &[0x00, 0x48, 0x00, 0x69]).as_deref(), Some("Hi"));
+        assert_eq!(
+            decode_string(0x1E, &[0x00, 0x48, 0x00, 0x69]).as_deref(),
+            Some("Hi")
+        );
     }
 
     #[test]

@@ -1783,6 +1783,34 @@ impl Db {
             .unwrap_or_default();
 
         let empty: Vec<String> = Vec::new();
+        // The operating system and hardware as single lines, built here so the
+        // renderer stays a renderer. Deliberately the established facts and
+        // never the serial or the UUID: those identify the customer's specific
+        // machine, and a report meant for a support thread has no use for one.
+        let os_line = record.as_ref().and_then(|r| {
+            let product = r.os_product.as_deref()?;
+            let mut line = product.to_string();
+            if let Some(edition) = r.os_edition.as_deref() {
+                line.push(' ');
+                line.push_str(edition);
+            }
+            if let Some(version) = r.os_version.as_deref().filter(|v| !product.contains(*v)) {
+                line.push(' ');
+                line.push_str(version);
+            }
+            if let Some(build) = r.os_build.as_deref() {
+                line.push_str(&format!(" (build {build})"));
+            }
+            Some(line)
+        });
+        let hardware_line = record.as_ref().and_then(|r| {
+            let model = r.hardware_model.as_deref()?;
+            Some(match r.hardware_manufacturer.as_deref() {
+                Some(maker) => format!("{maker} {model}"),
+                None => model.to_string(),
+            })
+        });
+
         Ok(crate::discovery::diagnostics::build_report(
             &DeviceDiagnostic {
                 app_version,
@@ -1804,6 +1832,11 @@ impl Db {
                     .unwrap_or(&empty),
                 evidence: &evidence,
                 discovery_quality: quality,
+                os_summary: os_line.as_deref(),
+                windows_product_type: record
+                    .as_ref()
+                    .and_then(|r| r.windows_product_type.as_deref()),
+                hardware: hardware_line.as_deref(),
                 ip: last_ip.as_deref(),
                 // Not derivable from stored state without re-reading the
                 // interface, and reporting a stale answer would be worse than
@@ -2739,11 +2772,7 @@ fn stamp_physical_devices(rows: &mut [InventoryRow]) {
             let mut identities: Vec<IdentityClaim> = Vec::new();
             if let Some(discovery) = discovery {
                 if let Some(uuid) = discovery.system_uuid.as_deref() {
-                    identities.extend(IdentityClaim::new(
-                        IdentityStrength::SystemUuid,
-                        None,
-                        uuid,
-                    ));
+                    identities.extend(IdentityClaim::new(IdentityStrength::SystemUuid, None, uuid));
                 }
                 if let Some(serial) = discovery.hardware_serial.as_deref() {
                     identities.extend(IdentityClaim::new(
@@ -2777,7 +2806,10 @@ fn stamp_physical_devices(rows: &mut [InventoryRow]) {
     let groups = reconcile(&candidates);
     let mut by_device: HashMap<i64, (String, usize)> = HashMap::new();
     for group in groups {
-        if group.members.len() < 2 {
+        // Only a group that genuinely spans more than one interface is worth
+        // recording. A key on a device seen once says nothing a reader does
+        // not already know from the row existing.
+        if group.members.len() < 2 || !group.is_multi_homed() {
             continue;
         }
         for device_id in &group.members {
@@ -4579,7 +4611,12 @@ mod tests {
     #[test]
     fn credentialed_windows_facts_survive_a_round_trip() {
         let db = Db::open_in_memory().unwrap();
-        let mut first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        let mut first = host(
+            "10.0.0.5",
+            Some("aa:bb:cc:00:00:01"),
+            Some("WS-04"),
+            &[445, 3389],
+        );
         first.discovery = Some(credentialed_discovery());
         db.save_scan(&with_full_discovery(result(
             "10.0.0.0/24",
@@ -4616,7 +4653,12 @@ mod tests {
         // credentialed scan a month and Quick Scans daily; the daily scans must
         // not blank the columns the monthly one filled.
         let db = Db::open_in_memory().unwrap();
-        let mut deep = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        let mut deep = host(
+            "10.0.0.5",
+            Some("aa:bb:cc:00:00:01"),
+            Some("WS-04"),
+            &[445, 3389],
+        );
         deep.discovery = Some(credentialed_discovery());
         db.save_scan(&with_full_discovery(result(
             "10.0.0.0/24",
@@ -4635,7 +4677,12 @@ mod tests {
         );
 
         // Now a Quick Scan: the same host, mDNS only, none of the deep facts.
-        let mut quick = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445, 3389]);
+        let mut quick = host(
+            "10.0.0.5",
+            Some("aa:bb:cc:00:00:01"),
+            Some("WS-04"),
+            &[445, 3389],
+        );
         quick.discovery = Some(discovery_for("WS-04", "computer", "medium", &["_smb._tcp"]));
         db.save_scan(&with_full_discovery(result(
             "10.0.0.0/24",
@@ -4661,7 +4708,12 @@ mod tests {
         // empty" are different, and only one of them is honest here.
         let db = Db::open_in_memory().unwrap();
         let mut quiet = host("10.0.0.9", Some("aa:bb:cc:00:00:09"), Some("thing"), &[80]);
-        quiet.discovery = Some(discovery_for("thing", "unknown", "unknown", &["_http._tcp"]));
+        quiet.discovery = Some(discovery_for(
+            "thing",
+            "unknown",
+            "unknown",
+            &["_http._tcp"],
+        ));
         db.save_scan(&with_full_discovery(result(
             "10.0.0.0/24",
             Some("quick-lan"),
@@ -4684,13 +4736,23 @@ mod tests {
         // key that says they are one box.
         let db = Db::open_in_memory().unwrap();
         let uuid = "4C4C4544-0037-5A10-8051-B4C04F435331";
-        let mut first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("APP-01"), &[445]);
+        let mut first = host(
+            "10.0.0.5",
+            Some("aa:bb:cc:00:00:01"),
+            Some("APP-01"),
+            &[445],
+        );
         first.discovery = Some(crate::scanner::HostDiscovery {
             system_uuid: Some(uuid.into()),
             identity_evidence: vec![format!("system UUID: {uuid}")],
             ..credentialed_discovery()
         });
-        let mut second = host("10.0.1.5", Some("aa:bb:cc:00:00:02"), Some("APP-01"), &[445]);
+        let mut second = host(
+            "10.0.1.5",
+            Some("aa:bb:cc:00:00:02"),
+            Some("APP-01"),
+            &[445],
+        );
         second.discovery = Some(crate::scanner::HostDiscovery {
             system_uuid: Some(uuid.into()),
             identity_evidence: vec![format!("system UUID: {uuid}")],
@@ -4705,16 +4767,13 @@ mod tests {
 
         let rows = db.inventory().unwrap().rows;
         assert_eq!(rows.len(), 2, "both interfaces stay in the inventory");
-        let keys: Vec<Option<String>> = rows
-            .iter()
-            .map(|r| r.physical_device_key.clone())
-            .collect();
+        let keys: Vec<Option<String>> =
+            rows.iter().map(|r| r.physical_device_key.clone()).collect();
         assert!(keys[0].is_some(), "a grouped row carries a key");
         assert_eq!(keys[0], keys[1], "both interfaces name the same machine");
         assert!(rows.iter().all(|r| r.physical_interface_count == 2));
         // Nothing was lost: two addresses and two MACs survive.
-        let mut addresses: Vec<String> =
-            rows.iter().filter_map(|r| r.current_ip.clone()).collect();
+        let mut addresses: Vec<String> = rows.iter().filter_map(|r| r.current_ip.clone()).collect();
         addresses.sort();
         assert_eq!(addresses, vec!["10.0.0.5", "10.0.1.5"]);
     }
@@ -4724,8 +4783,18 @@ mod tests {
         // The other half of the rule. A shared host name is not an identity,
         // and a false merge is worse than a missed one.
         let db = Db::open_in_memory().unwrap();
-        let first = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("PRINTER"), &[9100]);
-        let second = host("10.0.0.6", Some("aa:bb:cc:00:00:02"), Some("PRINTER"), &[9100]);
+        let first = host(
+            "10.0.0.5",
+            Some("aa:bb:cc:00:00:01"),
+            Some("PRINTER"),
+            &[9100],
+        );
+        let second = host(
+            "10.0.0.6",
+            Some("aa:bb:cc:00:00:02"),
+            Some("PRINTER"),
+            &[9100],
+        );
         db.save_scan(&with_full_discovery(result(
             "10.0.0.0/24",
             Some("quick-lan"),
@@ -4757,6 +4826,46 @@ mod tests {
         let rows = db.inventory().unwrap().rows;
         assert_eq!(rows[0].physical_device_key, None);
         assert_eq!(rows[0].physical_interface_count, 1);
+    }
+
+    #[test]
+    fn a_diagnostic_report_cannot_contain_the_windows_credential() {
+        // The security guarantee, asserted rather than asserted-in-prose: a
+        // credential is set, a device that a credentialed scan reached is
+        // reported on, and the password appears nowhere in the output.
+        //
+        // The report is what a technician pastes into a support thread, which
+        // is exactly the path a leaked password would take.
+        let store = crate::discovery::windows::credential_store();
+        store.set(
+            crate::discovery::windows::WindowsCredential::new(
+                "CORP\\svc-arcscan",
+                None,
+                "hunter2-not-in-any-output",
+            )
+            .unwrap(),
+        );
+
+        let db = Db::open_in_memory().unwrap();
+        let mut only = host("10.0.0.5", Some("aa:bb:cc:00:00:01"), Some("WS-04"), &[445]);
+        only.discovery = Some(credentialed_discovery());
+        db.save_scan(&with_full_discovery(result(
+            "10.0.0.0/24",
+            Some("quick-lan"),
+            vec![only],
+        )))
+        .unwrap();
+        let device_id = db.inventory().unwrap().rows[0].device_id;
+
+        let report = db.device_discovery_report(device_id, "1.9.0").unwrap();
+        assert!(!report.contains("hunter2-not-in-any-output"));
+        assert!(!report.to_lowercase().contains("password"));
+        // The facts the credentialed scan established are present, which is
+        // what makes the absence of the password meaningful rather than the
+        // result of an empty report.
+        assert!(report.contains("Windows 11") || report.contains("workstation"));
+
+        store.clear();
     }
 
     #[test]

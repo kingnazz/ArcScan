@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONFIDENCE_HINT,
   DEVICE_TYPE_LABEL,
+  WINDOWS_PRODUCT_TYPE_HINT,
   confidenceLabel,
   confidenceTone,
   deviceTypeLabel,
@@ -9,6 +10,7 @@ import {
   discoveryModeLabel,
   hasNameConflict,
   resolveDisplayName,
+  osSummary,
   serviceName,
   servicesLabel,
   sourceLabel,
@@ -293,5 +295,92 @@ describe("discovery quality", () => {
     expect(discoverySummaryLine({ discovery_quality: "complete", discovery_summary: "junk" })).toBe(
       "Complete",
     );
+  });
+});
+
+describe("operating-system summary (v1.9)", () => {
+  it("reads as a technician would say it", () => {
+    expect(
+      osSummary({
+        os_product: "Windows 11",
+        os_edition: "Pro",
+        os_version: "24H2",
+        os_build: "26100",
+        os_architecture: "x64",
+      }),
+    ).toBe("Windows 11 Pro 24H2 (build 26100, x64)");
+  });
+
+  it("does not repeat a server year that is already in the product", () => {
+    expect(
+      osSummary({
+        os_product: "Windows Server 2022",
+        os_edition: "Standard",
+        os_version: "2022",
+        os_build: "20348",
+        os_architecture: "x64",
+      }),
+    ).toBe("Windows Server 2022 Standard (build 20348, x64)");
+  });
+
+  it("degrades to whatever was established", () => {
+    expect(osSummary({ os_product: "Windows Server 2025" })).toBe("Windows Server 2025");
+    expect(osSummary({ os_product: "Windows 10", os_edition: "Home" })).toBe("Windows 10 Home");
+  });
+
+  it("falls back to the family when only a family is known", () => {
+    // What an IIS banner establishes: Windows, and nothing about which one.
+    expect(osSummary({ os_family: "windows" })).toBe("Windows");
+    expect(osSummary({ os_family: "linux" })).toBe("Linux");
+  });
+
+  it("returns null when nothing was established", () => {
+    // Null renders nothing. A dash would read as "asked and found nothing",
+    // which is not what a Quick Scan did.
+    expect(osSummary(null)).toBeNull();
+    expect(osSummary(undefined)).toBeNull();
+    expect(osSummary({})).toBeNull();
+    expect(osSummary({ os_product: "   " })).toBeNull();
+  });
+
+  it("explains each Windows product type in words", () => {
+    expect(WINDOWS_PRODUCT_TYPE_HINT["1"]).toContain("workstation");
+    expect(WINDOWS_PRODUCT_TYPE_HINT["2"]).toContain("domain controller");
+    expect(WINDOWS_PRODUCT_TYPE_HINT["3"]).toContain("server");
+  });
+});
+
+describe("v1.9 device types and sources", () => {
+  it("labels every new device type", () => {
+    for (const [id, label] of [
+      ["workstation", "Workstation"],
+      ["server", "Server"],
+      ["domain_controller", "Domain controller"],
+      ["switch", "Switch"],
+      ["access_point", "Access point"],
+      ["firewall", "Firewall"],
+      ["management_controller", "Management controller"],
+    ] as const) {
+      expect(deviceTypeLabel(id)).toBe(label);
+    }
+  });
+
+  it("keeps the v1.8 types labelled exactly as they were", () => {
+    // A database written by an earlier build still holds these.
+    expect(deviceTypeLabel("computer")).toBe("Computer");
+    expect(deviceTypeLabel("network_equipment")).toBe("Network equipment");
+    expect(deviceTypeLabel("nas")).toBe("NAS");
+  });
+
+  it("labels the new evidence sources", () => {
+    expect(sourceLabel("windows_credentialed")).toBe("Windows (signed in)");
+    expect(sourceLabel("tls")).toBe("TLS certificate");
+    expect(sourceLabel("smb")).toBe("SMB");
+    expect(sourceLabel("http")).toBe("Web interface");
+    expect(sourceLabel("banner")).toBe("Service banner");
+  });
+
+  it("shows an unrecognised type as its own value rather than as blank", () => {
+    expect(deviceTypeLabel("something_from_a_newer_build")).toBe("something_from_a_newer_build");
   });
 });

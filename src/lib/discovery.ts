@@ -422,3 +422,89 @@ export function confidenceTone(confidence: string | null | undefined): "online" 
 }
 
 export type { Confidence };
+
+// ---------------------------------------------------------------------------
+// v1.9 operating-system and identity display
+// ---------------------------------------------------------------------------
+
+/**
+ * What each Windows product type means, in words.
+ *
+ * Shown under the operating system in the drawer, because "1" is what the API
+ * returns and "a workstation, as the machine reported itself" is what a
+ * technician is trying to find out — and because this one field is the reason
+ * a Windows laptop with file sharing on is no longer called a server.
+ */
+export const WINDOWS_PRODUCT_TYPE_HINT: Record<string, string> = {
+  "1": "The machine reported ProductType 1: a workstation.",
+  "2": "The machine reported ProductType 2: a domain controller.",
+  "3": "The machine reported ProductType 3: a server.",
+};
+
+/** `Workstation`, `Server`, `Domain controller`, for a compact label. */
+export const WINDOWS_PRODUCT_TYPE_LABEL: Record<string, string> = {
+  "1": "Workstation",
+  "2": "Domain controller",
+  "3": "Server",
+};
+
+/**
+ * The operating system as one line, e.g.
+ * `Windows 11 Pro 24H2 (build 26100, x64)`.
+ *
+ * Returns `null` when nothing established a product, so a caller renders
+ * nothing rather than an empty row. Every part is optional and the line
+ * degrades in the order a person would drop them: a scan that established only
+ * "Windows Server 2022" says that and stops.
+ */
+export function osSummary(
+  facts: {
+    os_product?: string | null;
+    os_edition?: string | null;
+    os_version?: string | null;
+    os_build?: string | null;
+    os_architecture?: string | null;
+    os_family?: string | null;
+  } | null
+    | undefined,
+): string | null {
+  if (!facts) return null;
+  const product = facts.os_product?.trim();
+  if (!product) {
+    // A family on its own is still worth showing: "Windows" from an IIS banner
+    // says more than a blank, and says nothing it cannot support.
+    const family = facts.os_family?.trim();
+    return family ? familyLabel(family) : null;
+  }
+  let line = product;
+  const edition = facts.os_edition?.trim();
+  if (edition) line += ` ${edition}`;
+  const version = facts.os_version?.trim();
+  // The version is skipped when it merely repeats the product, which is what
+  // a server release looks like: "Windows Server 2022" plus version "2022".
+  if (version && !product.includes(version)) line += ` ${version}`;
+
+  const parenthetical: string[] = [];
+  const build = facts.os_build?.trim();
+  if (build) parenthetical.push(`build ${build}`);
+  const architecture = facts.os_architecture?.trim();
+  if (architecture) parenthetical.push(architecture);
+  if (parenthetical.length > 0) line += ` (${parenthetical.join(", ")})`;
+  return line;
+}
+
+/** The words for an OS family. An unrecognised family reads as its own value. */
+export const OS_FAMILY_LABEL: Record<string, string> = {
+  windows: "Windows",
+  linux: "Linux",
+  macos: "macOS",
+  bsd: "BSD",
+  ios: "iOS",
+  android: "Android",
+  solaris: "Solaris",
+  network_os: "Network operating system",
+};
+
+export function familyLabel(value: string): string {
+  return OS_FAMILY_LABEL[value.trim().toLowerCase()] ?? value.trim();
+}

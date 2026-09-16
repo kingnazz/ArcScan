@@ -231,9 +231,7 @@ impl WindowsFacts {
         // machine that is not joined to anything.
         match (self.part_of_domain, &self.domain, &self.workgroup) {
             (Some(true), Some(domain), _) => push(EvidenceKind::DomainMembership, "domain", domain),
-            (_, _, Some(workgroup)) => {
-                push(EvidenceKind::DomainMembership, "workgroup", workgroup)
-            }
+            (_, _, Some(workgroup)) => push(EvidenceKind::DomainMembership, "workgroup", workgroup),
             (None, Some(domain), None) => push(EvidenceKind::DomainMembership, "domain", domain),
             _ => {}
         }

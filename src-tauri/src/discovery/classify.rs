@@ -340,8 +340,10 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         claim(
             DeviceType::ManagementController,
             Confidence::High,
-            vec!["The model names a baseboard management controller (iDRAC, iLO or equivalent)"
-                .into()],
+            vec![
+                "The model names a baseboard management controller (iDRAC, iLO or equivalent)"
+                    .into(),
+            ],
         );
     }
 
@@ -388,7 +390,10 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         })
     {
         // v1.9: U6, U7 and UAP are access points, and are now named as such.
-        Some((DeviceType::AccessPoint, "U6/U7/UAP access-point family".into()))
+        Some((
+            DeviceType::AccessPoint,
+            "U6/U7/UAP access-point family".into(),
+        ))
     } else if built_by(COMPUTER_MAKERS)
         && models.iter().any(|model| {
             let compact = compact_identity(model);
@@ -399,7 +404,10 @@ pub fn classify(discovery: Option<&DiscoveredDevice>, facts: &ClassifyFacts<'_>)
         // v1.9: server hardware is a Server, not the generic Computer it used
         // to be. Medium rather than High: the chassis is a server, and only
         // ProductType can say the operating system agrees.
-        Some((DeviceType::Server, "PowerEdge/ProLiant server hardware".into()))
+        Some((
+            DeviceType::Server,
+            "PowerEdge/ProLiant server hardware".into(),
+        ))
     } else {
         None
     };
@@ -1111,7 +1119,11 @@ fn finish(mut claims: Vec<TypeClaim>) -> Classification {
         a.confidence
             .cmp(&b.confidence)
             // Higher specificity first, hence the reversed operands.
-            .then(b.device_type.specificity().cmp(&a.device_type.specificity()))
+            .then(
+                b.device_type
+                    .specificity()
+                    .cmp(&a.device_type.specificity()),
+            )
             .then(a.device_type.cmp(&b.device_type))
             .then(a.evidence.cmp(&b.evidence))
     });
@@ -1715,7 +1727,11 @@ mod tests {
         // the server and a technician looking for the BMC saw the same word.
         for (model, expected, confidence) in [
             ("PowerEdge R750", DeviceType::Server, Confidence::Medium),
-            ("iDRAC 9", DeviceType::ManagementController, Confidence::High),
+            (
+                "iDRAC 9",
+                DeviceType::ManagementController,
+                Confidence::High,
+            ),
         ] {
             let result = Fixture::new()
                 .service("_http._tcp")

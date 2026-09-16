@@ -31,6 +31,18 @@
 //! "we asked and learned nothing" and "we could not ask" are different answers
 //! and only one of them is worth showing an operator.
 
+// The collection path — the script generator, the process launcher and the
+// parsers that read its output — is only *called* from the `cfg(windows)`
+// `probe` below. It is nonetheless compiled and tested on every platform, on
+// purpose: everything that can actually be wrong about a credentialed scan is
+// in the parsing, and pinning that down on a Linux CI runner is worth far more
+// than compiling it only where it runs.
+//
+// So on a non-Windows build these items are genuinely unreferenced, and saying
+// so here is more honest than adding a fake caller. On Windows the allow is
+// absent, so real dead code there still fails the build.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 pub mod creds;
 pub mod facts;
 pub mod parse;
@@ -38,7 +50,7 @@ pub mod release;
 pub mod script;
 
 pub use creds::{CredentialStatus, CredentialStore, WindowsCredential};
-pub use facts::{WindowsFacts, WindowsInterface, WindowsProductType};
+pub use facts::{WindowsFacts, WindowsProductType};
 
 use std::net::Ipv4Addr;
 
@@ -199,12 +211,9 @@ pub async fn probe(target: &str, store: &CredentialStore) -> Result<WindowsFacts
 
     // The account and the password are taken together, under one lock, so the
     // pair cannot change between building the command and writing the secret.
-    let Some((account, password)) = store.with(|credential| {
-        (
-            credential.account(),
-            credential.password.expose().to_vec(),
-        )
-    }) else {
+    let Some((account, password)) =
+        store.with(|credential| (credential.account(), credential.password.expose().to_vec()))
+    else {
         return Err(WindowsError::NoCredential);
     };
 
@@ -331,7 +340,10 @@ mod tests {
             "10.0.0.5/24",
         ] {
             assert!(
-                matches!(validate_target(hostile), Err(WindowsError::InvalidTarget(_))),
+                matches!(
+                    validate_target(hostile),
+                    Err(WindowsError::InvalidTarget(_))
+                ),
                 "{hostile} must be refused"
             );
         }

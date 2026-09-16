@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use crate::discovery::model::{
-    sanitize_field, Confidence, Evidence, EvidenceKind, DiscoverySource,
+    sanitize_field, Confidence, DiscoverySource, Evidence, EvidenceKind,
 };
 
 use super::fingerprint::match_signature;
@@ -157,7 +157,7 @@ pub fn evidence(fingerprint: &HttpFingerprint, port: u16) -> Vec<Evidence> {
         out.push(Evidence::new(
             DiscoverySource::Http,
             EvidenceKind::Banner,
-            &format!("http-server:{key}"),
+            format!("http-server:{key}"),
             server,
             Confidence::Medium,
         ));
@@ -175,7 +175,7 @@ pub fn evidence(fingerprint: &HttpFingerprint, port: u16) -> Vec<Evidence> {
         out.push(Evidence::new(
             DiscoverySource::Http,
             EvidenceKind::Banner,
-            &format!("http-realm:{key}"),
+            format!("http-realm:{key}"),
             &realm,
             Confidence::Medium,
         ));
@@ -313,7 +313,10 @@ X-Powered-By: ASP.NET\r\n\
             .find(|e| e.kind == EvidenceKind::Manufacturer)
             .unwrap();
         assert_eq!(manufacturer.value, "Dell");
-        let model = found.iter().find(|e| e.kind == EvidenceKind::Model).unwrap();
+        let model = found
+            .iter()
+            .find(|e| e.kind == EvidenceKind::Model)
+            .unwrap();
         assert_eq!(model.value, "iDRAC");
     }
 

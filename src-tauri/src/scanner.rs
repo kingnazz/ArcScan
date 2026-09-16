@@ -1042,7 +1042,7 @@ pub async fn run(
         // Bounded by the same host concurrency the sweep used, so a deep scan
         // of a /24 does not open a different order of magnitude of sockets than
         // the scan that preceded it.
-        let concurrency = limits.host_concurrency.min(32).max(1);
+        let concurrency = limits.host_concurrency.clamp(1, 32);
         let targets: Vec<(Ipv4Addr, Vec<u16>)> = probe_results
             .iter()
             .filter(|(_, probe)| !probe.open_ports.is_empty())
@@ -1105,9 +1105,7 @@ pub async fn run(
             let store = crate::discovery::windows::credential_store();
             match crate::discovery::windows::probe(&ip.to_string(), store).await {
                 Ok(facts) => {
-                    let summary = facts
-                        .os_summary()
-                        .unwrap_or_else(|| "answered".to_string());
+                    let summary = facts.os_summary().unwrap_or_else(|| "answered".to_string());
                     let entry = discovery
                         .devices
                         .entry(ip)

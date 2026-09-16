@@ -236,7 +236,7 @@ impl PhysicalDevice {
 pub fn reconcile(candidates: &[DeviceCandidate]) -> Vec<PhysicalDevice> {
     let mut parent: Vec<usize> = (0..candidates.len()).collect();
 
-    fn find(parent: &mut Vec<usize>, mut node: usize) -> usize {
+    fn find(parent: &mut [usize], mut node: usize) -> usize {
         while parent[node] != node {
             parent[node] = parent[parent[node]];
             node = parent[node];
@@ -328,13 +328,7 @@ fn build_group(candidates: &[DeviceCandidate], members: &[usize]) -> PhysicalDev
 
     let mut evidence: Vec<String> = shared
         .iter()
-        .map(|identity| {
-            format!(
-                "Shared {}: {}",
-                identity.strength.label(),
-                identity.display
-            )
-        })
+        .map(|identity| format!("Shared {}: {}", identity.strength.label(), identity.display))
         .collect();
     if members.len() > 1 && evidence.is_empty() {
         // Cannot happen with the union rule above, and is stated rather than
@@ -574,7 +568,11 @@ mod tests {
         let uuid = "4C4C4544-0037-5A10-8051-B4C04F435331";
         let candidates: Vec<DeviceCandidate> = (1..=3)
             .map(|i| {
-                let mut c = candidate(i, &format!("10.0.0.{i}"), Some(&format!("aa:bb:cc:00:00:0{i}")));
+                let mut c = candidate(
+                    i,
+                    &format!("10.0.0.{i}"),
+                    Some(&format!("aa:bb:cc:00:00:0{i}")),
+                );
                 c.identities
                     .push(IdentityClaim::new(IdentityStrength::SystemUuid, None, uuid).unwrap());
                 c
@@ -616,8 +614,12 @@ mod tests {
 
         let mac = "aa:bb:cc:00:00:01";
         assert_eq!(
-            IdentityClaim::new(IdentityStrength::Mac, Some("Dell"), mac).unwrap().key,
-            IdentityClaim::new(IdentityStrength::Mac, None, mac).unwrap().key
+            IdentityClaim::new(IdentityStrength::Mac, Some("Dell"), mac)
+                .unwrap()
+                .key,
+            IdentityClaim::new(IdentityStrength::Mac, None, mac)
+                .unwrap()
+                .key
         );
     }
 
@@ -637,7 +639,9 @@ mod tests {
         assert!(claim_from_line("hostname: NAS", None).is_none());
         assert!(claim_from_line("system UUID: ", None).is_none());
         // A placeholder is still refused on the way back in.
-        assert!(claim_from_line("system UUID: 00000000-0000-0000-0000-000000000000", None).is_none());
+        assert!(
+            claim_from_line("system UUID: 00000000-0000-0000-0000-000000000000", None).is_none()
+        );
     }
 
     #[test]
