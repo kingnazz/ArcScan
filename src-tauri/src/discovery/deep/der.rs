@@ -97,11 +97,17 @@ pub fn decode_string(tag: u8, bytes: &[u8]) -> Option<String> {
         // UTF8String, PrintableString, IA5String, VisibleString, NumericString,
         // GeneralString, UniversalString-as-bytes.
         0x0C | 0x13 | 0x16 | 0x1A | 0x12 | 0x1B => String::from_utf8_lossy(bytes).into_owned(),
-        // BMPString is UTF-16BE.
+        // BMPString is UTF-16BE. `as_chunks` rather than `chunks_exact`
+        // because the pair is a fixed-size array, so the code-unit read needs
+        // no indexing and cannot be out of bounds. A trailing odd byte is
+        // dropped, which is what a truncated BMPString deserves.
         0x1E => {
             let units: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_be_bytes)
                 .collect();
             String::from_utf16_lossy(&units)
         }
@@ -187,6 +193,16 @@ mod tests {
             decode_string(0x1E, &[0x00, 0x48, 0x00, 0x69]).as_deref(),
             Some("Hi")
         );
+    }
+
+    #[test]
+    fn a_truncated_bmp_string_drops_the_odd_byte_rather_than_panicking() {
+        // "Hi" in UTF-16BE with a stray trailing byte.
+        assert_eq!(
+            decode_string(0x1E, &[0x00, 0x48, 0x00, 0x69, 0x00]).as_deref(),
+            Some("Hi")
+        );
+        assert_eq!(decode_string(0x1E, &[0x00]), None);
     }
 
     #[test]
