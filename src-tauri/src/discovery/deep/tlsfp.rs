@@ -206,8 +206,12 @@ pub fn parse_certificate(cert: &[u8]) -> Option<TlsFingerprint> {
     // is what keeps the positional reads below aligned on both v1 and v3
     // certificates.
     let offset = usize::from(fields.first().is_some_and(|f| f.tag == 0xA0));
-    let issuer = fields.get(offset + 2).filter(|f| f.tag == der::TAG_SEQUENCE);
-    let subject = fields.get(offset + 4).filter(|f| f.tag == der::TAG_SEQUENCE);
+    let issuer = fields
+        .get(offset + 2)
+        .filter(|f| f.tag == der::TAG_SEQUENCE);
+    let subject = fields
+        .get(offset + 4)
+        .filter(|f| f.tag == der::TAG_SEQUENCE);
 
     let mut out = TlsFingerprint::default();
     if let Some(subject) = subject {
@@ -299,7 +303,7 @@ pub fn evidence(fingerprint: &TlsFingerprint, port: u16) -> Vec<Evidence> {
         out.push(Evidence::new(
             DiscoverySource::Tls,
             EvidenceKind::CertificateSubject,
-            &format!("cn:{key}"),
+            format!("cn:{key}"),
             cn,
             Confidence::Medium,
         ));
@@ -308,9 +312,23 @@ pub fn evidence(fingerprint: &TlsFingerprint, port: u16) -> Vec<Evidence> {
         out.push(Evidence::new(
             DiscoverySource::Tls,
             EvidenceKind::CertificateSubject,
-            &format!("o:{key}"),
+            format!("o:{key}"),
             org,
             Confidence::Medium,
+        ));
+    }
+    if fingerprint.self_signed() {
+        // Worth recording because of what it implies about the subject: a
+        // self-signed certificate's common name was written by the firmware
+        // author, where one issued by a certificate authority was written by
+        // whoever requested it. The former describes the device; the latter
+        // describes a service someone decided to run on it.
+        out.push(Evidence::new(
+            DiscoverySource::Tls,
+            EvidenceKind::Banner,
+            format!("tls-self-signed:{key}"),
+            "Self-signed certificate (the subject was written by the device's firmware)",
+            Confidence::Low,
         ));
     }
 
@@ -368,10 +386,7 @@ mod tests {
 
     /// An RDNSequence carrying one attribute.
     fn rdn(oid: &[u8], text: &str) -> Vec<u8> {
-        let attribute = tlv(
-            0x30,
-            &[tlv(0x06, oid), tlv(0x13, text.as_bytes())].concat(),
-        );
+        let attribute = tlv(0x30, &[tlv(0x06, oid), tlv(0x13, text.as_bytes())].concat());
         tlv(0x31, &attribute)
     }
 
@@ -382,16 +397,19 @@ mod tests {
             subject.extend(rdn(OID_ORGANIZATION, org));
         }
         let tbs = [
-            tlv(0xA0, &tlv(0x02, &[0x02])),     // version v3
-            tlv(0x02, &[0x01, 0x23]),           // serial
-            tlv(0x30, &tlv(0x06, &[0x2A])),     // signature algorithm
+            tlv(0xA0, &tlv(0x02, &[0x02])),              // version v3
+            tlv(0x02, &[0x01, 0x23]),                    // serial
+            tlv(0x30, &tlv(0x06, &[0x2A])),              // signature algorithm
             tlv(0x30, &rdn(OID_COMMON_NAME, issuer_cn)), // issuer
-            tlv(0x30, &[]),                     // validity
-            tlv(0x30, &subject),                // subject
-            tlv(0x30, &[]),                     // subjectPublicKeyInfo
+            tlv(0x30, &[]),                              // validity
+            tlv(0x30, &subject),                         // subject
+            tlv(0x30, &[]),                              // subjectPublicKeyInfo
         ]
         .concat();
-        tlv(0x30, &[tlv(0x30, &tbs), tlv(0x30, &[]), tlv(0x03, &[0x00])].concat())
+        tlv(
+            0x30,
+            &[tlv(0x30, &tbs), tlv(0x30, &[]), tlv(0x03, &[0x00])].concat(),
+        )
     }
 
     #[test]
@@ -408,7 +426,10 @@ mod tests {
         let cert = certificate("files.corp.example", None, "Corp Issuing CA");
         let parsed = parse_certificate(&cert).unwrap();
         assert!(!parsed.self_signed());
-        assert_eq!(parsed.issuer_common_name.as_deref(), Some("Corp Issuing CA"));
+        assert_eq!(
+            parsed.issuer_common_name.as_deref(),
+            Some("Corp Issuing CA")
+        );
     }
 
     #[test]

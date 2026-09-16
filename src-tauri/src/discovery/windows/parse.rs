@@ -55,11 +55,17 @@ pub fn is_placeholder_identifier(value: &str) -> bool {
     }
     // All-zero and all-F UUIDs, and any run of a single repeated character,
     // are what a machine reports when it has nothing to report.
-    let significant: String = lower.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let significant: String = lower
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
     if significant.is_empty() {
         return true;
     }
-    if significant.len() > 1 && significant.chars().all(|c| c == significant.as_bytes()[0] as char)
+    if significant.len() > 1
+        && significant
+            .chars()
+            .all(|c| c == significant.as_bytes()[0] as char)
     {
         return true;
     }
@@ -166,10 +172,7 @@ pub fn split_caption(caption: &str) -> (Option<String>, Option<String>) {
         if let Some(year) = tokens.get(2) {
             if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
                 taken = 3;
-                if tokens
-                    .get(3)
-                    .is_some_and(|r| r.eq_ignore_ascii_case("r2"))
-                {
+                if tokens.get(3).is_some_and(|r| r.eq_ignore_ascii_case("r2")) {
                     taken = 4;
                 }
             }
@@ -177,9 +180,7 @@ pub fn split_caption(caption: &str) -> (Option<String>, Option<String>) {
     } else if let Some(version) = tokens.get(1) {
         // `Windows 11`, `Windows 10`, `Windows 8.1`, `Windows 7`, and the
         // named releases that predate them.
-        let is_version = version
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.')
+        let is_version = version.chars().all(|c| c.is_ascii_digit() || c == '.')
             && version.chars().any(|c| c.is_ascii_digit());
         let is_named = ["vista", "xp", "2000"]
             .iter()
@@ -196,6 +197,47 @@ pub fn split_caption(caption: &str) -> (Option<String>, Option<String>) {
         Some(product),
         (!edition.is_empty()).then(|| edition.to_string()),
     )
+}
+
+/// Read the network adapters out of the report.
+///
+/// A machine with a wired NIC, a wireless NIC and a hypervisor bridge is one
+/// computer that ArcScan would otherwise find three times; this is what lets
+/// [`crate::discovery::reconcile`] put it back together.
+fn parse_interfaces(value: Option<&Value>) -> Vec<WindowsInterface> {
+    let Some(Value::Array(nics)) = value else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for nic in nics {
+        let mac = clean(nic.get("MACAddress"))
+            .as_deref()
+            .and_then(crate::scanner::normalize_mac);
+        let ipv4 = match nic.get("IPAddress") {
+            Some(Value::Array(list)) => list
+                .iter()
+                .filter_map(|v| clean(Some(v)))
+                // IPv6 is recorded elsewhere; this list is what ArcScan scans
+                // and what reconciliation matches on.
+                .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+                .collect(),
+            Some(one @ Value::String(_)) => clean(Some(one))
+                .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let description = clean(nic.get("Description"));
+        if mac.is_none() && ipv4.is_empty() {
+            continue;
+        }
+        out.push(WindowsInterface {
+            mac,
+            ipv4,
+            description,
+        });
+    }
+    out
 }
 
 /// Parse the JSON document the collection script writes to stdout.
@@ -227,103 +269,73 @@ pub fn parse_report(json: &str) -> Result<WindowsFacts, String> {
     let product = section("product");
     let bios = section("bios");
 
-    let mut facts = WindowsFacts::default();
-
     // ---- Operating system ---------------------------------------------
-    facts.os_caption = clean(field(os, "Caption"));
-    if let Some(caption) = facts.os_caption.as_deref() {
-        let (product_name, edition) = split_caption(caption);
-        facts.os_product = product_name;
-        facts.os_edition = edition;
-    }
-    facts.os_version = clean(field(os, "Version"));
-    facts.os_architecture = clean(field(os, "OSArchitecture"))
-        .as_deref()
-        .and_then(normalize_architecture);
-    facts.product_type =
-        clean_i64(field(os, "ProductType")).and_then(WindowsProductType::from_code);
+    let os_caption = clean(field(os, "Caption"));
+    let (os_product, os_edition) = match os_caption.as_deref() {
+        Some(caption) => split_caption(caption),
+        None => (None, None),
+    };
+    let os_version = clean(field(os, "Version"));
+    let product_type = clean_i64(field(os, "ProductType")).and_then(WindowsProductType::from_code);
 
     // The build comes from `BuildNumber` when it is there and from the version
     // string when it is not; both are reported by every supported release, and
     // taking either keeps a partial answer useful.
-    facts.os_build = clean(field(os, "BuildNumber"))
+    let os_build = clean(field(os, "BuildNumber"))
         .and_then(|b| b.trim().parse::<u32>().ok())
-        .or_else(|| {
-            facts
-                .os_version
-                .as_deref()
-                .and_then(release::build_from_version)
-        });
+        .or_else(|| os_version.as_deref().and_then(release::build_from_version));
 
     // The feature-update label is derived, never reported. It needs the product
     // type, because build 26100 is Windows 11 24H2 on a client and Windows
     // Server 2025 on a server.
-    if let Some(build) = facts.os_build {
-        if let Some(found) = release::lookup(build, facts.product_type) {
-            facts.os_release = Some(found.release);
-            // The caption is authoritative for the product and is left alone.
-            // The table only fills a gap.
-            if facts.os_product.is_none() {
-                facts.os_product = Some(found.product);
-            }
-        }
-    }
-
-    // ---- Hardware ------------------------------------------------------
-    facts.computer_name = clean(field(cs, "Name"));
-    facts.hardware_manufacturer =
-        clean(field(cs, "Manufacturer")).or_else(|| clean(field(product, "Vendor")));
-    facts.hardware_model =
-        clean(field(cs, "Model")).or_else(|| clean(field(product, "Name")));
-    // The service tag first: `IdentifyingNumber` is what Dell, HP and Lenovo
-    // put a support contract against. The BIOS serial is the same string on
-    // most hardware and a fallback on the rest.
-    facts.hardware_serial = clean_identifier(field(product, "IdentifyingNumber"))
-        .or_else(|| clean_identifier(field(bios, "SerialNumber")));
-    facts.system_uuid = clean_identifier(field(product, "UUID")).map(|u| u.to_uppercase());
+    let found = os_build.and_then(|build| release::lookup(build, product_type));
+    let os_release = found.as_ref().map(|r| r.release.clone());
+    // The caption is authoritative for the product and is left alone; the
+    // table only fills a gap.
+    let os_product = os_product.or_else(|| found.map(|r| r.product));
 
     // ---- Membership ----------------------------------------------------
-    facts.part_of_domain = clean_bool(field(cs, "PartOfDomain"));
-    facts.domain = clean(field(cs, "Domain"));
-    facts.workgroup = clean(field(cs, "Workgroup")).or_else(|| {
+    let part_of_domain = clean_bool(field(cs, "PartOfDomain"));
+    let domain = clean(field(cs, "Domain"));
+    let workgroup = clean(field(cs, "Workgroup")).or_else(|| {
         // A machine that is not domain-joined reports its workgroup in the
         // Domain field, and leaves Workgroup null.
-        (facts.part_of_domain == Some(false))
-            .then(|| facts.domain.clone())
+        (part_of_domain == Some(false))
+            .then(|| domain.clone())
             .flatten()
     });
 
-    // ---- Interfaces ----------------------------------------------------
-    if let Some(Value::Array(nics)) = root.get("nics") {
-        for nic in nics {
-            let mac = clean(nic.get("MACAddress"))
-                .as_deref()
-                .and_then(crate::scanner::normalize_mac);
-            let ipv4 = match nic.get("IPAddress") {
-                Some(Value::Array(list)) => list
-                    .iter()
-                    .filter_map(|v| clean(Some(v)))
-                    // IPv6 is recorded elsewhere; this list is what ArcScan
-                    // scans and what reconciliation matches on.
-                    .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
-                    .collect(),
-                Some(one @ Value::String(_)) => clean(Some(one))
-                    .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let description = clean(nic.get("Description"));
-            if mac.is_none() && ipv4.is_empty() {
-                continue;
-            }
-            facts.interfaces.push(WindowsInterface {
-                mac,
-                ipv4,
-                description,
-            });
-        }
-    }
+    let facts = WindowsFacts {
+        os_caption,
+        os_product,
+        os_edition,
+        os_version,
+        os_release,
+        os_build,
+        os_architecture: clean(field(os, "OSArchitecture"))
+            .as_deref()
+            .and_then(normalize_architecture),
+        product_type,
+
+        // ---- Hardware --------------------------------------------------
+        computer_name: clean(field(cs, "Name")),
+        hardware_manufacturer: clean(field(cs, "Manufacturer"))
+            .or_else(|| clean(field(product, "Vendor"))),
+        hardware_model: clean(field(cs, "Model")).or_else(|| clean(field(product, "Name"))),
+        // The service tag first: `IdentifyingNumber` is what Dell, HP and
+        // Lenovo put a support contract against. The BIOS serial is the same
+        // string on most hardware and a fallback on the rest.
+        hardware_serial: clean_identifier(field(product, "IdentifyingNumber"))
+            .or_else(|| clean_identifier(field(bios, "SerialNumber"))),
+        system_uuid: clean_identifier(field(product, "UUID")).map(|u| u.to_uppercase()),
+
+        part_of_domain,
+        domain,
+        workgroup,
+
+        // ---- Interfaces ------------------------------------------------
+        interfaces: parse_interfaces(root.get("nics")),
+    };
 
     if facts.is_empty() {
         return Err("the machine answered, but reported nothing ArcScan could use".into());
@@ -362,7 +374,10 @@ mod tests {
         );
         assert_eq!(
             split_caption("Microsoft Windows Server 2012 R2 Standard"),
-            (Some("Windows Server 2012 R2".into()), Some("Standard".into()))
+            (
+                Some("Windows Server 2012 R2".into()),
+                Some("Standard".into())
+            )
         );
     }
 
@@ -385,7 +400,10 @@ mod tests {
     fn architecture_is_read_from_the_digits_not_the_words() {
         assert_eq!(normalize_architecture("64-bit").as_deref(), Some("x64"));
         assert_eq!(normalize_architecture("32-bit").as_deref(), Some("x86"));
-        assert_eq!(normalize_architecture("ARM 64-bit").as_deref(), Some("arm64"));
+        assert_eq!(
+            normalize_architecture("ARM 64-bit").as_deref(),
+            Some("arm64")
+        );
         // Localized strings still resolve, which is the point of matching on
         // the digits.
         assert_eq!(normalize_architecture("64 bits").as_deref(), Some("x64"));
@@ -420,7 +438,10 @@ mod tests {
             "CZC1234ABC",
             "MXL0123456",
         ] {
-            assert!(!is_placeholder_identifier(real), "{real} is a real identity");
+            assert!(
+                !is_placeholder_identifier(real),
+                "{real} is a real identity"
+            );
         }
     }
 

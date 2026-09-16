@@ -305,10 +305,7 @@ fn a_directory_service_is_recognised_without_credentials_but_only_at_medium() {
 
     assert_eq!(result.device_type, DeviceType::DomainController);
     assert_eq!(result.confidence, Confidence::Medium);
-    assert!(result
-        .evidence
-        .iter()
-        .any(|line| line.contains("Kerberos")));
+    assert!(result.evidence.iter().any(|line| line.contains("Kerberos")));
 }
 
 #[test]
@@ -412,7 +409,12 @@ fn a_synology_identified_only_by_its_certificate_is_still_storage() {
 
 #[test]
 fn a_ubiquiti_switch_is_a_switch() {
-    for model in ["USW-24-PoE", "USW-Pro-48-PoE", "USW Lite 8 PoE", "USW-Aggregation"] {
+    for model in [
+        "USW-24-PoE",
+        "USW-Pro-48-PoE",
+        "USW Lite 8 PoE",
+        "USW-Aggregation",
+    ] {
         let result = Device::new()
             .vendor("Ubiquiti Inc")
             .ports(&[22, 80, 443])
@@ -599,7 +601,10 @@ fn several_nics_on_one_windows_machine_reconcile_to_one_device() {
     assert_eq!(group.macs.len(), 2);
     assert!(group.is_multi_homed());
     assert_eq!(group.confidence, Confidence::High);
-    assert!(group.evidence.iter().any(|line| line.contains("system UUID")));
+    assert!(group
+        .evidence
+        .iter()
+        .any(|line| line.contains("system UUID")));
 }
 
 #[test]
@@ -607,18 +612,21 @@ fn a_nas_on_two_ports_is_counted_once() {
     // The duplicate reported from ArcAtlas. No credentials involved: the SMB
     // server GUID is enough, and it is the same on both interfaces.
     let guid = "4c4c4544-0037-5a10-8051-b4c04f435331";
-    let candidates: Vec<DeviceCandidate> = [("10.0.0.30", "00:11:32:aa:bb:01", 1i64), ("10.0.0.31", "00:11:32:aa:bb:02", 2)]
-        .into_iter()
-        .map(|(ip, mac, id)| DeviceCandidate {
-            device_id: id,
-            ip: Some(ip.into()),
-            mac: Some(mac.into()),
-            hostname: Some("DiskStation".into()),
-            identities: vec![
-                IdentityClaim::new(IdentityStrength::VendorUnique, Some("smb"), guid).unwrap(),
-            ],
-        })
-        .collect();
+    let candidates: Vec<DeviceCandidate> = [
+        ("10.0.0.30", "00:11:32:aa:bb:01", 1i64),
+        ("10.0.0.31", "00:11:32:aa:bb:02", 2),
+    ]
+    .into_iter()
+    .map(|(ip, mac, id)| DeviceCandidate {
+        device_id: id,
+        ip: Some(ip.into()),
+        mac: Some(mac.into()),
+        hostname: Some("DiskStation".into()),
+        identities: vec![
+            IdentityClaim::new(IdentityStrength::VendorUnique, Some("smb"), guid).unwrap(),
+        ],
+    })
+    .collect();
 
     let groups = reconcile(&candidates);
     assert_eq!(groups.len(), 1);
@@ -641,24 +649,18 @@ fn two_devices_sharing_a_hostname_are_never_merged() {
             ip: Some("10.0.0.40".into()),
             mac: Some("aa:bb:cc:00:00:11".into()),
             hostname: Some("PRINTER".into()),
-            identities: vec![IdentityClaim::new(
-                IdentityStrength::Mac,
-                None,
-                "aa:bb:cc:00:00:11",
-            )
-            .unwrap()],
+            identities: vec![
+                IdentityClaim::new(IdentityStrength::Mac, None, "aa:bb:cc:00:00:11").unwrap(),
+            ],
         },
         DeviceCandidate {
             device_id: 2,
             ip: Some("10.0.0.41".into()),
             mac: Some("aa:bb:cc:00:00:22".into()),
             hostname: Some("PRINTER".into()),
-            identities: vec![IdentityClaim::new(
-                IdentityStrength::Mac,
-                None,
-                "aa:bb:cc:00:00:22",
-            )
-            .unwrap()],
+            identities: vec![
+                IdentityClaim::new(IdentityStrength::Mac, None, "aa:bb:cc:00:00:22").unwrap(),
+            ],
         },
     ];
 

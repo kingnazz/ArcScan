@@ -31,9 +31,6 @@ const NETBIOS_HEADER: usize = 4;
 const SMB2_HEADER: usize = 64;
 const BODY: usize = NETBIOS_HEADER + SMB2_HEADER;
 
-/// Longest reply this will read. A negotiate response is a few hundred bytes.
-pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
-
 /// A negotiated SMB2 dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialect(pub u16);
@@ -145,12 +142,20 @@ pub fn parse_negotiate_response(raw: &[u8]) -> Option<SmbFingerprint> {
         return None;
     }
     // Command must be NEGOTIATE (0x0000) and the reply must be a response.
-    let command = u16::from_le_bytes(raw.get(NETBIOS_HEADER + 12..NETBIOS_HEADER + 14)?.try_into().ok()?);
+    let command = u16::from_le_bytes(
+        raw.get(NETBIOS_HEADER + 12..NETBIOS_HEADER + 14)?
+            .try_into()
+            .ok()?,
+    );
     if command != 0 {
         return None;
     }
     // A non-zero status means the server refused rather than negotiated.
-    let status = u32::from_le_bytes(raw.get(NETBIOS_HEADER + 8..NETBIOS_HEADER + 12)?.try_into().ok()?);
+    let status = u32::from_le_bytes(
+        raw.get(NETBIOS_HEADER + 8..NETBIOS_HEADER + 12)?
+            .try_into()
+            .ok()?,
+    );
     if status != 0 {
         return None;
     }
@@ -291,7 +296,8 @@ mod tests {
     fn the_request_is_framed_and_offers_the_usual_dialects() {
         let request = negotiate_request();
         assert_eq!(request[0], 0x00);
-        let declared = ((request[1] as usize) << 16) | ((request[2] as usize) << 8) | request[3] as usize;
+        let declared =
+            ((request[1] as usize) << 16) | ((request[2] as usize) << 8) | request[3] as usize;
         assert_eq!(declared, request.len() - 4);
         assert_eq!(&request[4..8], &[0xFE, b'S', b'M', b'B']);
     }
@@ -343,9 +349,7 @@ mod tests {
         let raw = response(0x0311, [0u8; 16], 0x0001, 0);
         let parsed = parse_negotiate_response(&raw).unwrap();
         assert_eq!(parsed.server_guid, None);
-        assert!(!evidence(&parsed)
-            .iter()
-            .any(|e| e.key == "smb_server_guid"));
+        assert!(!evidence(&parsed).iter().any(|e| e.key == "smb_server_guid"));
     }
 
     #[test]

@@ -121,7 +121,9 @@ fn split_account(username: &str, domain: Option<&str>) -> (Option<String>, Strin
         let right = right.trim();
         if !left.is_empty() && !right.is_empty() {
             return (
-                explicit.map(str::to_string).or_else(|| Some(left.to_string())),
+                explicit
+                    .map(str::to_string)
+                    .or_else(|| Some(left.to_string())),
                 right.to_string(),
             );
         }
@@ -293,6 +295,9 @@ mod tests {
         assert!(store.with(|c| c.account()).is_none());
         store.set(WindowsCredential::new("admin", None, "pw").unwrap());
         assert_eq!(store.with(|c| c.account()).as_deref(), Some("admin"));
-        assert_eq!(store.with(|c| c.password.expose().to_vec()), Some(b"pw".to_vec()));
+        assert_eq!(
+            store.with(|c| c.password.expose().to_vec()),
+            Some(b"pw".to_vec())
+        );
     }
 }

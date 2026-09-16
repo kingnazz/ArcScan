@@ -44,12 +44,26 @@ const MAX_VALUE_CHARS: usize = 80;
 /// instance name) identify one specific unit rather than one kind of device,
 /// and an address says where rather than what. None of them can help fix a
 /// classification rule, so none of them earn the risk.
+///
+/// v1.9 adds two more by the same test. A `system_uuid` is the strongest
+/// identifier a machine has and says nothing whatever about what kind of thing
+/// it is, so it is pure risk. A `domain_membership` names the customer's
+/// directory rather than the device, and "is it domain-joined" — the only part
+/// a rule could use — is already carried by the Windows product type.
+///
+/// The deep-scan strings a rule *does* turn on — a `banner`, a
+/// `certificate_subject`, a `page_title` — are kept, because they are what a
+/// classification rule matches against and a report that omitted them could
+/// not explain a wrong answer. They are clipped to [`MAX_VALUE_CHARS`] like
+/// everything else.
 const EXCLUDED_KINDS: &[&str] = &[
     "serial_number",
     "url",
     "protocol_identifier",
     "ipv4_address",
     "ipv6_address",
+    "system_uuid",
+    "domain_membership",
 ];
 
 /// One claim, as the report shows it.
@@ -91,6 +105,16 @@ pub struct DeviceDiagnostic<'a> {
     /// True when the device is the network's default gateway, which is the
     /// single strongest router signal and worth reporting.
     pub is_gateway: bool,
+    /// v1.9. The operating system a deep or credentialed scan established, as
+    /// one line. Reported because a misclassification of a Windows machine
+    /// almost always turns on what was, or was not, established about its OS.
+    pub os_summary: Option<&'a str>,
+    /// v1.9. `1`, `2` or `3`. The single field that separates a workstation
+    /// from a server, and therefore the first thing to look at when one was
+    /// reported as the other.
+    pub windows_product_type: Option<&'a str>,
+    /// v1.9. The hardware the machine reported about itself.
+    pub hardware: Option<&'a str>,
 }
 
 /// Mask an address to its first two octets.
@@ -179,6 +203,12 @@ pub fn build_report(input: &DeviceDiagnostic<'_>) -> String {
         ("Manufacturer", input.manufacturer),
         ("Model", input.model),
         ("MAC manufacturer", input.oui_vendor),
+        // v1.9. Deliberately the established facts and never an identifier: a
+        // serial number or a system UUID identifies the unit, and a report a
+        // technician pastes into a support thread has no use for one.
+        ("Operating system", input.os_summary),
+        ("Windows product type", input.windows_product_type),
+        ("Hardware", input.hardware),
     ] {
         if let Some(value) = value.map(clip).filter(|v| !v.is_empty()) {
             out.push_str(&format!("{label}: {value}\n"));
@@ -298,6 +328,9 @@ mod tests {
             discovery_quality: Some(DiscoveryQuality::Complete),
             ip: Some("192.168.1.42"),
             is_gateway: false,
+            os_summary: None,
+            windows_product_type: None,
+            hardware: None,
         }
     }
 
@@ -468,5 +501,164 @@ mod tests {
         assert!(report.contains("TV - 123"));
         assert!(!report.contains('\u{0}'));
         assert!(!report.contains('\u{7}'));
+    }
+}
+
+#[cfg(test)]
+mod v1_9_tests {
+    use super::*;
+
+    #[test]
+    fn a_report_names_the_operating_system_and_the_product_type() {
+        // What a technician needs when a workstation was reported as a server:
+        // whether ProductType was established at all, and what it said.
+        let evidence: &[DiagnosticEvidence] = &[];
+        let report = build_report(&DeviceDiagnostic {
+            app_version: "1.9.0",
+            effective_type: DeviceType::Workstation,
+            type_source: Some(TypeSource::Automatic),
+            detected_type: DeviceType::Workstation,
+            detected_confidence: Confidence::High,
+            detected_name: Some("WS-FINANCE-04"),
+            manufacturer: Some("Dell Inc."),
+            model: Some("Latitude 7450"),
+            oui_vendor: Some("Dell Inc"),
+            sources: &[],
+            services: &[],
+            evidence,
+            discovery_quality: Some(DiscoveryQuality::Complete),
+            ip: Some("10.0.0.5"),
+            is_gateway: false,
+            os_summary: Some("Windows 11 Pro 24H2 (build 26100, x64)"),
+            windows_product_type: Some("1"),
+            hardware: Some("Dell Inc. Latitude 7450"),
+        });
+        assert!(report.contains("Windows 11 Pro 24H2"));
+        assert!(report.contains("Windows product type: 1"));
+        assert!(report.contains("Hardware: Dell Inc. Latitude 7450"));
+    }
+
+    #[test]
+    fn a_report_carries_no_identifier_that_names_one_unit() {
+        // A report is pasted into a support thread. A system UUID or a service
+        // tag identifies the customer's specific machine and has no diagnostic
+        // value, so there is no field for one — this asserts the fields that
+        // exist cannot carry one by accident.
+        let evidence: &[DiagnosticEvidence] = &[];
+        let report = build_report(&DeviceDiagnostic {
+            app_version: "1.9.0",
+            effective_type: DeviceType::Server,
+            type_source: Some(TypeSource::Automatic),
+            detected_type: DeviceType::Server,
+            detected_confidence: Confidence::High,
+            detected_name: None,
+            manufacturer: None,
+            model: None,
+            oui_vendor: None,
+            sources: &[],
+            services: &[],
+            evidence,
+            discovery_quality: None,
+            ip: Some("10.0.0.5"),
+            is_gateway: false,
+            os_summary: Some("Windows Server 2022 Standard"),
+            windows_product_type: Some("3"),
+            hardware: Some("Dell Inc. PowerEdge R750"),
+        });
+        // The values, not the words: the report's own footer says in prose
+        // that it omits serial numbers, which is the opposite of a leak.
+        assert!(!report.contains("J7K2M13"));
+        assert!(!report.contains("4C4C4544-004A-3710-8054-B7C04F324D13"));
+        assert!(!report.to_lowercase().contains("password"));
+        // And the address is still masked, as it was before v1.9.
+        assert!(report.contains("10.0.x.x"));
+        assert!(!report.contains("10.0.0.5"));
+    }
+
+    #[test]
+    fn a_device_no_deep_scan_reached_reports_no_operating_system_line() {
+        let evidence: &[DiagnosticEvidence] = &[];
+        let report = build_report(&DeviceDiagnostic {
+            app_version: "1.9.0",
+            effective_type: DeviceType::Unknown,
+            type_source: None,
+            detected_type: DeviceType::Unknown,
+            detected_confidence: Confidence::Unknown,
+            detected_name: None,
+            manufacturer: None,
+            model: None,
+            oui_vendor: None,
+            sources: &[],
+            services: &[],
+            evidence,
+            discovery_quality: None,
+            ip: None,
+            is_gateway: false,
+            os_summary: None,
+            windows_product_type: None,
+            hardware: None,
+        });
+        assert!(!report.contains("Operating system"));
+        assert!(!report.contains("Windows product type"));
+    }
+}
+
+#[cfg(test)]
+mod v1_9_redaction_tests {
+    use super::*;
+
+    fn report_with(kind: &str, value: &str) -> String {
+        let evidence = vec![DiagnosticEvidence {
+            source: "windows_credentialed".into(),
+            kind: kind.into(),
+            value: value.into(),
+            freshness: Freshness::Current,
+            misses: 0,
+        }];
+        build_report(&DeviceDiagnostic {
+            app_version: "1.9.0",
+            effective_type: DeviceType::Workstation,
+            type_source: Some(TypeSource::Automatic),
+            detected_type: DeviceType::Workstation,
+            detected_confidence: Confidence::High,
+            detected_name: None,
+            manufacturer: None,
+            model: None,
+            oui_vendor: None,
+            sources: &[],
+            services: &[],
+            evidence: &evidence,
+            discovery_quality: None,
+            ip: None,
+            is_gateway: false,
+            os_summary: None,
+            windows_product_type: None,
+            hardware: None,
+        })
+    }
+
+    #[test]
+    fn a_system_uuid_never_reaches_a_report() {
+        // The strongest identifier a machine has, and it says nothing about
+        // what kind of thing the machine is. Pure risk, no diagnostic value.
+        let report = report_with("system_uuid", "4C4C4544-0037-5A10-8051-B4C04F435331");
+        assert!(!report.contains("4C4C4544-0037-5A10-8051-B4C04F435331"));
+    }
+
+    #[test]
+    fn a_domain_name_never_reaches_a_report() {
+        // Names the customer's directory rather than the device.
+        let report = report_with("domain_membership", "corp.example.internal");
+        assert!(!report.contains("corp.example.internal"));
+    }
+
+    #[test]
+    fn the_strings_a_rule_turns_on_are_kept() {
+        // A report that omitted these could not explain a wrong answer, which
+        // is the only reason the report exists.
+        assert!(report_with("banner", "Canon HTTP Server").contains("Canon HTTP Server"));
+        assert!(report_with("page_title", "iDRAC9").contains("iDRAC9"));
+        assert!(report_with("os_product", "Windows 11").contains("Windows 11"));
+        assert!(report_with("windows_product_type", "1").contains("1"));
     }
 }

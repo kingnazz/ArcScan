@@ -35,8 +35,10 @@ import { CHANGE_TYPE_LABEL } from "../lib/export";
 import { rowName, type DeviceRow } from "../lib/live";
 import {
   DEVICE_TYPE_LABEL,
+  WINDOWS_PRODUCT_TYPE_HINT,
   deviceTypeLabel,
   evidenceKindLabel,
+  osSummary,
   serviceName,
   sourceLabel,
   sourcesLabel,
@@ -520,6 +522,10 @@ function DiscoverySection({
   const evidence = discovery?.evidence ?? [];
   const staleEvidence = evidence.filter((row) => row.freshness === "stale");
   const agingEvidence = evidence.filter((row) => row.freshness === "aging");
+  // One line, or null when nothing established a product. Null renders nothing
+  // rather than an empty row: a column of dashes reads as "asked and found
+  // nothing", which is not what a Quick Scan did.
+  const osLine = osSummary(discovery);
 
   return (
     <section>
@@ -575,6 +581,50 @@ function DiscoverySection({
                 </span>
               </DetailRow>
             ) : null}
+            {/* ---- v1.9 ------------------------------------------------
+                The operating system and hardware a deep or credentialed scan
+                established. Shown between the model and the protocol-level
+                names because that is the order a technician reads them in:
+                what it is, then what it runs, then how ArcScan knows.
+
+                Every row is conditional. A device no deep scan reached shows
+                none of them, rather than showing a column of dashes that
+                would read as "asked and found nothing". */}
+            {osLine ? (
+              <DetailRow label="Operating system">
+                <span className="break-words">{osLine}</span>
+                {discovery.windows_product_type ? (
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    {WINDOWS_PRODUCT_TYPE_HINT[discovery.windows_product_type] ??
+                      `Windows ProductType ${discovery.windows_product_type}.`}
+                  </p>
+                ) : null}
+              </DetailRow>
+            ) : null}
+            {discovery.hardware_model ? (
+              <DetailRow label="Hardware">
+                <span className="break-words">
+                  {[discovery.hardware_manufacturer, discovery.hardware_model]
+                    .filter(Boolean)
+                    .join(" ")}
+                </span>
+              </DetailRow>
+            ) : null}
+            {discovery.hardware_serial ? (
+              <DetailRow label="Serial / service tag" mono>
+                <span className="break-words">{discovery.hardware_serial}</span>
+              </DetailRow>
+            ) : null}
+            {discovery.system_uuid ? (
+              <DetailRow label="System UUID" mono>
+                <span className="break-words">{discovery.system_uuid}</span>
+              </DetailRow>
+            ) : null}
+            {discovery.domain ? (
+              <DetailRow label="Domain">
+                <span className="break-words">{discovery.domain}</span>
+              </DetailRow>
+            ) : null}
             {discovery.mdns_hostname ? (
               <DetailRow label="mDNS host name" mono>
                 <span className="break-words">{discovery.mdns_hostname}</span>
@@ -615,6 +665,25 @@ function DiscoverySection({
               </DetailRow>
             ) : null}
           </dl>
+
+          {discovery.identity_evidence && discovery.identity_evidence.length > 0 ? (
+            <div className="mt-2">
+              <p className="field-label">Identity</p>
+              {/* What ArcScan would use to recognise this device again, and to
+                  tell it apart from a second machine with the same name.
+                  Strongest first. */}
+              <ul className="mt-0.5 space-y-0.5">
+                {discovery.identity_evidence.map((line) => (
+                  <li
+                    key={line}
+                    className="break-words font-mono text-[12.5px] text-text-secondary"
+                  >
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {discovery.type_evidence.length > 0 ? (
             <div className="mt-2">

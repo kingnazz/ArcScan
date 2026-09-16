@@ -73,7 +73,7 @@ pub fn evidence(banner: &str, port: u16) -> Vec<Evidence> {
     let mut out = vec![Evidence::new(
         DiscoverySource::Banner,
         EvidenceKind::Banner,
-        &port.to_string(),
+        port.to_string(),
         &clean,
         // A banner is a string a device chose to print. It is worth recording
         // and never worth being sure about.
@@ -134,7 +134,8 @@ mod tests {
 
     #[test]
     fn a_multi_line_policy_notice_does_not_become_an_inventory_column() {
-        let raw = b"220 FTP ready\r\nUnauthorised access is prohibited.\r\nAll activity is logged.\r\n";
+        let raw =
+            b"220 FTP ready\r\nUnauthorised access is prohibited.\r\nAll activity is logged.\r\n";
         assert_eq!(parse_banner(raw).as_deref(), Some("220 FTP ready"));
     }
 
@@ -160,8 +161,14 @@ mod tests {
 
     #[test]
     fn a_distribution_suffix_establishes_a_family_and_not_a_version() {
-        assert_eq!(ssh_os_family("SSH-2.0-OpenSSH_9.6p1 Ubuntu-3"), Some("linux"));
-        assert_eq!(ssh_os_family("SSH-2.0-OpenSSH_9.3 FreeBSD-20230719"), Some("bsd"));
+        assert_eq!(
+            ssh_os_family("SSH-2.0-OpenSSH_9.6p1 Ubuntu-3"),
+            Some("linux")
+        );
+        assert_eq!(
+            ssh_os_family("SSH-2.0-OpenSSH_9.3 FreeBSD-20230719"),
+            Some("bsd")
+        );
         let found = evidence("SSH-2.0-OpenSSH_9.6p1 Ubuntu-3", 22);
         let family = found
             .iter()

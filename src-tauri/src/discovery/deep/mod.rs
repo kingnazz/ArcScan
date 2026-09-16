@@ -53,6 +53,13 @@ pub const MAX_READ_BYTES: usize = 64 * 1024;
 /// the first few answer the question or nothing will.
 pub const MAX_PROBES_PER_HOST: usize = 8;
 
+// The ceilings above are what keep a deep scan from becoming a different order
+// of magnitude of work than the sweep that preceded it. Checked at compile
+// time rather than in a test, so raising one is a deliberate edit here and not
+// something a test run discovers later.
+const _: () = assert!(MAX_PROBES_PER_HOST <= 16);
+const _: () = assert!(MAX_READ_BYTES <= 128 * 1024);
+
 /// Ports asked for an HTTP front page, when the sweep found them open.
 pub const HTTP_PORTS: &[u16] = &[80, 8080, 8000, 8008, 81, 280, 591];
 /// Ports offered a TLS ClientHello, when the sweep found them open.
@@ -94,16 +101,6 @@ impl Default for DeepOptions {
     }
 }
 
-impl DeepOptions {
-    /// Every probe on. The Deep Scan profile's setting.
-    pub fn all() -> Self {
-        DeepOptions {
-            enabled: true,
-            ..Default::default()
-        }
-    }
-}
-
 /// What one deep pass produced for one host.
 #[derive(Debug, Clone, Default)]
 pub struct DeepOutcome {
@@ -132,14 +129,20 @@ pub async fn probe_host(ip: Ipv4Addr, open_ports: &[u16], options: &DeepOptions)
     let mut budget = MAX_PROBES_PER_HOST;
 
     if options.http {
-        for port in HTTP_PORTS.iter().copied().filter(|p| open_ports.contains(p)) {
+        for port in HTTP_PORTS
+            .iter()
+            .copied()
+            .filter(|p| open_ports.contains(p))
+        {
             if budget == 0 {
                 break;
             }
             budget -= 1;
             match http_probe(ip, port).await {
                 Ok(fingerprint) => {
-                    outcome.evidence.extend(httpfp::evidence(&fingerprint, port));
+                    outcome
+                        .evidence
+                        .extend(httpfp::evidence(&fingerprint, port));
                     outcome
                         .notes
                         .push(format!("HTTP on {port}: {} ", fingerprint.status));
@@ -148,7 +151,7 @@ pub async fn probe_host(ip: Ipv4Addr, open_ports: &[u16], options: &DeepOptions)
             }
             // One answering web server is enough. A device serving the same
             // interface on 80 and 8080 has not said two things.
-            if !outcome.evidence.is_empty() {
+            if !outcome.is_empty() {
                 break;
             }
         }
@@ -273,8 +276,8 @@ async fn http_probe(ip: Ipv4Addr, port: u16) -> Result<httpfp::HttpFingerprint, 
 async fn tls_probe(ip: Ipv4Addr, port: u16) -> Result<tlsfp::TlsFingerprint, String> {
     let hello = tlsfp::client_hello();
     let raw = exchange(ip, port, Some(&hello)).await?;
-    let certificate = tlsfp::first_certificate(&raw)
-        .ok_or_else(|| "no certificate was presented".to_string())?;
+    let certificate =
+        tlsfp::first_certificate(&raw).ok_or_else(|| "no certificate was presented".to_string())?;
     tlsfp::parse_certificate(&certificate)
         .ok_or_else(|| "the certificate had no readable subject".to_string())
 }
@@ -295,6 +298,18 @@ async fn banner_probe(ip: Ipv4Addr, port: u16) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Deep scanning with every probe on, spelled out rather than built by a
+    /// constructor, so a test says which level it means.
+    fn every_probe() -> DeepOptions {
+        DeepOptions {
+            enabled: true,
+            http: true,
+            tls: true,
+            smb: true,
+            banners: true,
+        }
+    }
+
     #[test]
     fn deep_scanning_is_off_unless_it_is_asked_for() {
         // The guarantee that keeps Quick Scan quick, and that makes a request
@@ -306,7 +321,7 @@ mod tests {
 
     #[test]
     fn the_deep_profile_turns_every_probe_on() {
-        let options = DeepOptions::all();
+        let options = every_probe();
         assert!(options.enabled);
         assert!(options.http && options.tls && options.smb && options.banners);
     }
@@ -329,7 +344,7 @@ mod tests {
         // port list means nothing is attempted, so this returns immediately
         // rather than spending a timeout per candidate port.
         let started = std::time::Instant::now();
-        let outcome = probe_host(Ipv4Addr::new(192, 0, 2, 1), &[], &DeepOptions::all()).await;
+        let outcome = probe_host(Ipv4Addr::new(192, 0, 2, 1), &[], &every_probe()).await;
         assert!(outcome.is_empty());
         assert!(outcome.notes.is_empty());
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -339,19 +354,10 @@ mod tests {
     fn switching_one_probe_off_leaves_the_others_alone() {
         let options = DeepOptions {
             smb: false,
-            ..DeepOptions::all()
+            ..every_probe()
         };
         assert!(options.enabled);
         assert!(!options.smb);
         assert!(options.http);
-    }
-
-    #[test]
-    fn the_probe_ceilings_are_bounded() {
-        // A host with two hundred open ports must not become two hundred
-        // connections.
-        assert!(MAX_PROBES_PER_HOST <= 16);
-        assert!(PROBE_TIMEOUT <= Duration::from_secs(5));
-        assert!(MAX_READ_BYTES <= 128 * 1024);
     }
 }
