@@ -170,7 +170,7 @@ function credentialedRow(patch: Partial<InventoryRow> = {}): InventoryRow {
     hostname: "ws-finance-04",
     vendor: "Dell Inc",
     user_device_type: null,
-    physical_device_key: "SystemUuid||4c4c454400375a108051b4c04f435331",
+    physical_device_key: "uuid||4c4c454400375a108051b4c04f435331",
     physical_interface_count: 2,
     discovery: {
       detected_name: "WS-FINANCE-04",

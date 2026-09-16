@@ -448,7 +448,7 @@ describe("errors and copy", () => {
 describe("v1.9 handoff compatibility", () => {
   const deepRow = (patch: Partial<InventoryRow> = {}): InventoryRow => ({
     ...inventoryRow({ device_id: 21, presence: "present", network_scope_id: 1 }),
-    physical_device_key: "SystemUuid||4c4c454400375a108051b4c04f435331",
+    physical_device_key: "uuid||4c4c454400375a108051b4c04f435331",
     physical_interface_count: 2,
     discovery: {
       detected_name: "APP-01",
@@ -513,7 +513,7 @@ describe("v1.9 handoff compatibility", () => {
     expect(device.hardware_serial).toBe("J7K2M13");
     expect(device.device_type).toBe("Server");
     // And the key that lets ArcAtlas count a multi-homed machine once.
-    expect(device.physical_device).toBe("SystemUuid||4c4c454400375a108051b4c04f435331");
+    expect(device.physical_device).toBe("uuid||4c4c454400375a108051b4c04f435331");
   });
 
   it("never puts a credential in the envelope", () => {

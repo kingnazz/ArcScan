@@ -56,6 +56,22 @@ pub enum IdentityStrength {
 }
 
 impl IdentityStrength {
+    /// A short, stable slug for the comparison key.
+    ///
+    /// Written out rather than derived from the variant name with `{:?}`,
+    /// because this string is part of `physical_device_key`, which reaches an
+    /// export and ArcAtlas. A rename of a Rust variant must not silently
+    /// change a key that something else joins on.
+    pub fn slug(self) -> &'static str {
+        match self {
+            IdentityStrength::SystemUuid => "uuid",
+            IdentityStrength::HardwareSerial => "serial",
+            IdentityStrength::VendorUnique => "vendor",
+            IdentityStrength::StableDeviceId => "device",
+            IdentityStrength::Mac => "mac",
+        }
+    }
+
     /// How the evidence line reads.
     pub fn label(self) -> &'static str {
         match self {
@@ -154,7 +170,7 @@ impl IdentityClaim {
             .unwrap_or_default();
         Some(IdentityClaim {
             strength,
-            key: format!("{:?}|{namespace}|{folded}", strength),
+            key: format!("{}|{namespace}|{folded}", strength.slug()),
             display: display.to_string(),
         })
     }
@@ -601,6 +617,35 @@ mod tests {
             let parsed = claim_from_line(&line, Some("Dell")).expect("the line parses back");
             assert_eq!(parsed, original, "{strength:?} did not round-trip");
         }
+    }
+
+    #[test]
+    fn the_key_slug_is_written_out_rather_than_derived_from_a_variant_name() {
+        // The key reaches an export and ArcAtlas, so renaming a Rust variant
+        // must not change what something else joins on.
+        let claim = IdentityClaim::new(
+            IdentityStrength::SystemUuid,
+            None,
+            "4C4C4544-0037-5A10-8051-B4C04F435331",
+        )
+        .unwrap();
+        assert_eq!(claim.key, "uuid||4c4c454400375a108051b4c04f435331");
+        assert!(!claim.key.contains("SystemUuid"));
+    }
+
+    #[test]
+    fn every_strength_has_a_distinct_slug() {
+        let slugs: BTreeSet<&str> = [
+            IdentityStrength::SystemUuid,
+            IdentityStrength::HardwareSerial,
+            IdentityStrength::VendorUnique,
+            IdentityStrength::StableDeviceId,
+            IdentityStrength::Mac,
+        ]
+        .into_iter()
+        .map(IdentityStrength::slug)
+        .collect();
+        assert_eq!(slugs.len(), 5);
     }
 
     #[test]

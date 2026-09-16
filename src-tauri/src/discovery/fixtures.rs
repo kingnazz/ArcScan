@@ -409,11 +409,14 @@ fn a_synology_identified_only_by_its_certificate_is_still_storage() {
 
 #[test]
 fn a_ubiquiti_switch_is_a_switch() {
+    // `US-24` is the older naming and is still all over real sites.
     for model in [
         "USW-24-PoE",
         "USW-Pro-48-PoE",
         "USW Lite 8 PoE",
         "USW-Aggregation",
+        "US-24-250W",
+        "US-48",
     ] {
         let result = Device::new()
             .vendor("Ubiquiti Inc")
@@ -435,6 +438,23 @@ fn a_ubiquiti_access_point_is_an_access_point() {
             .classify();
         assert_eq!(result.device_type, DeviceType::AccessPoint, "{model}");
         assert_eq!(result.confidence, Confidence::High, "{model}");
+    }
+}
+
+#[test]
+fn a_ubiquiti_model_that_is_neither_a_switch_nor_an_ap_is_not_forced_into_one() {
+    // The `us` and `u` prefixes are deliberately narrow: both require a digit
+    // immediately after, so a model that merely starts with those letters
+    // falls through to the general network-equipment answer rather than being
+    // called a switch or an access point on the strength of two characters.
+    for model in ["USP-PDU-Pro", "UniFi Cloud Key", "U-LTE-Pro"] {
+        let result = Device::new()
+            .vendor("Ubiquiti Inc")
+            .ports(&[80, 443])
+            .model(model)
+            .classify();
+        assert_ne!(result.device_type, DeviceType::Switch, "{model}");
+        assert_ne!(result.device_type, DeviceType::AccessPoint, "{model}");
     }
 }
 
