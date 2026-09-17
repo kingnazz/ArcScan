@@ -404,8 +404,29 @@ describe("the demo topology engine", () => {
     );
     expect(result.snapshot.connections.some((c) => c.protocol === "fdb" && c.confidence === "strong")).toBe(true);
     expect(result.snapshot.unknownNodes?.[0]?.id.startsWith("unknown:")).toBe(true);
+    expect(result.snapshot.logicalNodes?.some((node) => node.id === "logical:internet" && !node.physical)).toBe(
+      true,
+    );
+    expect(result.snapshot.edge?.internet.physical).toBe(false);
+    expect(result.snapshot.connections.some((c) => c.kind === "wan" && c.protocol === "default-route")).toBe(true);
+    expect(
+      result.snapshot.connections.some((c) => c.protocol === "fdb" && c.fromPort === "g7" && !c.toPort),
+    ).toBe(true);
     expect(result.summary.failures.every((f) => !f.reason.toLowerCase().includes("site-read"))).toBe(true);
     mock.clearTopologyCredentials();
     expect(mock.getTopologyCredentials().configured).toBe(false);
+  });
+
+  it("does not invent a WAN edge when the default route is not in inventory", async () => {
+    mock.setTopologyCredentials({ version: "v2c", community: "site-read-secret" });
+    const result = await mock.discoverTopology({
+      targets: [{ ip: "10.20.0.10", mac: "AA:BB:CC:00:00:10", deviceId: 99 }],
+      gatewayIp: "10.255.255.1",
+      gatewayMac: "DE:AD:00:00:00:01",
+    });
+    expect(result.snapshot.edge).toBeFalsy();
+    expect(result.snapshot.logicalNodes ?? []).toHaveLength(0);
+    expect(result.snapshot.connections.some((c) => c.kind === "wan")).toBe(false);
+    mock.clearTopologyCredentials();
   });
 });

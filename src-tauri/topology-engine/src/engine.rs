@@ -13,12 +13,12 @@ use chrono::Utc;
 use futures::stream::{self, StreamExt};
 
 use super::collect::DeviceView;
-use super::correlate::correlate;
+use super::correlate::{correlate, correlate_with_edge};
 use super::credentials::{CredentialStore, SnmpSecret};
 use super::error::TopologyError;
 use super::model::{
-    TopologyConfidence, TopologyDeviceFailure, TopologyRequest, TopologyResult, TopologySummary,
-    TopologyTarget,
+    EdgeHint, TopologyConfidence, TopologyDeviceFailure, TopologyRequest, TopologyResult,
+    TopologySummary, TopologyTarget,
 };
 use super::providers::{SnmpProvider, TopologyProvider};
 use super::snmp::{
@@ -130,6 +130,7 @@ pub async fn run(
         scan_id,
         factory,
         Duration::from_millis(MAX_TOTAL_MS),
+        None,
     )
     .await
 }
@@ -145,6 +146,7 @@ pub async fn run_with_wall(
     scan_id: Option<u64>,
     factory: Option<SessionFactory>,
     wall: Duration,
+    edge_hint: Option<EdgeHint>,
 ) -> TopologyResult {
     let topology_id = NEXT_TOPOLOGY_ID.fetch_add(1, Ordering::Relaxed);
     ACTIVE_TOPOLOGY.store(topology_id, Ordering::Relaxed);
@@ -240,7 +242,12 @@ pub async fn run_with_wall(
         }
     }
 
-    let snapshot = correlate(&views, &inventory, &captured_at);
+    let snapshot = match &edge_hint {
+        Some(hint) if hint.gateway_ip.is_some() || hint.gateway_mac.is_some() => {
+            correlate_with_edge(&views, &inventory, &captured_at, Some(hint))
+        }
+        _ => correlate(&views, &inventory, &captured_at),
+    };
     let mut confirmed = 0usize;
     let mut strong = 0usize;
     let mut inferred = 0usize;
@@ -284,11 +291,19 @@ pub async fn run_from_request(
     );
     let concurrency = request.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
     let inventory = request.targets.clone();
+    let edge_hint = if request.gateway_ip.is_some() || request.gateway_mac.is_some() {
+        Some(EdgeHint {
+            gateway_ip: request.gateway_ip.clone(),
+            gateway_mac: request.gateway_mac.clone(),
+        })
+    } else {
+        None
+    };
     // SNMP is worth trying on every inventoried address. Hosts that do not
     // speak it time out quickly and are isolated. We do not spray alternative
     // credentials at them.
     let snmp_targets = request.targets;
-    Ok(run(
+    Ok(run_with_wall(
         &secret,
         inventory,
         snmp_targets,
@@ -296,6 +311,8 @@ pub async fn run_from_request(
         concurrency,
         request.scan_id,
         None,
+        Duration::from_millis(MAX_TOTAL_MS),
+        edge_hint,
     )
     .await)
 }
@@ -393,6 +410,8 @@ mod tests {
                 concurrency: None,
                 network_name: None,
                 scan_id: None,
+                gateway_ip: None,
+                gateway_mac: None,
             },
         )
         .await
@@ -519,6 +538,7 @@ mod tests {
             None,
             Some(factory),
             Duration::from_secs(5),
+            None,
         );
         let started = Instant::now();
         let handle = tokio::spawn(async move {
@@ -570,6 +590,7 @@ mod tests {
             None,
             Some(factory),
             Duration::from_millis(80),
+            None,
         )
         .await;
         assert!(result.summary.timed_out);

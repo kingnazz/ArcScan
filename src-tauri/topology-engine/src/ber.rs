@@ -118,14 +118,7 @@ impl SnmpValue {
 
     pub fn as_utf8(&self) -> Option<String> {
         match self {
-            Self::OctetString(v) => {
-                let s = String::from_utf8_lossy(v).trim().to_string();
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
-            }
+            Self::OctetString(v) => crate::display::decode_snmp_display(v),
             Self::Oid(oid) => Some(oid.to_dotted()),
             Self::IpAddress(ip) => Some(ip.to_string()),
             Self::Integer(v) => Some(v.to_string()),
@@ -609,5 +602,13 @@ mod tests {
     #[test]
     fn truncated_packet_is_refused() {
         assert!(decode_message(&[0x30, 0x20, 0x02]).is_err());
+    }
+
+    #[test]
+    fn octetstring_display_rejects_replacement_garbage() {
+        let garbage = SnmpValue::OctetString(vec![0x80, b'=', 0xC3, 0xBC, b')']);
+        assert_eq!(garbage.as_utf8(), None);
+        let name = SnmpValue::OctetString(b"Gi1/0/18".to_vec());
+        assert_eq!(name.as_utf8().as_deref(), Some("Gi1/0/18"));
     }
 }

@@ -141,7 +141,7 @@ describe("Topology panel", () => {
     expect(screen.getByText((_, node) => node?.tagName === "P" && (node.textContent ?? "").includes("Home Router"))).toBeTruthy();
     expect(screen.getByText((_, node) => node?.tagName === "P" && (node.textContent ?? "").includes("Home NAS"))).toBeTruthy();
     expect(screen.getByText("Confirmed")).toBeTruthy();
-    expect(screen.getByText(/PoE/)).toBeTruthy();
+    expect(screen.getAllByText(/PoE/).length).toBeGreaterThan(0);
     expect(screen.queryByText("site-read")).toBeNull();
   });
 
@@ -216,5 +216,97 @@ describe("Topology panel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Keep for this session" }));
     expect(screen.getByRole("alert").textContent).toMatch(/privacy password/i);
+  });
+
+  it("renders the topology preview with Internet, Fit and an endpoint toggle", () => {
+    const withWan: TopologyResult = {
+      ...result,
+      snapshot: {
+        ...result.snapshot,
+        connections: [
+          {
+            fromLogicalId: "logical:internet",
+            toDeviceId: 1,
+            kind: "wan",
+            protocol: "default-route",
+            confidence: "strong",
+            evidence: ["Default route and gateway MAC both match Home Router."],
+          },
+          ...result.snapshot.connections,
+        ],
+        logicalNodes: [{ id: "logical:internet", kind: "internet", label: "Internet", physical: false }],
+        edge: {
+          gatewayDeviceId: 1,
+          internet: { id: "logical:internet", kind: "internet", label: "Internet", physical: false },
+          uplink: {
+            fromLogicalId: "logical:internet",
+            toDeviceId: 1,
+            kind: "wan",
+            protocol: "default-route",
+            confidence: "strong",
+            evidence: ["Default route and gateway MAC both match Home Router."],
+          },
+          confidence: "strong",
+          evidence: [],
+        },
+      },
+    };
+    render(
+      <TopologyPanel
+        {...noop}
+        credentialStatus={{
+          configured: true,
+          version: "v2c",
+          username: null,
+          authProtocol: null,
+          privProtocol: null,
+          sessionOnly: true,
+        }}
+        result={withWan}
+        names={names}
+        types={{
+          byId: new Map([
+            [1, "router"],
+            [2, "switch"],
+            [4, "nas"],
+          ]),
+        }}
+        targetCount={5}
+        busy={false}
+        error={null}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "Topology preview" })).toBeTruthy();
+    expect(screen.getByText("Internet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fit" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide endpoints" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide endpoints" }));
+    expect(screen.getByRole("button", { name: "Show endpoints" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reset layout" }));
+    expect(screen.getByRole("button", { name: "Hide endpoints" })).toBeTruthy();
+  });
+
+  it("exposes confidence meaning to keyboard focus", () => {
+    render(
+      <TopologyPanel
+        {...noop}
+        credentialStatus={{
+          configured: true,
+          version: "v2c",
+          username: null,
+          authProtocol: null,
+          privProtocol: null,
+          sessionOnly: true,
+        }}
+        result={result}
+        names={names}
+        targetCount={5}
+        busy={false}
+        error={null}
+      />,
+    );
+    const confirmed = screen.getByText("Confirmed").closest("[tabindex]") as HTMLElement;
+    fireEvent.focus(confirmed);
+    expect(screen.getByRole("tooltip").textContent).toMatch(/LLDP\/CDP/);
   });
 });

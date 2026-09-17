@@ -54,9 +54,12 @@ import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
 import { APP_VERSION } from "../version";
 import {
   EMPTY_CREDENTIAL_STATUS,
+  INTERNET_NODE_ID,
   type CredentialInput,
   type CredentialStatus,
+  type LogicalNode,
   type TopologyConnection,
+  type TopologyEdge,
   type TopologyRequest,
   type TopologyResult,
   type TopologyTarget,
@@ -1848,6 +1851,14 @@ export const mock = {
       cancelled: stopped,
       ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
       arp_assist: opts.arp_assist,
+      scope_hint: isDemo
+        ? {
+            local_network: DEMO_CIDR,
+            gateway_ip: "192.168.1.1",
+            gateway_mac: "F4:92:BF:1A:0C:31",
+            interface: "Wi-Fi",
+          }
+        : null,
       discovery: {
         mdns_attempted: discoveryRan,
         ssdp_attempted: discoveryRan,
@@ -2372,7 +2383,7 @@ export const mock = {
       mockTopologyLast = empty;
       return empty;
     }
-    const result = demoTopologyResult(request.targets);
+    const result = demoTopologyResult(request);
     mockTopologyLast = result;
     return result;
   },
@@ -2404,11 +2415,13 @@ function withScopeName<T extends ScanSummary>(summary: T): T {
 
 /**
  * Browser-demo topology. Mirrors the issue #42 site story against the home
- * inventory: the gateway is confirmed via LLDP onto an unknown core switch,
- * single-MAC access ports are strong, and a busy uplink does not mint fake
- * endpoint links. Credentials are never copied into the snapshot.
+ * inventory: the default gateway is the WAN edge, an unknown core switch is
+ * confirmed via LLDP, single-MAC access ports are strong, and a busy uplink
+ * does not mint fake endpoint links. Credentials are never copied into the
+ * snapshot.
  */
-function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
+function demoTopologyResult(request: TopologyRequest): TopologyResult {
+  const targets = request.targets;
   const byIp = new Map(targets.filter((t) => t.ip).map((t) => [t.ip, t]));
   const id = (ip: string) => byIp.get(ip)?.deviceId ?? null;
   const capturedAt = "2026-09-16T12:00:00Z";
@@ -2422,7 +2435,7 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
       toPort: "48",
       kind: "ethernet",
       protocol: "lldp",
-      confidence: "confirmed",
+      confidence: "confirmed" as const,
       speedMbps: 1000,
       vlan: "trunk",
       nativeVlan: 10,
@@ -2438,7 +2451,7 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
       toPort: "eth0",
       kind: "ethernet",
       protocol: "lldp",
-      confidence: "confirmed",
+      confidence: "confirmed" as const,
       speedMbps: 1000,
       vlan: "20",
       nativeVlan: 20,
@@ -2452,7 +2465,7 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
       fromPort: "Port 20",
       kind: "ethernet",
       protocol: "fdb",
-      confidence: "strong",
+      confidence: "strong" as const,
       speedMbps: 1000,
       vlan: "10",
       nativeVlan: 10,
@@ -2465,14 +2478,34 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
       fromPort: "Port 7",
       kind: "ethernet",
       protocol: "fdb",
-      confidence: "strong",
+      confidence: "strong" as const,
       speedMbps: 1000,
       vlan: "10",
       nativeVlan: 10,
       taggedVlans: [],
       evidence: ["Exactly one unicast MAC (18:66:DA:70:2B:14) learned on access port Port 7"],
     },
-  ];
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.31"),
+      fromPort: "g7",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (3C:D9:2B:6F:08:AA) learned on access port g7"],
+    },
+  ].filter((connection) => {
+    if (connection.toDeviceId == null && !connection.toUnresolvedId) return false;
+    if (connection.fromDeviceId == null && !connection.fromUnresolvedId) return false;
+    return true;
+  });
+
+  const wan = demoWanEdge(targets, request);
+  if (wan) connections.unshift(wan.uplink);
   const responded = byIp.has("192.168.1.1") ? 1 : 0;
   const queried = Math.max(targets.length, 1);
   return {
@@ -2488,6 +2521,8 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
           source: "lldp",
         },
       ],
+      logicalNodes: wan ? [wan.internet] : [],
+      edge: wan,
     },
     summary: {
       devicesQueried: queried,
@@ -2495,7 +2530,7 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
       devicesFailed: Math.max(0, queried - responded),
       confirmed: connections.filter((c) => c.confidence === "confirmed").length,
       strong: connections.filter((c) => c.confidence === "strong").length,
-      inferred: 0,
+      inferred: connections.filter((c) => c.confidence === "inferred").length,
       unknownNodes: 1,
       durationMs: 640,
       cancelled: false,
@@ -2509,6 +2544,53 @@ function demoTopologyResult(targets: TopologyTarget[]): TopologyResult {
             "The device did not answer SNMP in time. That can mean it is not an SNMP agent, or that the credentials are wrong — ArcScan cannot tell those apart, and will not guess another community.",
         })),
     },
+  };
+}
+
+function demoWanEdge(targets: TopologyTarget[], request: TopologyRequest): TopologyEdge | null {
+  const hintedIp = request.gatewayIp?.trim() || null;
+  const hintedMac = request.gatewayMac?.trim().toUpperCase() || null;
+  const byIp = hintedIp ? targets.find((target) => target.ip === hintedIp) : undefined;
+  const byMac = hintedMac
+    ? targets.find((target) => (target.mac ?? "").toUpperCase() === hintedMac)
+    : undefined;
+  if (hintedIp && hintedMac && byIp && byMac && byIp.deviceId !== byMac.deviceId) {
+    return null;
+  }
+  const hit =
+    hintedIp || hintedMac
+      ? byIp && byMac
+        ? byIp
+        : (byIp ?? byMac)
+      : targets.find((target) => target.ip === "192.168.1.1");
+  if (!hit?.deviceId) return null;
+  const confidence = hintedIp && hintedMac && byIp && byMac ? "strong" : hintedIp || hintedMac ? "inferred" : "strong";
+  const internet: LogicalNode = {
+    id: INTERNET_NODE_ID,
+    kind: "internet",
+    label: "Internet",
+    physical: false,
+  };
+  const evidence =
+    confidence === "strong"
+      ? ["Default route and gateway MAC both match Home Router."]
+      : ["Default route matches a device in this scan's inventory."];
+  const uplink: TopologyConnection = {
+    fromLogicalId: INTERNET_NODE_ID,
+    toDeviceId: hit.deviceId,
+    kind: "wan",
+    protocol: "default-route",
+    confidence,
+    evidence,
+  };
+  return {
+    gatewayDeviceId: hit.deviceId,
+    gatewayIp: hit.ip,
+    gatewayMac: hit.mac ?? null,
+    internet,
+    uplink,
+    confidence,
+    evidence,
   };
 }
 

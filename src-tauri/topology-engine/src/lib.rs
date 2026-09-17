@@ -8,6 +8,7 @@ pub mod ber;
 pub mod collect;
 pub mod correlate;
 pub mod credentials;
+pub mod display;
 pub mod engine;
 pub mod error;
 pub mod model;
@@ -18,10 +19,11 @@ pub mod snmp;
 pub use credentials::{CredentialInput, CredentialStatus, CredentialStore, SnmpSecret};
 pub use engine::{request_cancel, run, run_from_request, set_scan_cancel_check};
 pub use error::TopologyError;
+pub use display::INTERNET_NODE_ID;
 pub use model::{
-    ContractConnection, ContractTopology, TopologyConfidence, TopologyConnection,
-    TopologyHandoffPreview, TopologyRequest, TopologyResult, TopologySnapshot, TopologySummary,
-    TopologyTarget, UnresolvedTopology,
+    ContractConnection, ContractTopology, LogicalNode, TopologyConfidence, TopologyConnection,
+    TopologyEdge, TopologyHandoffPreview, TopologyRequest, TopologyResult, TopologySnapshot,
+    TopologySummary, TopologyTarget, UnresolvedTopology,
 };
 pub use serialize::{
     assert_arc_atlas13_contract, handoff_preview_to_json, issue42_fixture, preview_from_snapshot,

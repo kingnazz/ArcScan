@@ -133,11 +133,71 @@ IP or MAC disambiguates them.
 - Consumer gateways frequently answer IF-MIB and ignore LLDP/BRIDGE. That
   is a successful partial collect with zero links, not a failure.
 
+## Port labels (issue #46)
+
+SNMP `DisplayString` / `OctetString` values are decoded in
+`topology-engine/src/display.rs`. `from_utf8_lossy` is not used: replacement
+characters (U+FFFD) never become a primary port label.
+
+Preference order for a physical port name:
+
+1. `ifName`
+2. `ifAlias`
+3. `ifDescr`
+4. bridge-port mapped `ifIndex`
+5. numeric `ifIndex`
+
+Latin-1 / Windows-1252 labels that are mostly printable ASCII are recovered
+(so `Café-uplink` stays useful). NUL-padded and UTF-16 ASCII port names are
+accepted. Byte strings that are mostly non-ASCII junk — the Netgear
+`�=ü)` class — are rejected and noted internally as hex. The next IF-MIB
+candidate is used instead.
+
+FDB / MAC-table links keep the switch-side port and leave `toPort` empty when
+the endpoint does not advertise one. Multi-MAC uplink/trunk FDB evidence is
+not promoted to a direct endpoint link.
+
+## WAN / Internet
+
+The engine correlates the scanner's OS default route (Windows included,
+`netinfo::default_gateway_ip`) plus any scan `scope_hint` gateway IP/MAC
+against inventory.
+
+- IP and MAC agree → `strong`
+- Only one side matches → `inferred`
+- IP and MAC point at different inventory devices → no edge
+- No match → no Internet node and no invented gateway
+
+When a gateway is identified, ArcScan adds a **logical** Internet node
+(`logical:internet`, `physical: false`). It is never an inventory `device_id`
+and is never written into the Inventory array. If a public IP / ASN / ISP
+cannot be determined, the label is only `Internet`. An ONT/modem is kept
+between Internet and the firewall only when LLDP/CDP evidence actually names
+one. Nothing fabricates an ISP handoff device.
+
+WAN links use `kind: "wan"` and `protocol: "default-route"`. They live on the
+additive `edge` object (and as unresolved evidence) so schemaVersion 2
+`topology.connections` stays known-to-known inventory ids only.
+
+## In-app preview
+
+The Topology panel draws a lightweight SVG hierarchy:
+
+Internet → WAN / ONT → firewall/router → switches → APs/servers/NAS → endpoints
+
+It is confirmation, not a documentation editor. Fit, Zoom, Hide endpoints and
+Reset layout are the only controls. Confirmed links are solid, strong links
+are dashed, inferred links are dotted. Hover or click a connection for ports,
+protocol, confidence, speed, VLAN, PoE and the first evidence line.
+
 ## Integrated contract invariants
 
 - Do not fold unresolved connections into `topology.connections` for ArcAtlas.
   Use `unresolvedTopology` until the receiver is extended.
+- Additive schemaVersion 2 fields `edge` and `logicalNodes` carry the WAN /
+  Internet presentation. Current ArcAtlas receivers ignore unknown keys.
 - Device ids must be the same inventory ids the deep-discovery branch emits
   in the same payload.
 - Quick Scan must stay fast. Topology stays opt-in / credentialed.
 - Windows WMI/WinRM is Claude's lane and is unused here.
+

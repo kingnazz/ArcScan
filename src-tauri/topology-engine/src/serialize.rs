@@ -77,6 +77,8 @@ pub fn preview_from_snapshot(
         inventory,
         topology,
         unresolved_topology,
+        edge: snapshot.edge.clone(),
+        logical_nodes: snapshot.logical_nodes.clone(),
     }
 }
 
@@ -171,6 +173,8 @@ pub fn issue42_fixture() -> TopologyHandoffPreview {
             }],
         },
         unresolved_topology: None,
+        edge: None,
+        logical_nodes: Vec::new(),
     }
 }
 
@@ -221,6 +225,13 @@ pub fn assert_arc_atlas13_contract(json: &str) -> Result<(), String> {
             return Err(format!(
                 "toDeviceId {to} does not exist exactly once in inventory"
             ));
+        }
+    }
+    for row in inventory {
+        if row.get("id").and_then(|v| v.as_str()) == Some(crate::display::INTERNET_NODE_ID)
+            || row.get("kind").and_then(|v| v.as_str()) == Some("internet")
+        {
+            return Err("inventory must not contain the logical Internet node".into());
         }
     }
     Ok(())
@@ -283,6 +294,8 @@ mod tests {
                     to_device_id: Some(1),
                     from_unresolved_id: None,
                     to_unresolved_id: None,
+                    from_logical_id: None,
+                    to_logical_id: None,
                     from_port: Some("48".into()),
                     to_port: Some("X0".into()),
                     kind: "ethernet".into(),
@@ -300,6 +313,8 @@ mod tests {
                     to_device_id: None,
                     from_unresolved_id: None,
                     to_unresolved_id: Some("unknown:chassis:deadbeef0001".into()),
+                    from_logical_id: None,
+                    to_logical_id: None,
                     from_port: Some("36".into()),
                     to_port: Some("Gi0/1".into()),
                     kind: "ethernet".into(),
@@ -321,6 +336,8 @@ mod tests {
                 reason: "LLDP neighbour is not present in this scan's inventory.".into(),
                 source: "lldp".into(),
             }],
+            logical_nodes: vec![],
+            edge: None,
         };
         let inventory = vec![
             serde_json::json!({"device_id": 1, "device_name": "Firewall"}),
@@ -369,6 +386,8 @@ mod tests {
                 to_device_id: Some(1),
                 from_unresolved_id: None,
                 to_unresolved_id: None,
+                from_logical_id: None,
+                to_logical_id: None,
                 from_port: Some("48".into()),
                 to_port: Some("X0".into()),
                 kind: "ethernet".into(),
@@ -382,6 +401,8 @@ mod tests {
                 evidence: vec!["LLDP".into()],
             }],
             unknown_nodes: vec![],
+            logical_nodes: vec![],
+            edge: None,
         };
         let (topology, unresolved) = split_for_contract(&snapshot, &[]);
         assert!(topology.connections.is_empty());
@@ -390,5 +411,59 @@ mod tests {
         let preview = preview_from_snapshot(&snapshot, vec![], "h", "n", "t");
         let json = handoff_preview_to_json(&preview).unwrap();
         assert_arc_atlas13_contract(&json).unwrap();
+    }
+
+    #[test]
+    fn wan_edge_is_additive_and_internet_is_not_inventory() {
+        use crate::correlate::correlate_with_edge;
+        use crate::model::{EdgeHint, TopologyTarget};
+        use std::net::Ipv4Addr;
+
+        let mut view = crate::collect::DeviceView::new(Ipv4Addr::new(192, 168, 1, 1), Some(1));
+        view.sys_name = Some("firewall".into());
+        let targets = vec![TopologyTarget {
+            ip: "192.168.1.1".into(),
+            mac: Some("00:20:AA:00:00:01".into()),
+            device_id: Some(1),
+            hostname: Some("fw".into()),
+            detected_name: Some("Firewall".into()),
+        }];
+        let snapshot = correlate_with_edge(
+            &[view],
+            &targets,
+            "t",
+            Some(&EdgeHint {
+                gateway_ip: Some("192.168.1.1".into()),
+                gateway_mac: Some("00:20:AA:00:00:01".into()),
+            }),
+        );
+        let inventory = vec![serde_json::json!({
+            "device_id": 1,
+            "device_name": "Firewall",
+            "current_ip": "192.168.1.1"
+        })];
+        let preview = preview_from_snapshot(&snapshot, inventory, "h", "n", "t");
+        assert!(preview.edge.is_some());
+        assert_eq!(preview.logical_nodes.len(), 1);
+        assert!(!preview.logical_nodes[0].physical);
+        assert!(preview
+            .topology
+            .connections
+            .iter()
+            .all(|c| c.kind != "wan"));
+        let json = handoff_preview_to_json(&preview).unwrap();
+        assert_arc_atlas13_contract(&json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["edge"]["internet"]["id"], crate::display::INTERNET_NODE_ID);
+        assert_eq!(value["edge"]["internet"]["physical"], false);
+        assert_eq!(value["logicalNodes"][0]["kind"], "internet");
+        let inventory = value["inventory"].as_array().unwrap();
+        assert!(inventory
+            .iter()
+            .all(|row| row.get("device_id").and_then(|v| v.as_i64()) == Some(1)));
+        let dumped = json.to_ascii_lowercase();
+        assert!(!dumped.contains("community"));
+        assert!(!dumped.contains("password"));
     }
 }

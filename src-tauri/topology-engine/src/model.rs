@@ -121,6 +121,62 @@ pub struct UnresolvedNode {
     pub source: String,
 }
 
+/// A presentation-only node that is not a scanned inventory device.
+///
+/// The Internet cloud is the only kind minted today. It never receives a
+/// numeric `device_id` and must not be written into the inventory array.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogicalNode {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub physical: bool,
+}
+
+impl LogicalNode {
+    pub fn internet() -> Self {
+        Self {
+            id: crate::display::INTERNET_NODE_ID.into(),
+            kind: "internet".into(),
+            label: "Internet".into(),
+            physical: false,
+        }
+    }
+}
+
+/// Conservative WAN-edge metadata. Present only when the scanner's default
+/// route correlates to exactly one inventory device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopologyEdge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_device_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_mac: Option<String>,
+    pub internet: LogicalNode,
+    /// Unresolved ONT/modem neighbour between Internet and the gateway, only
+    /// when SNMP/LLDP/CDP actually named one. Never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_unresolved_id: Option<String>,
+    pub uplink: TopologyConnection,
+    pub confidence: TopologyConfidence,
+    pub evidence: Vec<String>,
+}
+
+/// Optional default-route hint supplied by the host process. The engine does
+/// not read the OS routing table itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_mac: Option<String>,
+}
+
 /// One directed-or-undirected link in the topology snapshot.
 ///
 /// `fromDeviceId` / `toDeviceId` match issue #42 when both ends resolved.
@@ -139,6 +195,10 @@ pub struct TopologyConnection {
     pub from_unresolved_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_unresolved_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_logical_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_logical_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_port: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,6 +232,10 @@ pub struct TopologySnapshot {
     pub connections: Vec<TopologyConnection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unknown_nodes: Vec<UnresolvedNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logical_nodes: Vec<LogicalNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<TopologyEdge>,
 }
 
 /// Issue #42 / ArcAtlas-Next #13 wire snapshot: only known-to-known links,
@@ -238,6 +302,13 @@ pub struct TopologyHandoffPreview {
     pub topology: ContractTopology,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unresolved_topology: Option<UnresolvedTopology>,
+    /// Additive WAN/Internet metadata. The current ArcAtlas receiver ignores
+    /// unknown fields; consume `edge` and `logicalNodes` only after the
+    /// ArcAtlas schema v2 reader is extended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<TopologyEdge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logical_nodes: Vec<LogicalNode>,
 }
 
 /// What one topology run did, for the UI summary. Contains no secrets.
@@ -303,6 +374,12 @@ pub struct TopologyRequest {
     /// When set, Stop on the in-flight scan also stops topology.
     #[serde(default)]
     pub scan_id: Option<u64>,
+    /// Scanner default-route IPv4, when the host process observed one.
+    #[serde(default)]
+    pub gateway_ip: Option<String>,
+    /// Scanner default-route MAC, when ARP could resolve it.
+    #[serde(default)]
+    pub gateway_mac: Option<String>,
 }
 
 impl TopologySnapshot {
@@ -311,6 +388,8 @@ impl TopologySnapshot {
             captured_at: captured_at.into(),
             connections: Vec::new(),
             unknown_nodes: Vec::new(),
+            logical_nodes: Vec::new(),
+            edge: None,
         }
     }
 }
