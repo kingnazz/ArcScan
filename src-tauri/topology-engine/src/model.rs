@@ -161,6 +161,10 @@ pub struct TopologyEdge {
     /// when SNMP/LLDP/CDP actually named one. Never fabricated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via_unresolved_id: Option<String>,
+    /// Inventory ONT/modem between Internet and the gateway. Mutually exclusive
+    /// with `via_unresolved_id`. Never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_device_id: Option<i64>,
     pub uplink: TopologyConnection,
     pub confidence: TopologyConfidence,
     pub evidence: Vec<String>,

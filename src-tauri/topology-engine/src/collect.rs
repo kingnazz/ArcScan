@@ -217,14 +217,9 @@ impl DeviceView {
 
     pub fn port_name(&self, if_index: u32) -> String {
         let resolved = self.resolve_if_index(if_index);
-        crate::display::first_printable([
-            self.lldp_local_ports.get(&if_index).map(String::as_str),
-            self.lldp_local_ports.get(&resolved).map(String::as_str),
-            self.iface(resolved).and_then(|i| i.name.as_deref()),
-            self.iface(resolved).and_then(|i| i.alias.as_deref()),
-            self.iface(resolved).and_then(|i| i.descr.as_deref()),
-        ])
-        .unwrap_or_else(|| resolved.to_string())
+        self.iface(resolved)
+            .map(Iface::display_name)
+            .unwrap_or_else(|| resolved.to_string())
     }
 
     /// Map an LLDP locPortNum or bridge port onto IF-MIB ifIndex when the
@@ -837,13 +832,8 @@ async fn collect_entity(
     Ok(())
 }
 
-fn assign_iface_label<F>(
-    view: &mut DeviceView,
-    field: &str,
-    idx: u32,
-    value: &SnmpValue,
-    slot: F,
-) where
+fn assign_iface_label<F>(view: &mut DeviceView, field: &str, idx: u32, value: &SnmpValue, slot: F)
+where
     F: FnOnce(&mut Iface) -> &mut Option<String>,
 {
     let iface = view.interfaces.entry(idx).or_default();
@@ -1181,7 +1171,10 @@ mod tests {
             .is_none_or(|s| !s.contains('\u{FFFD}')));
         assert_eq!(view.port_name(18), "Gi1/0/18");
         assert_eq!(view.port_name(24), "24");
-        assert!(view.notes.iter().any(|n| n.contains("ifAlias") && n.contains("7")));
+        assert!(view
+            .notes
+            .iter()
+            .any(|n| n.contains("ifAlias") && n.contains("7")));
         assert!(!view.port_name(7).contains('\u{FFFD}'));
     }
 
@@ -1200,5 +1193,66 @@ mod tests {
             poe: None,
         };
         assert_eq!(iface.display_name(), "Gi1/0/18");
+    }
+
+    fn test_iface(
+        index: u32,
+        name: Option<&str>,
+        alias: Option<&str>,
+        descr: Option<&str>,
+    ) -> Iface {
+        Iface {
+            index,
+            name: name.map(str::to_string),
+            alias: alias.map(str::to_string),
+            descr: descr.map(str::to_string),
+            mac: None,
+            if_type: Some(6),
+            admin_status: Some(1),
+            oper_status: Some(1),
+            speed_mbps: Some(1000),
+            poe: None,
+        }
+    }
+
+    #[test]
+    fn lldp_locport_maps_to_ifindex_then_ifname_wins() {
+        let mut view = DeviceView::new(Ipv4Addr::new(192, 168, 1, 2), Some(2));
+        view.lldp_local_ports.insert(7, "7".into());
+        view.bridge_port_if.insert(7, 18);
+        view.interfaces.insert(
+            18,
+            test_iface(
+                18,
+                Some("Gi1/0/7"),
+                Some("Uplink"),
+                Some("GigabitEthernet1/0/7"),
+            ),
+        );
+        view.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 7,
+            chassis_id: Some("00:20:AA:00:00:01".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("X0".into()),
+            port_desc: None,
+            sys_name: Some("fw".into()),
+            sys_desc: None,
+            management_address: None,
+        });
+        assert_eq!(view.resolve_if_index(7), 18);
+        assert_eq!(view.port_name(7), "Gi1/0/7");
+        assert_ne!(view.port_name(7), "7");
+    }
+
+    #[test]
+    fn ifname_beats_numeric_lldp_local_port_text_on_the_same_ifindex() {
+        let mut view = DeviceView::new(Ipv4Addr::new(192, 168, 1, 2), Some(2));
+        view.lldp_local_ports.insert(7, "7".into());
+        view.interfaces.insert(
+            7,
+            test_iface(7, Some("Gi1/0/7"), None, Some("GigabitEthernet1/0/7")),
+        );
+        assert_eq!(view.resolve_if_index(7), 7);
+        assert_eq!(view.port_name(7), "Gi1/0/7");
     }
 }

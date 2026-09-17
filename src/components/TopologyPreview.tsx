@@ -198,13 +198,19 @@ export function TopologyPreview({ snapshot, names, types }: TopologyPreviewProps
                   fill="none"
                   stroke="transparent"
                   strokeWidth={14}
-                  className="cursor-pointer"
+                  className="topo-edge-hit cursor-pointer"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={connectionDetailLines(edge.connection, names, unknownNodes).join(" · ")}
+                  aria-pressed={active}
                   onClick={() => setSelectedId(edge.id)}
-                >
-                  <title>
-                    {connectionDetailLines(edge.connection, names, unknownNodes).join(" · ")}
-                  </title>
-                </path>
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedId(edge.id);
+                    }
+                  }}
+                />
                 <path
                   d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`}
                   fill="none"
@@ -264,7 +270,8 @@ export function TopologyPreview({ snapshot, names, types }: TopologyPreviewProps
         />
       ) : (
         <p className="mt-2 text-xs text-text-muted">
-          Click or hover a connection for ports, protocol, confidence, speed, VLAN, PoE and evidence.
+          Select a connection — click, or tab to it and press Enter — for ports, protocol,
+          confidence, speed, VLAN, PoE and evidence.
         </p>
       )}
     </div>

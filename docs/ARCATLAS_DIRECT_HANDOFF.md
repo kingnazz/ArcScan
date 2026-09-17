@@ -279,7 +279,7 @@ consume if WAN/Internet presentation is wanted:
 
 | Field | Meaning |
 | --- | --- |
-| `edge` | Conservative WAN metadata: gateway inventory id/IP/MAC, `internet` logical node, uplink connection |
+| `edge` | Conservative WAN metadata: gateway inventory id/IP/MAC, `internet` logical node, optional `viaDeviceId` / `viaUnresolvedId` ONT, uplink connection |
 | `logicalNodes` | Presentation-only nodes. `logical:internet` is **not** a scanned inventory device (`physical: false`) |
 | `unresolvedTopology` | Neighbours and links that failed the known-known contract |
 

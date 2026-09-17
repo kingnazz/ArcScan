@@ -144,8 +144,11 @@ Preference order for a physical port name:
 1. `ifName`
 2. `ifAlias`
 3. `ifDescr`
-4. bridge-port mapped `ifIndex`
-5. numeric `ifIndex`
+4. numeric `ifIndex`
+
+LLDP `locPortNum` and BRIDGE-MIB port numbers are used to resolve the correct
+IF-MIB `ifIndex`. They are not a competing label: when locPort text is `7`
+and IF-MIB `ifName` is `Gi1/0/7`, the displayed port is `Gi1/0/7`.
 
 Latin-1 / Windows-1252 labels that are mostly printable ASCII are recovered
 (so `Café-uplink` stays useful). NUL-padded and UTF-16 ASCII port names are
@@ -173,7 +176,10 @@ When a gateway is identified, ArcScan adds a **logical** Internet node
 and is never written into the Inventory array. If a public IP / ASN / ISP
 cannot be determined, the label is only `Internet`. An ONT/modem is kept
 between Internet and the firewall only when LLDP/CDP evidence actually names
-one. Nothing fabricates an ISP handoff device.
+one. Nothing fabricates an ISP handoff device. A discovered ONT/modem already
+present in inventory is kept as `edge.viaDeviceId` (Internet → ONT → gateway).
+An unmanaged ONT stays `edge.viaUnresolvedId`. Both are additive; WAN uplinks
+still do not enter canonical `topology.connections`.
 
 WAN links use `kind: "wan"` and `protocol: "default-route"`. They live on the
 additive `edge` object (and as unresolved evidence) so schemaVersion 2
@@ -186,9 +192,10 @@ The Topology panel draws a lightweight SVG hierarchy:
 Internet → WAN / ONT → firewall/router → switches → APs/servers/NAS → endpoints
 
 It is confirmation, not a documentation editor. Fit, Zoom, Hide endpoints and
-Reset layout are the only controls. Confirmed links are solid, strong links
-are dashed, inferred links are dotted. Hover or click a connection for ports,
-protocol, confidence, speed, VLAN, PoE and the first evidence line.
+Reset layout are the only chrome. Confirmed links are solid and thicker,
+strong links are solid and thinner, inferred links are dashed. Click, hover, or
+tab to a connection and press Enter or Space for ports, protocol, confidence,
+speed, VLAN, PoE and the first evidence line.
 
 ## Integrated contract invariants
 

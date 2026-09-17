@@ -354,4 +354,72 @@ describe("topology preview layout", () => {
     );
     expect(overridden.byId.get(1)).toBe("firewall");
   });
+
+  it("places a known inventory ONT between Internet and the gateway", () => {
+    const snapshot: TopologySnapshot = {
+      capturedAt: "2026-09-16T12:00:00Z",
+      connections: [
+        {
+          fromLogicalId: INTERNET_NODE_ID,
+          toDeviceId: 9,
+          kind: "wan",
+          protocol: "default-route",
+          confidence: "strong",
+          evidence: ["LLDP neighbour ONT-01 sits between the default gateway and the WAN."],
+        },
+        {
+          fromDeviceId: 1,
+          toDeviceId: 9,
+          fromPort: "X1",
+          toPort: "gpon0",
+          kind: "ethernet",
+          protocol: "lldp",
+          confidence: "confirmed",
+          evidence: ["LLDP neighbour on Home Router reports ONT-01"],
+        },
+      ],
+      logicalNodes: [{ id: INTERNET_NODE_ID, kind: "internet", label: "Internet", physical: false }],
+      edge: {
+        gatewayDeviceId: 1,
+        viaDeviceId: 9,
+        internet: { id: INTERNET_NODE_ID, kind: "internet", label: "Internet", physical: false },
+        uplink: {
+          fromLogicalId: INTERNET_NODE_ID,
+          toDeviceId: 9,
+          kind: "wan",
+          protocol: "default-route",
+          confidence: "strong",
+          evidence: ["LLDP neighbour ONT-01 sits between the default gateway and the WAN."],
+        },
+        confidence: "strong",
+        evidence: [],
+      },
+    };
+    const layout = layoutTopology({
+      snapshot,
+      names: {
+        byId: new Map([
+          [1, "Home Router"],
+          [9, "ONT-01"],
+        ]),
+        byIp: new Map(),
+      },
+      types: {
+        byId: new Map([
+          [1, "firewall"],
+          [9, "unknown"],
+        ]),
+      },
+    });
+    const internet = layout.nodes.find((node) => node.id === INTERNET_NODE_ID);
+    const ont = layout.nodes.find((node) => node.deviceId === 9);
+    const gateway = layout.nodes.find((node) => node.deviceId === 1);
+    expect(ont?.layer).toBe("wan");
+    expect(gateway?.layer).toBe("edge");
+    expect(internet!.y).toBeLessThan(ont!.y);
+    expect(ont!.y).toBeLessThan(gateway!.y);
+    expect(layout.edges.some((edge) => edge.connection.toDeviceId === 9 && edge.connection.kind === "wan")).toBe(
+      true,
+    );
+  });
 });

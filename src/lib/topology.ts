@@ -57,6 +57,7 @@ export interface TopologyEdge {
   gatewayMac?: string | null;
   internet: LogicalNode;
   viaUnresolvedId?: string | null;
+  viaDeviceId?: number | null;
   uplink: TopologyConnection;
   confidence: TopologyConfidence;
   evidence: string[];
@@ -560,6 +561,22 @@ export function layoutTopology(args: {
       physical: false,
       logicalId: args.snapshot.edge.internet.id,
     });
+  }
+
+  const viaDeviceId = args.snapshot.edge?.viaDeviceId;
+  if (viaDeviceId != null) {
+    const id = `device:${viaDeviceId}`;
+    const existing = nodesById.get(id);
+    if (existing) {
+      nodesById.set(id, { ...existing, layer: "wan" });
+    }
+  }
+  const viaUnresolvedId = args.snapshot.edge?.viaUnresolvedId;
+  if (viaUnresolvedId) {
+    const existing = nodesById.get(viaUnresolvedId);
+    if (existing) {
+      nodesById.set(viaUnresolvedId, { ...existing, layer: "wan" });
+    }
   }
 
   const filtered = [...nodesById.values()].filter((node) => {
