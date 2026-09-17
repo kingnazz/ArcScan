@@ -308,6 +308,24 @@
     box-shadow: var(--shadow-sm);
   }
 
+  .topo-preview-canvas {
+    background: var(--surface-sunken);
+    border-color: var(--border);
+    @apply overflow-hidden rounded-md border;
+  }
+
+  .topo-node {
+    fill: var(--surface);
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+
+  .topo-node-internet {
+    fill: color-mix(in srgb, var(--accent) 12%, var(--surface));
+    stroke: var(--accent);
+    stroke-width: 1.4;
+  }
+
   .popover {
     background: var(--surface-raised);
     border-color: var(--border);

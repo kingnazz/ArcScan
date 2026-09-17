@@ -3,7 +3,8 @@
 import { forwardRef, useRef, useState } from "react";
 import { Download, Filter, Network, Search, Sparkles, X } from "lucide-react";
 import { Badge, Button, Field, IconButton } from "../ui/primitives";
-import { Popover } from "../ui/Popover";
+import { Popover, Tooltip } from "../ui/Popover";
+import { TOPOLOGY_HINT } from "../lib/topology";
 import { formatCount } from "../lib/format";
 import type { ExportFormat, ScanComparison } from "../types";
 import type { TableFilter } from "../lib/table";
@@ -105,16 +106,17 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Button
-            size="sm"
-            variant={topologyOpen ? "primary" : "ghost"}
-            icon={<Network className="h-3.5 w-3.5" />}
-            aria-pressed={topologyOpen}
-            onClick={onViewTopology}
-            title="Optional SNMP topology discovery for this scan. It never runs automatically."
-          >
-            Topology
-          </Button>
+          <Tooltip content={TOPOLOGY_HINT}>
+            <Button
+              size="sm"
+              variant={topologyOpen ? "primary" : "ghost"}
+              icon={<Network className="h-3.5 w-3.5" />}
+              aria-pressed={topologyOpen}
+              onClick={onViewTopology}
+            >
+              Topology
+            </Button>
+          </Tooltip>
           {/*
            * One button in every case, so the comparison is always reachable.
            * A scan with no comparison has a *reason* — it was stopped early, or

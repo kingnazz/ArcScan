@@ -6,9 +6,13 @@
 import { useState } from "react";
 import { Network, Square } from "lucide-react";
 import { Badge, Button, Field, FieldRow, Select } from "../ui/primitives";
+import { Tooltip } from "../ui/Popover";
+import { TopologyPreview } from "./TopologyPreview";
 import {
+  CONFIDENCE_HINT,
   SNMP_AUTH_PROTOCOLS,
   SNMP_PRIV_PROTOCOLS,
+  TOPOLOGY_HINT,
   confidenceLabel,
   credentialInputError,
   emptyCredentialInput,
@@ -20,6 +24,7 @@ import {
   type CredentialInput,
   type CredentialStatus,
   type DeviceNameLookup,
+  type DeviceTypeLookup,
   type TopologyResult,
   type UnresolvedNode,
 } from "../lib/topology";
@@ -28,6 +33,7 @@ export interface TopologyPanelProps {
   credentialStatus: CredentialStatus;
   result: TopologyResult | null;
   names: DeviceNameLookup;
+  types?: DeviceTypeLookup;
   targetCount: number;
   busy: boolean;
   error: string | null;
@@ -42,6 +48,7 @@ export function TopologyPanel({
   credentialStatus,
   result,
   names,
+  types = { byId: new Map() },
   targetCount,
   busy,
   error,
@@ -74,10 +81,14 @@ export function TopologyPanel({
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto max-w-3xl space-y-4 px-4 py-4">
+      <div className="mx-auto max-w-5xl space-y-4 px-4 py-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 className="text-base font-semibold text-text">Topology discovery</h2>
+            <h2 className="text-base font-semibold text-text">
+              <Tooltip content={TOPOLOGY_HINT}>
+                <span tabIndex={0}>Topology discovery</span>
+              </Tooltip>
+            </h2>
             <p className="mt-1 text-[13px] leading-relaxed text-text-secondary">
               Optional credentialed SNMP discovery for the devices saved by this scan. It only runs
               when you start it; Quick discovery never starts it automatically. Credentials stay in
@@ -250,22 +261,17 @@ export function TopologyPanel({
                 Stop topology
               </Button>
             ) : (
-              <Button
-                variant="primary"
-                size="sm"
-                icon={<Network className="h-3.5 w-3.5" />}
-                disabled={!credentialStatus.configured || targetCount === 0}
-                title={
-                  !credentialStatus.configured
-                    ? "Enter SNMP credentials first"
-                    : targetCount === 0
-                      ? "Scan a network first"
-                      : `Query ${targetCount} device${targetCount === 1 ? "" : "s"} over SNMP`
-                }
-                onClick={() => void onDiscover()}
-              >
-                Discover topology
-              </Button>
+              <Tooltip content={TOPOLOGY_HINT}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Network className="h-3.5 w-3.5" />}
+                  disabled={!credentialStatus.configured || targetCount === 0}
+                  onClick={() => void onDiscover()}
+                >
+                  Discover topology
+                </Button>
+              </Tooltip>
             )}
             <p className="text-xs text-text-muted">
               {targetCount === 0
@@ -305,17 +311,22 @@ export function TopologyPanel({
                 SNMP do not expose LLDP, CDP or a usable MAC table.
               </p>
             ) : (
+              <>
+                <div className="mt-3">
+                  <h4 className="mb-2 text-[12px] font-semibold text-text">Preview</h4>
+                  <TopologyPreview snapshot={result.snapshot} names={names} types={types} />
+                </div>
               <ul className="mt-3 divide-y divide-border">
                 {result.snapshot.connections.map((connection, index) => {
                   const from = endpointLabel(
                     connection.fromDeviceId,
-                    connection.fromUnresolvedId,
+                    connection.fromUnresolvedId ?? connection.fromLogicalId,
                     names,
                     unknownNodes,
                   );
                   const to = endpointLabel(
                     connection.toDeviceId,
-                    connection.toUnresolvedId,
+                    connection.toUnresolvedId ?? connection.toLogicalId,
                     names,
                     unknownNodes,
                   );
@@ -338,17 +349,21 @@ export function TopologyPanel({
                         ) : null}
                       </p>
                       <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
-                        <Badge
-                          tone={
-                            connection.confidence === "confirmed"
-                              ? "online"
-                              : connection.confidence === "strong"
-                                ? "accent"
-                                : "warning"
-                          }
-                        >
-                          {confidenceLabel(connection.confidence)}
-                        </Badge>
+                        <Tooltip content={CONFIDENCE_HINT[connection.confidence]}>
+                          <span tabIndex={0} className="inline-flex">
+                            <Badge
+                              tone={
+                                connection.confidence === "confirmed"
+                                  ? "online"
+                                  : connection.confidence === "strong"
+                                    ? "accent"
+                                    : "warning"
+                              }
+                            >
+                              {confidenceLabel(connection.confidence)}
+                            </Badge>
+                          </span>
+                        </Tooltip>
                         <span>{protocolLabel(connection.protocol)}</span>
                         {speed ? <span>· {speed}</span> : null}
                         {vlan ? <span>· {vlan}</span> : null}
@@ -368,6 +383,7 @@ export function TopologyPanel({
                   );
                 })}
               </ul>
+              </>
             )}
           </section>
         ) : null}

@@ -82,6 +82,7 @@ import {
   EMPTY_CREDENTIAL_STATUS,
   nameLookupFromScan,
   targetsFromScanRows,
+  typeLookupFromScan,
   type CredentialInput,
   type CredentialStatus,
   type TopologyResult,
@@ -526,6 +527,8 @@ export default function App() {
         targets,
         networkName: topologyNetworkNames.length === 1 ? topologyNetworkNames[0] : (scan.meta?.target ?? target),
         scanId: scan.meta?.scanId ?? null,
+        gatewayIp: scan.meta?.scope_hint?.gateway_ip ?? null,
+        gatewayMac: scan.meta?.scope_hint?.gateway_mac ?? null,
       });
       setTopologyResult(result);
       setTopologyDeviceIds(targets.map((entry) => entry.deviceId));
@@ -1411,6 +1414,7 @@ export default function App() {
                   credentialStatus={topologyCredentials}
                   result={topologyResult}
                   names={nameLookupFromScan(scan.rows)}
+                  types={typeLookupFromScan(scan.rows, inventory?.rows)}
                   targetCount={targetsFromScanRows(scan.rows).length}
                   busy={topologyBusy}
                   error={topologyError}

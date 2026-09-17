@@ -82,13 +82,12 @@ pub struct Iface {
 
 impl Iface {
     pub fn display_name(&self) -> String {
-        self.alias
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .or(self.name.as_deref())
-            .or(self.descr.as_deref())
-            .map(str::to_string)
-            .unwrap_or_else(|| self.index.to_string())
+        crate::display::first_printable([
+            self.name.as_deref(),
+            self.alias.as_deref(),
+            self.descr.as_deref(),
+        ])
+        .unwrap_or_else(|| self.index.to_string())
     }
 
     pub fn is_up(&self) -> bool {
@@ -163,6 +162,8 @@ pub struct DeviceView {
     pub entity: EntityInfo,
     pub mibs_present: Vec<String>,
     pub notes: Vec<String>,
+    /// Bridge port number → ifIndex, from BRIDGE-MIB.
+    pub bridge_port_if: BTreeMap<u32, u32>,
 }
 
 impl DeviceView {
@@ -188,6 +189,7 @@ impl DeviceView {
             entity: EntityInfo::default(),
             mibs_present: Vec::new(),
             notes: Vec::new(),
+            bridge_port_if: BTreeMap::new(),
         }
     }
 
@@ -214,11 +216,36 @@ impl DeviceView {
     }
 
     pub fn port_name(&self, if_index: u32) -> String {
-        self.lldp_local_ports
-            .get(&if_index)
-            .cloned()
-            .or_else(|| self.iface(if_index).map(Iface::display_name))
-            .unwrap_or_else(|| if_index.to_string())
+        let resolved = self.resolve_if_index(if_index);
+        crate::display::first_printable([
+            self.lldp_local_ports.get(&if_index).map(String::as_str),
+            self.lldp_local_ports.get(&resolved).map(String::as_str),
+            self.iface(resolved).and_then(|i| i.name.as_deref()),
+            self.iface(resolved).and_then(|i| i.alias.as_deref()),
+            self.iface(resolved).and_then(|i| i.descr.as_deref()),
+        ])
+        .unwrap_or_else(|| resolved.to_string())
+    }
+
+    /// Map an LLDP locPortNum or bridge port onto IF-MIB ifIndex when the
+    /// agent numbers them differently.
+    pub fn resolve_if_index(&self, port: u32) -> u32 {
+        if self.interfaces.contains_key(&port) {
+            return port;
+        }
+        if let Some(idx) = self.bridge_port_if.get(&port) {
+            return *idx;
+        }
+        if let Some(name) = self.lldp_local_ports.get(&port) {
+            if let Some((idx, _)) = self.interfaces.iter().find(|(_, iface)| {
+                iface.name.as_deref() == Some(name.as_str())
+                    || iface.alias.as_deref() == Some(name.as_str())
+                    || iface.descr.as_deref() == Some(name.as_str())
+            }) {
+                return *idx;
+            }
+        }
+        port
     }
 
     pub fn vlan_for_port(&self, if_index: u32) -> (Option<String>, Option<u16>, Vec<u16>) {
@@ -290,8 +317,7 @@ pub async fn collect_device(
 
     walk_ok(session, IF_DESCR, &mut view, |view, bind| {
         if let Some(idx) = last_index(&bind.oid, IF_DESCR) {
-            view.interfaces.entry(idx).or_default().index = idx;
-            view.interfaces.entry(idx).or_default().descr = bind.value.as_utf8();
+            assign_iface_label(view, "ifDescr", idx, &bind.value, |iface| &mut iface.descr);
         }
     })
     .await?;
@@ -300,14 +326,13 @@ pub async fn collect_device(
     }
     walk_ok(session, IF_NAME, &mut view, |view, bind| {
         if let Some(idx) = last_index(&bind.oid, IF_NAME) {
-            view.interfaces.entry(idx).or_default().index = idx;
-            view.interfaces.entry(idx).or_default().name = bind.value.as_utf8();
+            assign_iface_label(view, "ifName", idx, &bind.value, |iface| &mut iface.name);
         }
     })
     .await?;
     walk_ok(session, IF_ALIAS, &mut view, |view, bind| {
         if let Some(idx) = last_index(&bind.oid, IF_ALIAS) {
-            view.interfaces.entry(idx).or_default().alias = bind.value.as_utf8();
+            assign_iface_label(view, "ifAlias", idx, &bind.value, |iface| &mut iface.alias);
         }
     })
     .await?;
@@ -374,6 +399,7 @@ pub async fn collect_device(
     }
     if !bridge_to_if.is_empty() {
         view.mibs_present.push("BRIDGE-MIB".into());
+        view.bridge_port_if = bridge_to_if.clone();
     }
 
     collect_fdb_bridge(session, &mut view, &bridge_to_if).await?;
@@ -596,7 +622,7 @@ async fn collect_lldp(
 ) -> Result<(), TopologyError> {
     walk_ok(session, LLDP_LOC_PORT_ID, view, |view, bind| {
         if let Some(port) = last_index(&bind.oid, LLDP_LOC_PORT_ID) {
-            if let Some(name) = bind.value.as_utf8().or_else(|| mac_from_value(&bind.value)) {
+            if let Some(name) = mac_from_value(&bind.value).or_else(|| bind.value.as_utf8()) {
                 view.lldp_local_ports.insert(port, name);
             }
         }
@@ -633,7 +659,7 @@ async fn collect_lldp(
     })
     .await?;
     fill_lldp(session, LLDP_REM_PORT_ID, &mut neighbors, |n, v| {
-        n.port_id = v.as_utf8().or_else(|| mac_from_value(v));
+        n.port_id = mac_from_value(v).or_else(|| v.as_utf8());
     })
     .await?;
     fill_lldp(session, LLDP_REM_PORT_DESC, &mut neighbors, |n, v| {
@@ -809,6 +835,29 @@ async fn collect_entity(
     let binds = walk_table(session, ENT_PHYSICAL_DESCR).await?;
     view.entity.descr = binds.iter().find_map(|b| b.value.as_utf8());
     Ok(())
+}
+
+fn assign_iface_label<F>(
+    view: &mut DeviceView,
+    field: &str,
+    idx: u32,
+    value: &SnmpValue,
+    slot: F,
+) where
+    F: FnOnce(&mut Iface) -> &mut Option<String>,
+{
+    let iface = view.interfaces.entry(idx).or_default();
+    iface.index = idx;
+    if let Some(label) = value.as_utf8() {
+        *slot(iface) = Some(label);
+        return;
+    }
+    if let Some(bytes) = value.as_bytes() {
+        if crate::display::is_nonempty_octets(bytes) {
+            view.notes
+                .push(crate::display::rejected_octets_note(field, idx, bytes));
+        }
+    }
 }
 
 fn last_index(oid: &Oid, prefix: &[u32]) -> Option<u32> {
@@ -1088,5 +1137,68 @@ mod tests {
         assert_eq!(vlan.as_deref(), Some("trunk"));
         assert_eq!(native, Some(10));
         assert_eq!(tagged, vec![20]);
+    }
+
+    #[tokio::test]
+    async fn netgear_mojibake_ifalias_falls_back_to_ifname() {
+        let mut t = BTreeMap::new();
+        t.insert(
+            Oid::from_slice(SYS_NAME).to_dotted(),
+            SnmpValue::OctetString(b"netgear-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.7", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"g7".to_vec()),
+        );
+        t.insert(
+            format!("{}.7", Oid::from_slice(IF_ALIAS)),
+            SnmpValue::OctetString(vec![0x80, b'=', 0xC3, 0xBC, b')']),
+        );
+        t.insert(
+            format!("{}.7", Oid::from_slice(IF_DESCR)),
+            SnmpValue::OctetString(b"Unit: 1 Slot: 0 Port: 7 Gigabit".to_vec()),
+        );
+        t.insert(
+            format!("{}.18", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"Gi1/0/18".to_vec()),
+        );
+        t.insert(
+            format!("{}.24", Oid::from_slice(IF_ALIAS)),
+            SnmpValue::OctetString(vec![0xFF, 0xFE, 0x00, 0x7D]),
+        );
+        let view = collect_device(
+            &crate::snmp::FixtureSession::new(t),
+            Ipv4Addr::new(192, 168, 60, 2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.port_name(7), "g7");
+        assert_eq!(view.interfaces[&7].display_name(), "g7");
+        assert!(view.interfaces[&7]
+            .alias
+            .as_ref()
+            .is_none_or(|s| !s.contains('\u{FFFD}')));
+        assert_eq!(view.port_name(18), "Gi1/0/18");
+        assert_eq!(view.port_name(24), "24");
+        assert!(view.notes.iter().any(|n| n.contains("ifAlias") && n.contains("7")));
+        assert!(!view.port_name(7).contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn display_name_prefers_ifname_over_alias() {
+        let iface = Iface {
+            index: 18,
+            name: Some("Gi1/0/18".into()),
+            alias: Some("AP-01".into()),
+            descr: Some("GigabitEthernet1/0/18".into()),
+            mac: None,
+            if_type: Some(6),
+            admin_status: Some(1),
+            oper_status: Some(1),
+            speed_mbps: Some(1000),
+            poe: None,
+        };
+        assert_eq!(iface.display_name(), "Gi1/0/18");
     }
 }

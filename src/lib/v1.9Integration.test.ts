@@ -192,4 +192,60 @@ describe("ArcScan v1.9 integrated ArcAtlas contract", () => {
     expect(envelope.topology.connections).toContainEqual(connection);
     expect(envelope.unresolvedTopology).toBeUndefined();
   });
+
+  it("keeps WAN/Internet fields additive and out of inventory", () => {
+    const wan = {
+      fromLogicalId: "logical:internet",
+      toDeviceId: 40,
+      kind: "wan",
+      protocol: "default-route",
+      confidence: "strong" as const,
+      evidence: ["Default route matches Core Switch"],
+    };
+    const envelope = buildHandoffEnvelope({
+      rows: V19_INTEGRATION_ROWS,
+      notes: new Map(),
+      networkName: "Site LAN",
+      handoffId: "00000000-0000-4000-8000-000000000023",
+      sourceVersion: "1.8.7",
+      generatedAt: "2026-09-16T12:01:00.000Z",
+      topology: {
+        ...V19_INTEGRATION_TOPOLOGY,
+        connections: [wan, ...V19_INTEGRATION_TOPOLOGY.connections],
+        logicalNodes: [{ id: "logical:internet", kind: "internet", label: "Internet", physical: false }],
+        edge: {
+          gatewayDeviceId: 40,
+          gatewayIp: "10.0.0.40",
+          gatewayMac: "02:AA:00:00:00:40",
+          internet: { id: "logical:internet", kind: "internet", label: "Internet", physical: false },
+          uplink: wan,
+          confidence: "strong",
+          evidence: wan.evidence,
+        },
+      },
+    });
+
+    expect(envelope.schemaVersion).toBe(2);
+    if (envelope.schemaVersion !== 2) throw new Error("expected schema v2");
+    expect(envelope.edge?.internet.id).toBe("logical:internet");
+    expect(envelope.edge?.internet.physical).toBe(false);
+    expect(envelope.logicalNodes?.[0]?.physical).toBe(false);
+    expect(envelope.topology.connections.every((connection) => connection.kind !== "wan")).toBe(true);
+    expect(envelope.unresolvedTopology?.connections).toContainEqual(wan);
+    const inventory = envelope.inventory as Array<Record<string, unknown>>;
+    expect(inventory.every((row) => row.device_id === 21 || row.device_id === 22 || row.device_id === 30 || row.device_id === 31 || row.device_id === 40)).toBe(true);
+    expect(JSON.stringify(inventory)).not.toContain("logical:internet");
+    expect(Object.keys(envelope)).toEqual(
+      expect.arrayContaining([
+        "schemaVersion",
+        "handoffId",
+        "sourceVersion",
+        "generatedAt",
+        "networkName",
+        "inventory",
+        "topology",
+      ]),
+    );
+    assertArcAtlas13ParserAssumptions(envelope);
+  });
 });

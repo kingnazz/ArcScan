@@ -5,7 +5,7 @@
 // Rust errors into short UI copy. It never stores or returns the connection token.
 
 import { buildInventoryExport } from "./export";
-import type { TopologyConnection, TopologySnapshot, UnresolvedNode } from "./topology";
+import type { LogicalNode, TopologyConnection, TopologyEdge, TopologySnapshot, UnresolvedNode } from "./topology";
 import type { InventoryRow } from "../types";
 import { APP_VERSION } from "../version";
 
@@ -95,6 +95,8 @@ export interface ArcAtlasHandoffV2 {
     connections: ArcAtlasTopologyConnection[];
   };
   unresolvedTopology?: ArcAtlasUnresolvedTopology;
+  edge?: TopologyEdge;
+  logicalNodes?: LogicalNode[];
 }
 
 export type ArcAtlasHandoffEnvelope = ArcAtlasHandoffV1 | ArcAtlasHandoffV2;
@@ -309,6 +311,10 @@ export function buildHandoffEnvelope(args: {
       connections,
     },
     ...(unresolvedTopology ? { unresolvedTopology } : {}),
+    ...(args.topology.edge ? { edge: args.topology.edge } : {}),
+    ...(args.topology.logicalNodes && args.topology.logicalNodes.length > 0
+      ? { logicalNodes: args.topology.logicalNodes }
+      : {}),
   };
 }
 

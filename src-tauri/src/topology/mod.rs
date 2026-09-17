@@ -64,6 +64,12 @@ pub async fn discover_topology(
     state: State<'_, TopologyState>,
     request: TopologyRequest,
 ) -> Result<TopologyResult, String> {
+    let mut request = request;
+    if request.gateway_ip.is_none() {
+        request.gateway_ip = crate::netinfo::default_gateway_ip()
+            .await
+            .map(|ip| ip.to_string());
+    }
     let result = run_from_request(&state.credentials, request)
         .await
         .map_err(String::from)?;

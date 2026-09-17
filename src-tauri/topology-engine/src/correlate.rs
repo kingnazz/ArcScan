@@ -12,9 +12,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::collect::{is_unicast_mac, normalize_mac, DeviceView};
-use super::model::TopologyTarget;
+use super::display::INTERNET_NODE_ID;
 use super::model::{
-    TopologyConfidence, TopologyConnection, TopologyProtocol, TopologySnapshot, UnresolvedNode,
+    EdgeHint, LogicalNode, TopologyConfidence, TopologyConnection, TopologyEdge, TopologyProtocol,
+    TopologySnapshot, TopologyTarget, UnresolvedNode,
 };
 
 /// A port with this many relevant unicast MACs is treated as an uplink/trunk.
@@ -84,6 +85,8 @@ struct Draft {
     to_device_id: Option<i64>,
     from_unresolved: Option<UnresolvedNode>,
     to_unresolved: Option<UnresolvedNode>,
+    from_logical_id: Option<String>,
+    to_logical_id: Option<String>,
     from_port: Option<String>,
     to_port: Option<String>,
     protocol: TopologyProtocol,
@@ -126,6 +129,15 @@ pub fn correlate(
     targets: &[TopologyTarget],
     captured_at: &str,
 ) -> TopologySnapshot {
+    correlate_with_edge(views, targets, captured_at, None)
+}
+
+pub fn correlate_with_edge(
+    views: &[DeviceView],
+    targets: &[TopologyTarget],
+    captured_at: &str,
+    edge_hint: Option<&EdgeHint>,
+) -> TopologySnapshot {
     let index = InventoryIndex::from_targets(targets);
     let mut drafts: Vec<Draft> = Vec::new();
     let mut unknown: BTreeMap<String, UnresolvedNode> = BTreeMap::new();
@@ -137,12 +149,16 @@ pub fn correlate(
         let lldp_ports: BTreeSet<u32> = view
             .lldp_neighbors
             .iter()
-            .map(|n| n.local_port_num)
+            .map(|n| view.resolve_if_index(n.local_port_num))
             .collect();
-        let cdp_ports: BTreeSet<u32> = view.cdp_neighbors.iter().map(|n| n.if_index).collect();
+        let cdp_ports: BTreeSet<u32> = view
+            .cdp_neighbors
+            .iter()
+            .map(|n| view.resolve_if_index(n.if_index))
+            .collect();
 
         for neigh in &view.lldp_neighbors {
-            let local_if = neigh.local_port_num;
+            let local_if = view.resolve_if_index(neigh.local_port_num);
             let from_port = Some(view.port_name(local_if));
             let to_port = neigh.port_id.clone().or_else(|| neigh.port_desc.clone());
             let evidence = vec![format!(
@@ -173,6 +189,8 @@ pub fn correlate(
                 to_device_id: to_id,
                 from_unresolved: None,
                 to_unresolved,
+                from_logical_id: None,
+                to_logical_id: None,
                 from_port,
                 to_port,
                 protocol: TopologyProtocol::Lldp,
@@ -187,7 +205,7 @@ pub fn correlate(
         }
 
         for neigh in &view.cdp_neighbors {
-            let local_if = neigh.if_index;
+            let local_if = view.resolve_if_index(neigh.if_index);
             if lldp_ports.contains(&local_if) {
                 // LLDP already described this port. CDP is extra evidence, not
                 // a second link, and must not change confidence.
@@ -217,6 +235,8 @@ pub fn correlate(
                 to_device_id: to_id,
                 from_unresolved: None,
                 to_unresolved,
+                from_logical_id: None,
+                to_logical_id: None,
                 from_port,
                 to_port,
                 protocol: TopologyProtocol::Cdp,
@@ -269,6 +289,8 @@ pub fn correlate(
                     to_device_id: None,
                     from_unresolved: None,
                     to_unresolved: Some(node),
+                    from_logical_id: None,
+                    to_logical_id: None,
                     from_port: Some(view.port_name(if_index)),
                     to_port: None,
                     protocol: TopologyProtocol::Fdb,
@@ -303,6 +325,8 @@ pub fn correlate(
                 to_device_id: Some(to_id),
                 from_unresolved: None,
                 to_unresolved: None,
+                from_logical_id: None,
+                to_logical_id: None,
                 from_port: Some(view.port_name(if_index)),
                 to_port: None,
                 protocol: TopologyProtocol::Fdb,
@@ -331,6 +355,8 @@ pub fn correlate(
             to_device_id: draft.to_device_id,
             from_unresolved_id: draft.from_unresolved.as_ref().map(|n| n.id.clone()),
             to_unresolved_id: draft.to_unresolved.as_ref().map(|n| n.id.clone()),
+            from_logical_id: draft.from_logical_id,
+            to_logical_id: draft.to_logical_id,
             from_port: draft.from_port,
             to_port: draft.to_port,
             kind: "ethernet".into(),
@@ -345,6 +371,9 @@ pub fn correlate(
         });
     }
 
+    let (logical_nodes, edge) =
+        attach_wan_edge(&mut connections, &mut unknown, views, &index, edge_hint);
+
     connections.sort_by(|a, b| {
         (a.from_device_id, a.to_device_id, &a.from_port, &a.to_port).cmp(&(
             b.from_device_id,
@@ -358,7 +387,232 @@ pub fn correlate(
         captured_at: captured_at.to_string(),
         connections,
         unknown_nodes: unknown.into_values().collect(),
+        logical_nodes,
+        edge,
     }
+}
+
+fn attach_wan_edge(
+    connections: &mut Vec<TopologyConnection>,
+    unknown: &mut BTreeMap<String, UnresolvedNode>,
+    views: &[DeviceView],
+    index: &InventoryIndex,
+    hint: Option<&EdgeHint>,
+) -> (Vec<LogicalNode>, Option<TopologyEdge>) {
+    let Some(hint) = hint else {
+        return (Vec::new(), None);
+    };
+    let Some(hit) = resolve_gateway(views, index, hint) else {
+        return (Vec::new(), None);
+    };
+    let gateway_id = hit.device_id;
+    let gateway_ip = hit.ip;
+    let gateway_mac = hit.mac;
+    let confidence = hit.confidence;
+    let mut evidence = hit.evidence;
+
+    let via = find_ont_or_modem(views, index, gateway_id);
+    if let Some(ont) = via.as_ref() {
+        unknown.entry(ont.id.clone()).or_insert_with(|| ont.clone());
+    }
+    let internet = LogicalNode::internet();
+    let uplink = if let Some(ont) = via.as_ref() {
+        evidence.push(format!(
+            "LLDP/CDP neighbour {} sits between the default gateway and the WAN.",
+            ont.sys_name
+                .as_deref()
+                .or(ont.management_address.as_deref())
+                .unwrap_or(ont.id.as_str())
+        ));
+        TopologyConnection {
+            from_device_id: None,
+            to_device_id: None,
+            from_unresolved_id: None,
+            to_unresolved_id: Some(ont.id.clone()),
+            from_logical_id: Some(INTERNET_NODE_ID.into()),
+            to_logical_id: None,
+            from_port: None,
+            to_port: None,
+            kind: "wan".into(),
+            protocol: "default-route".into(),
+            confidence,
+            speed_mbps: None,
+            vlan: None,
+            native_vlan: None,
+            tagged_vlans: Vec::new(),
+            poe: None,
+            evidence: evidence.clone(),
+        }
+    } else {
+        TopologyConnection {
+            from_device_id: None,
+            to_device_id: Some(gateway_id),
+            from_unresolved_id: None,
+            to_unresolved_id: None,
+            from_logical_id: Some(INTERNET_NODE_ID.into()),
+            to_logical_id: None,
+            from_port: None,
+            to_port: None,
+            kind: "wan".into(),
+            protocol: "default-route".into(),
+            confidence,
+            speed_mbps: None,
+            vlan: None,
+            native_vlan: None,
+            tagged_vlans: Vec::new(),
+            poe: None,
+            evidence: evidence.clone(),
+        }
+    };
+    connections.push(uplink.clone());
+    let edge = TopologyEdge {
+        gateway_device_id: Some(gateway_id),
+        gateway_ip,
+        gateway_mac,
+        internet: internet.clone(),
+        via_unresolved_id: via.as_ref().map(|n| n.id.clone()),
+        uplink,
+        confidence,
+        evidence,
+    };
+    (vec![internet], Some(edge))
+}
+
+struct GatewayHit {
+    device_id: i64,
+    ip: Option<String>,
+    mac: Option<String>,
+    confidence: TopologyConfidence,
+    evidence: Vec<String>,
+}
+
+fn resolve_gateway(
+    views: &[DeviceView],
+    index: &InventoryIndex,
+    hint: &EdgeHint,
+) -> Option<GatewayHit> {
+    let ip = hint
+        .gateway_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mac = hint
+        .gateway_mac
+        .as_deref()
+        .and_then(normalize_mac);
+
+    let by_ip = ip.and_then(|addr| index.id_for_ip(addr));
+    let by_mac = mac.as_deref().and_then(|m| index.resolve_mac(m));
+
+    // ARP on any answering device can confirm the gateway MAC when the host
+    // process only learned the IP.
+    let arp_mac = ip.and_then(|addr| {
+        views.iter().find_map(|view| {
+            view.arp
+                .iter()
+                .find(|entry| entry.ip == addr)
+                .and_then(|entry| normalize_mac(&entry.mac))
+        })
+    });
+    let by_arp = arp_mac.as_deref().and_then(|m| index.resolve_mac(m));
+
+    let (id, confidence) = match (by_ip, by_mac, by_arp) {
+        (Some(a), Some(b), _) if a == b => (a, TopologyConfidence::Strong),
+        (Some(a), None, Some(c)) if a == c => (a, TopologyConfidence::Strong),
+        (Some(a), None, None) => (a, TopologyConfidence::Inferred),
+        (None, Some(b), _) => (b, TopologyConfidence::Inferred),
+        (None, None, Some(c)) => (c, TopologyConfidence::Inferred),
+        (Some(_), Some(_), _) => return None, // IP and MAC name two different devices
+        _ => return None,
+    };
+
+    let mut evidence = Vec::new();
+    if let Some(addr) = ip {
+        evidence.push(format!(
+            "The scanner's default route is {addr}, which matches inventory device {id}."
+        ));
+    }
+    if let Some(m) = mac.as_deref().or(arp_mac.as_deref()) {
+        evidence.push(format!("Default-gateway MAC {m} matches inventory device {id}."));
+    }
+    Some(GatewayHit {
+        device_id: id,
+        ip: ip.map(str::to_string),
+        mac: mac.or(arp_mac),
+        confidence,
+        evidence,
+    })
+}
+
+fn find_ont_or_modem(
+    views: &[DeviceView],
+    index: &InventoryIndex,
+    gateway_id: i64,
+) -> Option<UnresolvedNode> {
+    for view in views {
+        let from_id = view
+            .inventory_hint
+            .or_else(|| index.id_for_ip(&view.target_ip.to_string()));
+        if from_id != Some(gateway_id) {
+            continue;
+        }
+        for neigh in &view.lldp_neighbors {
+            if !looks_like_ont_or_modem(neigh.sys_name.as_deref(), neigh.sys_desc.as_deref(), None)
+            {
+                continue;
+            }
+            if index
+                .resolve_neighbor(
+                    neigh.chassis_id.as_deref(),
+                    neigh.sys_name.as_deref(),
+                    neigh.management_address.as_deref(),
+                )
+                .is_some()
+            {
+                continue;
+            }
+            return Some(unresolved_from_lldp(neigh));
+        }
+        for neigh in &view.cdp_neighbors {
+            if !looks_like_ont_or_modem(neigh.device_id.as_deref(), neigh.platform.as_deref(), None)
+            {
+                continue;
+            }
+            if index
+                .resolve_neighbor(None, neigh.device_id.as_deref(), neigh.address.as_deref())
+                .is_some()
+            {
+                continue;
+            }
+            return Some(unresolved_from_cdp(neigh));
+        }
+    }
+    None
+}
+
+fn looks_like_ont_or_modem(a: Option<&str>, b: Option<&str>, c: Option<&str>) -> bool {
+    let haystack = format!(
+        "{} {} {}",
+        a.unwrap_or(""),
+        b.unwrap_or(""),
+        c.unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "ont",
+        "gpon",
+        "xgpon",
+        "olt",
+        "optical network",
+        "optical network terminal",
+        "cable modem",
+        "docsis",
+        "fibre modem",
+        "fiber modem",
+        "dsl modem",
+        "modem",
+    ];
+    NEEDLES.iter().any(|n| haystack.contains(n))
 }
 
 fn merge_drafts(drafts: Vec<Draft>) -> Vec<Draft> {
@@ -1004,5 +1258,135 @@ mod tests {
         );
         let snap = correlate(&[core], &site_targets(), "t");
         assert!(snap.connections.is_empty());
+        assert!(snap.edge.is_none());
+        assert!(snap.logical_nodes.is_empty());
+    }
+
+    #[test]
+    fn fdb_does_not_invent_an_endpoint_port() {
+        let mut core = switch_view();
+        core.fdb.push(FdbEntry {
+            mac: "AA:BB:CC:00:00:50".into(),
+            if_index: 7,
+            vlan: Some(10),
+        });
+        let snap = correlate(&[core], &site_targets(), "t");
+        let link = snap
+            .connections
+            .iter()
+            .find(|c| c.to_device_id == Some(5))
+            .unwrap();
+        assert_eq!(link.from_port.as_deref(), Some("Port 7"));
+        assert_eq!(link.to_port, None);
+    }
+
+    #[test]
+    fn default_gateway_correlation_mints_internet_node() {
+        let mut core = switch_view();
+        core.fdb.push(FdbEntry {
+            mac: "AA:BB:CC:00:00:50".into(),
+            if_index: 7,
+            vlan: Some(10),
+        });
+        let hint = EdgeHint {
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: Some("00:20:AA:00:00:01".into()),
+        };
+        let snap = correlate_with_edge(&[core], &site_targets(), "t", Some(&hint));
+        let edge = snap.edge.as_ref().expect("edge");
+        assert_eq!(edge.gateway_device_id, Some(1));
+        assert_eq!(edge.internet.id, crate::display::INTERNET_NODE_ID);
+        assert!(!edge.internet.physical);
+        assert_eq!(edge.internet.label, "Internet");
+        assert_eq!(edge.via_unresolved_id, None);
+        assert_eq!(edge.uplink.kind, "wan");
+        assert_eq!(edge.uplink.protocol, "default-route");
+        assert_eq!(edge.uplink.from_logical_id.as_deref(), Some(INTERNET_NODE_ID));
+        assert_eq!(edge.uplink.to_device_id, Some(1));
+        assert_eq!(edge.uplink.from_port, None);
+        assert_eq!(edge.uplink.to_port, None);
+        assert_eq!(snap.logical_nodes.len(), 1);
+        assert!(!snap.logical_nodes[0].physical);
+        assert!(snap
+            .connections
+            .iter()
+            .any(|c| c.kind == "wan" && c.to_device_id == Some(1)));
+    }
+
+    #[test]
+    fn unmatched_default_route_does_not_invent_a_gateway() {
+        let core = switch_view();
+        let hint = EdgeHint {
+            gateway_ip: Some("10.255.255.1".into()),
+            gateway_mac: Some("DE:AD:00:00:00:01".into()),
+        };
+        let snap = correlate_with_edge(&[core], &site_targets(), "t", Some(&hint));
+        assert!(snap.edge.is_none());
+        assert!(snap.logical_nodes.is_empty());
+        assert!(!snap.connections.iter().any(|c| c.kind == "wan"));
+    }
+
+    #[test]
+    fn conflicting_gateway_ip_and_mac_are_refused() {
+        let core = switch_view();
+        let hint = EdgeHint {
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: Some("00:1A:2B:00:00:02".into()),
+        };
+        let snap = correlate_with_edge(&[core], &site_targets(), "t", Some(&hint));
+        assert!(snap.edge.is_none());
+    }
+
+    #[test]
+    fn ont_neighbour_is_preserved_between_internet_and_gateway() {
+        let mut fw = DeviceView::new(Ipv4Addr::new(192, 168, 1, 1), Some(1));
+        fw.sys_name = Some("sonicwall".into());
+        fw.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 1,
+            chassis_id: Some("AA:00:00:00:00:01".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("gpon0".into()),
+            port_desc: None,
+            sys_name: Some("ONT-01".into()),
+            sys_desc: Some("GPON Optical Network Terminal".into()),
+            management_address: None,
+        });
+        let hint = EdgeHint {
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: Some("00:20:AA:00:00:01".into()),
+        };
+        let snap = correlate_with_edge(&[fw], &site_targets(), "t", Some(&hint));
+        let edge = snap.edge.as_ref().expect("edge");
+        assert_eq!(edge.gateway_device_id, Some(1));
+        let via = edge.via_unresolved_id.as_deref().expect("ont");
+        assert!(via.starts_with("unknown:"));
+        assert_eq!(edge.uplink.to_unresolved_id.as_deref(), Some(via));
+        assert_eq!(edge.uplink.to_device_id, None);
+        assert!(snap.unknown_nodes.iter().any(|n| n.id == via));
+        assert!(snap
+            .unknown_nodes
+            .iter()
+            .any(|n| n.sys_name.as_deref() == Some("ONT-01")));
+    }
+
+    #[test]
+    fn internet_node_is_never_an_inventory_device() {
+        let core = switch_view();
+        let hint = EdgeHint {
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: None,
+        };
+        let snap = correlate_with_edge(&[core], &site_targets(), "t", Some(&hint));
+        let internet = snap.logical_nodes.iter().find(|n| n.kind == "internet");
+        assert!(internet.is_some());
+        assert!(!internet.unwrap().physical);
+        assert!(snap
+            .connections
+            .iter()
+            .filter(|c| c.kind == "wan")
+            .all(|c| c.from_device_id.is_none() && c.from_logical_id.is_some()));
+        for target in site_targets() {
+            assert_ne!(target.device_id, Some(-1));
+        }
     }
 }

@@ -17,6 +17,7 @@ import type {
   ScanOptions,
   ScanProgress,
   ScanStarted,
+  ScopeHint,
 } from "../types";
 
 /** How the scan panel describes what it is showing. */
@@ -32,6 +33,7 @@ export interface ScanMeta {
   scanned: number;
   probed: number;
   cancelled: boolean;
+  scope_hint?: ScopeHint | null;
 }
 
 /** A queued event, applied in batches rather than one render at a time. */
@@ -175,6 +177,7 @@ export function useLiveScan({ onError, onSaved, historyRetention }: UseLiveScanO
           scanned: result.scanned,
           probed: result.probed,
           cancelled: result.cancelled,
+          scope_hint: result.scope_hint ?? null,
         });
         // Settle immediately from the returned hosts so nothing is left looking
         // half-resolved if an update event was dropped.
