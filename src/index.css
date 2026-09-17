@@ -326,6 +326,15 @@
     stroke-width: 1.4;
   }
 
+  .topo-edge-hit:focus {
+    outline: none;
+  }
+
+  .topo-edge-hit:focus-visible {
+    stroke: var(--accent);
+    stroke-opacity: 0.4;
+  }
+
   .popover {
     background: var(--surface-raised);
     border-color: var(--border);

@@ -185,7 +185,10 @@ mod tests {
 
     #[test]
     fn utf8_port_names_pass_through() {
-        assert_eq!(decode_snmp_display(b"Gi1/0/18").as_deref(), Some("Gi1/0/18"));
+        assert_eq!(
+            decode_snmp_display(b"Gi1/0/18").as_deref(),
+            Some("Gi1/0/18")
+        );
         assert_eq!(decode_snmp_display(b"g7").as_deref(), Some("g7"));
         assert_eq!(decode_snmp_display(b"Port 7").as_deref(), Some("Port 7"));
         assert_eq!(decode_snmp_display(b"X0").as_deref(), Some("X0"));
@@ -195,10 +198,7 @@ mod tests {
     fn latin1_alias_is_recovered_when_mostly_ascii() {
         // "Cafe" + Latin-1 é. One accented letter in an otherwise ASCII alias.
         let bytes = b"Caf\xE9-uplink";
-        assert_eq!(
-            decode_snmp_display(bytes).as_deref(),
-            Some("Café-uplink")
-        );
+        assert_eq!(decode_snmp_display(bytes).as_deref(), Some("Café-uplink"));
     }
 
     #[test]

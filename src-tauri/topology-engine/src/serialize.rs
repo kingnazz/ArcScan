@@ -446,16 +446,15 @@ mod tests {
         assert!(preview.edge.is_some());
         assert_eq!(preview.logical_nodes.len(), 1);
         assert!(!preview.logical_nodes[0].physical);
-        assert!(preview
-            .topology
-            .connections
-            .iter()
-            .all(|c| c.kind != "wan"));
+        assert!(preview.topology.connections.iter().all(|c| c.kind != "wan"));
         let json = handoff_preview_to_json(&preview).unwrap();
         assert_arc_atlas13_contract(&json).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["schemaVersion"], 2);
-        assert_eq!(value["edge"]["internet"]["id"], crate::display::INTERNET_NODE_ID);
+        assert_eq!(
+            value["edge"]["internet"]["id"],
+            crate::display::INTERNET_NODE_ID
+        );
         assert_eq!(value["edge"]["internet"]["physical"], false);
         assert_eq!(value["logicalNodes"][0]["kind"], "internet");
         let inventory = value["inventory"].as_array().unwrap();

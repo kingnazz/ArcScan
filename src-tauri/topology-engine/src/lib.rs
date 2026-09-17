@@ -17,9 +17,9 @@ pub mod serialize;
 pub mod snmp;
 
 pub use credentials::{CredentialInput, CredentialStatus, CredentialStore, SnmpSecret};
+pub use display::INTERNET_NODE_ID;
 pub use engine::{request_cancel, run, run_from_request, set_scan_cancel_check};
 pub use error::TopologyError;
-pub use display::INTERNET_NODE_ID;
 pub use model::{
     ContractConnection, ContractTopology, LogicalNode, TopologyConfidence, TopologyConnection,
     TopologyEdge, TopologyHandoffPreview, TopologyRequest, TopologyResult, TopologySnapshot,

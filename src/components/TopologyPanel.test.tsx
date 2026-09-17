@@ -286,6 +286,41 @@ describe("Topology panel", () => {
     expect(screen.getByRole("button", { name: "Hide endpoints" })).toBeTruthy();
   });
 
+  it("opens preview connection details from the keyboard", () => {
+    render(
+      <TopologyPanel
+        {...noop}
+        credentialStatus={{
+          configured: true,
+          version: "v2c",
+          username: null,
+          authProtocol: null,
+          privProtocol: null,
+          sessionOnly: true,
+        }}
+        result={result}
+        names={names}
+        types={{
+          byId: new Map([
+            [1, "router"],
+            [2, "switch"],
+            [4, "nas"],
+          ]),
+        }}
+        targetCount={5}
+        busy={false}
+        error={null}
+      />,
+    );
+    const edge = screen.getByRole("button", { name: /Core Switch Port 48 → Home Router X0/i });
+    fireEvent.keyDown(edge, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    expect(screen.getAllByText(/LLDP neighbour on Core Switch port 48 reports SonicWall X0/).length).toBeGreaterThan(1);
+    fireEvent.keyDown(screen.getByRole("button", { name: /Home NAS/i }), { key: " " });
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    expect(screen.getAllByText(/Exactly one unicast MAC learned on access port Port 20/).length).toBeGreaterThan(1);
+  });
+
   it("exposes confidence meaning to keyboard focus", () => {
     render(
       <TopologyPanel

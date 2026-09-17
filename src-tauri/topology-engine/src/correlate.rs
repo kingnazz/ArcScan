@@ -412,57 +412,28 @@ fn attach_wan_edge(
     let mut evidence = hit.evidence;
 
     let via = find_ont_or_modem(views, index, gateway_id);
-    if let Some(ont) = via.as_ref() {
+    if let Some(WanVia::Unresolved(ont)) = via.as_ref() {
         unknown.entry(ont.id.clone()).or_insert_with(|| ont.clone());
     }
     let internet = LogicalNode::internet();
-    let uplink = if let Some(ont) = via.as_ref() {
-        evidence.push(format!(
-            "LLDP/CDP neighbour {} sits between the default gateway and the WAN.",
-            ont.sys_name
-                .as_deref()
-                .or(ont.management_address.as_deref())
-                .unwrap_or(ont.id.as_str())
-        ));
-        TopologyConnection {
-            from_device_id: None,
-            to_device_id: None,
-            from_unresolved_id: None,
-            to_unresolved_id: Some(ont.id.clone()),
-            from_logical_id: Some(INTERNET_NODE_ID.into()),
-            to_logical_id: None,
-            from_port: None,
-            to_port: None,
-            kind: "wan".into(),
-            protocol: "default-route".into(),
-            confidence,
-            speed_mbps: None,
-            vlan: None,
-            native_vlan: None,
-            tagged_vlans: Vec::new(),
-            poe: None,
-            evidence: evidence.clone(),
+    let uplink = match via.as_ref() {
+        Some(WanVia::Unresolved(ont)) => {
+            evidence.push(format!(
+                "LLDP/CDP neighbour {} sits between the default gateway and the WAN.",
+                ont.sys_name
+                    .as_deref()
+                    .or(ont.management_address.as_deref())
+                    .unwrap_or(ont.id.as_str())
+            ));
+            wan_uplink(None, Some(ont.id.clone()), confidence, evidence.clone())
         }
-    } else {
-        TopologyConnection {
-            from_device_id: None,
-            to_device_id: Some(gateway_id),
-            from_unresolved_id: None,
-            to_unresolved_id: None,
-            from_logical_id: Some(INTERNET_NODE_ID.into()),
-            to_logical_id: None,
-            from_port: None,
-            to_port: None,
-            kind: "wan".into(),
-            protocol: "default-route".into(),
-            confidence,
-            speed_mbps: None,
-            vlan: None,
-            native_vlan: None,
-            tagged_vlans: Vec::new(),
-            poe: None,
-            evidence: evidence.clone(),
+        Some(WanVia::Device { id, label }) => {
+            evidence.push(format!(
+                "LLDP/CDP neighbour {label} (inventory device {id}) sits between the default gateway and the WAN."
+            ));
+            wan_uplink(Some(*id), None, confidence, evidence.clone())
         }
+        None => wan_uplink(Some(gateway_id), None, confidence, evidence.clone()),
     };
     connections.push(uplink.clone());
     let edge = TopologyEdge {
@@ -470,12 +441,46 @@ fn attach_wan_edge(
         gateway_ip,
         gateway_mac,
         internet: internet.clone(),
-        via_unresolved_id: via.as_ref().map(|n| n.id.clone()),
+        via_unresolved_id: match via.as_ref() {
+            Some(WanVia::Unresolved(ont)) => Some(ont.id.clone()),
+            _ => None,
+        },
+        via_device_id: match via.as_ref() {
+            Some(WanVia::Device { id, .. }) => Some(*id),
+            _ => None,
+        },
         uplink,
         confidence,
         evidence,
     };
     (vec![internet], Some(edge))
+}
+
+fn wan_uplink(
+    to_device_id: Option<i64>,
+    to_unresolved_id: Option<String>,
+    confidence: TopologyConfidence,
+    evidence: Vec<String>,
+) -> TopologyConnection {
+    TopologyConnection {
+        from_device_id: None,
+        to_device_id,
+        from_unresolved_id: None,
+        to_unresolved_id,
+        from_logical_id: Some(INTERNET_NODE_ID.into()),
+        to_logical_id: None,
+        from_port: None,
+        to_port: None,
+        kind: "wan".into(),
+        protocol: "default-route".into(),
+        confidence,
+        speed_mbps: None,
+        vlan: None,
+        native_vlan: None,
+        tagged_vlans: Vec::new(),
+        poe: None,
+        evidence,
+    }
 }
 
 struct GatewayHit {
@@ -484,6 +489,11 @@ struct GatewayHit {
     mac: Option<String>,
     confidence: TopologyConfidence,
     evidence: Vec<String>,
+}
+
+enum WanVia {
+    Device { id: i64, label: String },
+    Unresolved(UnresolvedNode),
 }
 
 fn resolve_gateway(
@@ -496,10 +506,7 @@ fn resolve_gateway(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let mac = hint
-        .gateway_mac
-        .as_deref()
-        .and_then(normalize_mac);
+    let mac = hint.gateway_mac.as_deref().and_then(normalize_mac);
 
     let by_ip = ip.and_then(|addr| index.id_for_ip(addr));
     let by_mac = mac.as_deref().and_then(|m| index.resolve_mac(m));
@@ -533,7 +540,9 @@ fn resolve_gateway(
         ));
     }
     if let Some(m) = mac.as_deref().or(arp_mac.as_deref()) {
-        evidence.push(format!("Default-gateway MAC {m} matches inventory device {id}."));
+        evidence.push(format!(
+            "Default-gateway MAC {m} matches inventory device {id}."
+        ));
     }
     Some(GatewayHit {
         device_id: id,
@@ -548,7 +557,7 @@ fn find_ont_or_modem(
     views: &[DeviceView],
     index: &InventoryIndex,
     gateway_id: i64,
-) -> Option<UnresolvedNode> {
+) -> Option<WanVia> {
     for view in views {
         let from_id = view
             .inventory_hint
@@ -561,30 +570,42 @@ fn find_ont_or_modem(
             {
                 continue;
             }
-            if index
-                .resolve_neighbor(
-                    neigh.chassis_id.as_deref(),
-                    neigh.sys_name.as_deref(),
-                    neigh.management_address.as_deref(),
-                )
-                .is_some()
-            {
+            if let Some(id) = index.resolve_neighbor(
+                neigh.chassis_id.as_deref(),
+                neigh.sys_name.as_deref(),
+                neigh.management_address.as_deref(),
+            ) {
+                if id != gateway_id {
+                    let label = neigh
+                        .sys_name
+                        .clone()
+                        .or_else(|| neigh.management_address.clone())
+                        .unwrap_or_else(|| format!("device {id}"));
+                    return Some(WanVia::Device { id, label });
+                }
                 continue;
             }
-            return Some(unresolved_from_lldp(neigh));
+            return Some(WanVia::Unresolved(unresolved_from_lldp(neigh)));
         }
         for neigh in &view.cdp_neighbors {
             if !looks_like_ont_or_modem(neigh.device_id.as_deref(), neigh.platform.as_deref(), None)
             {
                 continue;
             }
-            if index
-                .resolve_neighbor(None, neigh.device_id.as_deref(), neigh.address.as_deref())
-                .is_some()
+            if let Some(id) =
+                index.resolve_neighbor(None, neigh.device_id.as_deref(), neigh.address.as_deref())
             {
+                if id != gateway_id {
+                    let label = neigh
+                        .device_id
+                        .clone()
+                        .or_else(|| neigh.address.clone())
+                        .unwrap_or_else(|| format!("device {id}"));
+                    return Some(WanVia::Device { id, label });
+                }
                 continue;
             }
-            return Some(unresolved_from_cdp(neigh));
+            return Some(WanVia::Unresolved(unresolved_from_cdp(neigh)));
         }
     }
     None
@@ -1299,9 +1320,13 @@ mod tests {
         assert!(!edge.internet.physical);
         assert_eq!(edge.internet.label, "Internet");
         assert_eq!(edge.via_unresolved_id, None);
+        assert_eq!(edge.via_device_id, None);
         assert_eq!(edge.uplink.kind, "wan");
         assert_eq!(edge.uplink.protocol, "default-route");
-        assert_eq!(edge.uplink.from_logical_id.as_deref(), Some(INTERNET_NODE_ID));
+        assert_eq!(
+            edge.uplink.from_logical_id.as_deref(),
+            Some(INTERNET_NODE_ID)
+        );
         assert_eq!(edge.uplink.to_device_id, Some(1));
         assert_eq!(edge.uplink.from_port, None);
         assert_eq!(edge.uplink.to_port, None);
@@ -1360,6 +1385,7 @@ mod tests {
         assert_eq!(edge.gateway_device_id, Some(1));
         let via = edge.via_unresolved_id.as_deref().expect("ont");
         assert!(via.starts_with("unknown:"));
+        assert_eq!(edge.via_device_id, None);
         assert_eq!(edge.uplink.to_unresolved_id.as_deref(), Some(via));
         assert_eq!(edge.uplink.to_device_id, None);
         assert!(snap.unknown_nodes.iter().any(|n| n.id == via));
@@ -1367,6 +1393,57 @@ mod tests {
             .unknown_nodes
             .iter()
             .any(|n| n.sys_name.as_deref() == Some("ONT-01")));
+    }
+
+    #[test]
+    fn known_inventory_ont_is_kept_between_internet_and_gateway() {
+        let mut fw = DeviceView::new(Ipv4Addr::new(192, 168, 1, 1), Some(1));
+        fw.sys_name = Some("sonicwall".into());
+        fw.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 1,
+            chassis_id: Some("AA:00:00:00:00:09".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("X1".into()),
+            port_desc: None,
+            sys_name: Some("ONT-01".into()),
+            sys_desc: Some("GPON Optical Network Terminal".into()),
+            management_address: Some("192.168.1.9".into()),
+        });
+        let mut targets = site_targets();
+        targets.push(target(9, "192.168.1.9", "AA:00:00:00:00:09", "ONT-01"));
+        let hint = EdgeHint {
+            gateway_ip: Some("192.168.1.1".into()),
+            gateway_mac: Some("00:20:AA:00:00:01".into()),
+        };
+        let snap = correlate_with_edge(&[fw], &targets, "t", Some(&hint));
+        let edge = snap.edge.as_ref().expect("edge");
+        assert_eq!(edge.gateway_device_id, Some(1));
+        assert_eq!(edge.via_device_id, Some(9));
+        assert_eq!(edge.via_unresolved_id, None);
+        assert_eq!(
+            edge.uplink.from_logical_id.as_deref(),
+            Some(INTERNET_NODE_ID)
+        );
+        assert_eq!(edge.uplink.to_device_id, Some(9));
+        assert_eq!(edge.uplink.to_unresolved_id, None);
+        assert_eq!(edge.uplink.kind, "wan");
+        assert!(snap
+            .connections
+            .iter()
+            .any(|c| c.kind == "wan" && c.to_device_id == Some(9)));
+        assert!(!snap
+            .connections
+            .iter()
+            .any(|c| c.kind == "wan" && c.to_device_id == Some(1)));
+        // The ordinary LLDP neighbour link still connects gateway ↔ ONT, so the
+        // hierarchy is Internet → ONT → gateway rather than Internet → gateway.
+        assert!(snap.connections.iter().any(|c| {
+            c.kind != "wan"
+                && c.protocol == "lldp"
+                && ((c.from_device_id == Some(1) && c.to_device_id == Some(9))
+                    || (c.from_device_id == Some(9) && c.to_device_id == Some(1)))
+        }));
+        assert!(snap.unknown_nodes.is_empty());
     }
 
     #[test]
