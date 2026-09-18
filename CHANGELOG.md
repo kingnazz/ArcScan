@@ -3,6 +3,26 @@
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [1.9.0] - 2026-09-18
+
+Deep discovery and evidence-based topology mapping. Full notes:
+[docs/RELEASE-NOTES-1.9.0.md](docs/RELEASE-NOTES-1.9.0.md).
+
+### Added
+
+- Optional Deep Scan and credentialed Windows discovery for exact OS/build, hardware and system role.
+- SNMP v2c/v3 topology discovery with LLDP/CDP, FDB/ARP, VLAN, link-speed and PoE evidence.
+- Hierarchical topology preview with confidence, port and evidence details plus keyboard-operable connections.
+- Conservative Internet/default-gateway mapping and additive ArcAtlas schema-v2 WAN/logical-node metadata.
+- Physical-device-aware preview grouping without merging inventory rows or relying on hostname alone.
+
+### Security and compatibility
+
+- SNMP and Windows credentials remain session-only and are never serialized into ArcAtlas handoffs.
+- ArcScan never sprays default SNMP communities.
+- Inventory-only ArcAtlas sends remain schema v1; topology handoffs use schema v2.
+
 ## [1.8.6] - 2026-09-14
 
 A focused macOS LAN-discovery reliability and ArcAtlas UI polish release. Full notes:
