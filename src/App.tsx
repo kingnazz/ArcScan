@@ -81,6 +81,7 @@ import {
 import {
   EMPTY_CREDENTIAL_STATUS,
   nameLookupFromScan,
+  physicalLookupFromInventory,
   targetsFromScanRows,
   typeLookupFromScan,
   type CredentialInput,
@@ -1415,6 +1416,7 @@ export default function App() {
                   result={topologyResult}
                   names={nameLookupFromScan(scan.rows)}
                   types={typeLookupFromScan(scan.rows, inventory?.rows)}
+                  physical={physicalLookupFromInventory(inventory?.rows)}
                   targetCount={targetsFromScanRows(scan.rows).length}
                   busy={topologyBusy}
                   error={topologyError}

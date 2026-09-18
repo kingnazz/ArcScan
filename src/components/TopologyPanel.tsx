@@ -25,6 +25,7 @@ import {
   type CredentialStatus,
   type DeviceNameLookup,
   type DeviceTypeLookup,
+  type PhysicalDeviceLookup,
   type TopologyResult,
   type UnresolvedNode,
 } from "../lib/topology";
@@ -34,6 +35,7 @@ export interface TopologyPanelProps {
   result: TopologyResult | null;
   names: DeviceNameLookup;
   types?: DeviceTypeLookup;
+  physical?: PhysicalDeviceLookup;
   targetCount: number;
   busy: boolean;
   error: string | null;
@@ -49,6 +51,7 @@ export function TopologyPanel({
   result,
   names,
   types = { byId: new Map() },
+  physical = { byId: new Map() },
   targetCount,
   busy,
   error,
@@ -314,7 +317,12 @@ export function TopologyPanel({
               <>
                 <div className="mt-3">
                   <h4 className="mb-2 text-[12px] font-semibold text-text">Preview</h4>
-                  <TopologyPreview snapshot={result.snapshot} names={names} types={types} />
+                  <TopologyPreview
+                    snapshot={result.snapshot}
+                    names={names}
+                    types={types}
+                    physical={physical}
+                  />
                 </div>
               <ul className="mt-3 divide-y divide-border">
                 {result.snapshot.connections.map((connection, index) => {
