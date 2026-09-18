@@ -16,6 +16,9 @@
 //   node scripts/verify-ui.mjs
 //
 // Set PLAYWRIGHT_CHROMIUM_PATH to use a Chromium that is already on the machine.
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const URL = process.env.ARCSCAN_URL ?? "http://localhost:4173/";
@@ -666,6 +669,45 @@ await step("a completed scan refreshes the Inventory", async () => {
     throw new Error(`${headline[2]} present after a scan that found ${scanned}`);
   }
   return headline[0];
+});
+
+await step("topology discovery previews Internet, Fit and the endpoint layer", async () => {
+  await nav("Scan").click();
+  await page.getByRole("button", { name: "Topology" }).click();
+  await page.getByRole("heading", { name: "Topology discovery" }).waitFor({ timeout: 5000 });
+  const discover = page.getByRole("button", { name: "Discover topology" });
+  if (!(await discover.isDisabled())) {
+    throw new Error("Discover topology was enabled before credentials");
+  }
+  await page.getByLabel("Community").fill("site-read");
+  await page.getByRole("button", { name: "Keep for this session" }).click();
+  await discover.click();
+  const preview = page.getByRole("img", { name: "Topology preview" });
+  await preview.waitFor({ timeout: 8000 });
+  const text = await page.locator("main").innerText();
+  if (!/Internet/.test(text)) throw new Error("preview did not show the Internet node");
+  if (!/Home Router/.test(text)) throw new Error("preview did not show the gateway");
+  if (!/core-sw/i.test(text)) throw new Error("preview did not show the discovered switch");
+  await page.getByRole("button", { name: "Fit" }).click();
+  await page.getByRole("button", { name: "Hide endpoints" }).click();
+  if (!(await page.getByRole("button", { name: "Show endpoints" }).count())) {
+    throw new Error("endpoint toggle did not flip");
+  }
+  await page.getByRole("button", { name: "Reset layout" }).click();
+  if (!(await page.getByRole("button", { name: "Hide endpoints" }).count())) {
+    throw new Error("reset did not restore the endpoint layer");
+  }
+  const shotDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../docs/shots");
+  mkdirSync(shotDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(shotDir, "topology-preview.png"),
+    fullPage: true,
+  });
+  await preview.screenshot({
+    path: path.join(shotDir, "topology-preview-canvas.png"),
+  });
+  await page.getByRole("button", { name: "Back to devices" }).click();
+  return "Internet cloud, Fit, hide/show endpoints, screenshots written";
 });
 
 await step("Stop keeps partial results, marks nothing missing and adds no changes", async () => {

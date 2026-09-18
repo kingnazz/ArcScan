@@ -36,7 +36,42 @@ export const DEVICE_TYPE_LABEL: Record<string, string> = {
   smart_home: "Smart-home device",
   network_equipment: "Network equipment",
   speaker: "Speaker",
+  // v1.9. Appended, never replacing: a database written by an earlier build
+  // still holds `computer` and `network_equipment`, and both keep their
+  // labels and their meanings.
+  workstation: "Workstation",
+  server: "Server",
+  domain_controller: "Domain controller",
+  switch: "Switch",
+  access_point: "Access point",
+  firewall: "Firewall",
+  management_controller: "Management controller",
   unknown: "Unknown",
+};
+
+/**
+ * What each type means, where the word alone is not enough.
+ *
+ * Only the types a technician might reasonably read two ways are here: the
+ * difference between a server and a workstation is the whole point of v1.9,
+ * and a management controller is the thing most often mistaken for the server
+ * it is bolted into.
+ */
+export const DEVICE_TYPE_HINT: Record<string, string> = {
+  workstation:
+    "A machine running a client edition of Windows. Established from the operating system's own ProductType, not from the services it exposes.",
+  server:
+    "A machine running a server edition, or server hardware. File sharing and Remote Desktop alone never reach this.",
+  domain_controller: "A server holding a domain directory role.",
+  switch: "An ethernet switch.",
+  access_point: "A wireless access point.",
+  firewall: "A dedicated firewall or security appliance.",
+  management_controller:
+    "A baseboard management controller such as an iDRAC or iLO. A separate device from the server it manages, with its own address and credentials.",
+  network_equipment:
+    "Network equipment ArcScan could not narrow to a switch, access point or firewall.",
+  computer:
+    "A general-purpose computer. Shown where nothing established whether it is a workstation or a server.",
 };
 
 /** A type ArcScan does not recognise reads as its raw value, never as blank. */
@@ -73,8 +108,15 @@ export function confidenceLabel(value: string | null | undefined): string {
 /** Where a fact came from, in words a person recognises. */
 export const SOURCE_LABEL: Record<string, string> = {
   user: "You named it",
+  // v1.9. The one authenticated source, and the only one allowed to settle an
+  // exact Windows edition or a workstation-versus-server question.
+  windows_credentialed: "Windows (signed in)",
   mdns: "mDNS",
   ssdp: "SSDP",
+  tls: "TLS certificate",
+  smb: "SMB",
+  http: "Web interface",
+  banner: "Service banner",
   reverse_dns: "Reverse DNS",
   arp_vendor: "MAC manufacturer",
   tcp_service: "Open port",
@@ -106,6 +148,18 @@ export const EVIDENCE_KIND_LABEL: Record<string, string> = {
   url: "Address",
   ipv4_address: "IPv4 address",
   ipv6_address: "IPv6 address",
+  os_family: "Operating system",
+  os_product: "OS product",
+  os_edition: "OS edition",
+  os_version: "OS version",
+  os_build: "OS build",
+  os_architecture: "Architecture",
+  windows_product_type: "Windows product type",
+  system_uuid: "System UUID",
+  domain_membership: "Domain",
+  banner: "Service banner",
+  certificate_subject: "Certificate subject",
+  page_title: "Page title",
   protocol_identifier: "Protocol identifier",
 };
 
@@ -244,8 +298,8 @@ export function discoverySummaryLine(scan: {
 }): string {
   const quality = scan.discovery_quality ?? "skipped";
   const parts: string[] = [discoveryQualityLabel(quality)];
+  const report = parseDiscoveryReport(scan.discovery_summary);
   if (quality === "complete") {
-    const report = parseDiscoveryReport(scan.discovery_summary);
     if (report) {
       parts.push(`${report.mdns_responses} mDNS`);
       parts.push(`${report.ssdp_responses} SSDP`);
@@ -253,7 +307,42 @@ export function discoverySummaryLine(scan: {
   } else if (scan.discovery_quality_reason) {
     parts.push(scan.discovery_quality_reason);
   }
+  // The deep and credentialed passes are reported whatever the multicast pass
+  // did, because they are independent of it: a scan whose multicast pass was
+  // skipped for a routed target can still have run every deep probe.
+  parts.push(...deepSummaryParts(report));
   return parts.join(" · ");
+}
+
+/**
+ * What the deep and credentialed passes did, as phrases for the summary line.
+ *
+ * Empty for a Quick Scan, which is the common case and should read exactly as
+ * it did before v1.9.
+ *
+ * A credentialed pass that answered nothing is reported as a failure count
+ * rather than omitted. "Credentialed: 0 of 12" is the line a technician needs
+ * when they expected twelve machines and got none, and silence is what would
+ * have let a wrong credential look like a network with no Windows on it.
+ */
+export function deepSummaryParts(report: DiscoveryReport | null): string[] {
+  if (!report) return [];
+  const parts: string[] = [];
+  if (report.deep_attempted) {
+    parts.push(`Deep: ${report.deep_devices_enriched ?? 0} identified`);
+  }
+  if (report.credentialed_attempted) {
+    const answered = report.credentialed_answered ?? 0;
+    const failed = report.credentialed_failed ?? 0;
+    const skipped = report.credentialed_skipped ?? 0;
+    // The denominator is machines ArcScan actually asked. A workstation with
+    // no WinRM listener was never asked and is reported separately, so a
+    // wrong password reads as "0 of 12" rather than being diluted to
+    // "0 of 60" by every desktop on the site.
+    const line = `Credentialed: ${answered} of ${answered + failed}`;
+    parts.push(skipped > 0 ? `${line} · ${skipped} without WinRM` : line);
+  }
+  return parts;
 }
 
 /**
@@ -285,6 +374,15 @@ export function parseDiscoveryReport(raw: string | null | undefined): DiscoveryR
       mdns_capped: Boolean(parsed.mdns_capped),
       ssdp_capped: Boolean(parsed.ssdp_capped),
       descriptions_capped: Boolean(parsed.descriptions_capped),
+      deep_attempted: Boolean(parsed.deep_attempted),
+      deep_devices_enriched: Number(parsed.deep_devices_enriched ?? 0),
+      credentialed_attempted: Boolean(parsed.credentialed_attempted),
+      credentialed_answered: Number(parsed.credentialed_answered ?? 0),
+      credentialed_failed: Number(parsed.credentialed_failed ?? 0),
+      credentialed_skipped: Number(parsed.credentialed_skipped ?? 0),
+      credentialed_notes: Array.isArray(parsed.credentialed_notes)
+        ? parsed.credentialed_notes
+        : [],
     };
   } catch {
     return null;
@@ -368,3 +466,89 @@ export function confidenceTone(confidence: string | null | undefined): "online" 
 }
 
 export type { Confidence };
+
+// ---------------------------------------------------------------------------
+// v1.9 operating-system and identity display
+// ---------------------------------------------------------------------------
+
+/**
+ * What each Windows product type means, in words.
+ *
+ * Shown under the operating system in the drawer, because "1" is what the API
+ * returns and "a workstation, as the machine reported itself" is what a
+ * technician is trying to find out — and because this one field is the reason
+ * a Windows laptop with file sharing on is no longer called a server.
+ */
+export const WINDOWS_PRODUCT_TYPE_HINT: Record<string, string> = {
+  "1": "The machine reported ProductType 1: a workstation.",
+  "2": "The machine reported ProductType 2: a domain controller.",
+  "3": "The machine reported ProductType 3: a server.",
+};
+
+/** `Workstation`, `Server`, `Domain controller`, for a compact label. */
+export const WINDOWS_PRODUCT_TYPE_LABEL: Record<string, string> = {
+  "1": "Workstation",
+  "2": "Domain controller",
+  "3": "Server",
+};
+
+/**
+ * The operating system as one line, e.g.
+ * `Windows 11 Pro 24H2 (build 26100, x64)`.
+ *
+ * Returns `null` when nothing established a product, so a caller renders
+ * nothing rather than an empty row. Every part is optional and the line
+ * degrades in the order a person would drop them: a scan that established only
+ * "Windows Server 2022" says that and stops.
+ */
+export function osSummary(
+  facts: {
+    os_product?: string | null;
+    os_edition?: string | null;
+    os_version?: string | null;
+    os_build?: string | null;
+    os_architecture?: string | null;
+    os_family?: string | null;
+  } | null
+    | undefined,
+): string | null {
+  if (!facts) return null;
+  const product = facts.os_product?.trim();
+  if (!product) {
+    // A family on its own is still worth showing: "Windows" from an IIS banner
+    // says more than a blank, and says nothing it cannot support.
+    const family = facts.os_family?.trim();
+    return family ? familyLabel(family) : null;
+  }
+  let line = product;
+  const edition = facts.os_edition?.trim();
+  if (edition) line += ` ${edition}`;
+  const version = facts.os_version?.trim();
+  // The version is skipped when it merely repeats the product, which is what
+  // a server release looks like: "Windows Server 2022" plus version "2022".
+  if (version && !product.includes(version)) line += ` ${version}`;
+
+  const parenthetical: string[] = [];
+  const build = facts.os_build?.trim();
+  if (build) parenthetical.push(`build ${build}`);
+  const architecture = facts.os_architecture?.trim();
+  if (architecture) parenthetical.push(architecture);
+  if (parenthetical.length > 0) line += ` (${parenthetical.join(", ")})`;
+  return line;
+}
+
+/** The words for an OS family. An unrecognised family reads as its own value. */
+export const OS_FAMILY_LABEL: Record<string, string> = {
+  windows: "Windows",
+  linux: "Linux",
+  macos: "macOS",
+  bsd: "BSD",
+  ios: "iOS",
+  android: "Android",
+  solaris: "Solaris",
+  network_os: "Network operating system",
+};
+
+export function familyLabel(value: string): string {
+  return OS_FAMILY_LABEL[value.trim().toLowerCase()] ?? value.trim();
+}

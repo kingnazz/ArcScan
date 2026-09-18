@@ -233,6 +233,60 @@ POST JSON:
 
 Do not include credentials, local database paths, machine usernames, or unrelated ArcScan application state.
 
+## Schema version 2 (additive topology)
+
+When a topology snapshot exists for the same inventory, ArcScan sends
+`schemaVersion: 2` with:
+
+```json
+{
+  "schemaVersion": 2,
+  "handoffId": "uuid",
+  "sourceVersion": "1.8.7",
+  "generatedAt": "ISO timestamp",
+  "networkName": "Current ArcScan network",
+  "inventory": [],
+  "topology": {
+    "capturedAt": "ISO timestamp",
+    "connections": [
+      {
+        "fromDeviceId": 40,
+        "toDeviceId": 22,
+        "fromPort": "Gi1/0/20",
+        "toPort": "Ethernet 2",
+        "kind": "ethernet",
+        "protocol": "lldp",
+        "confidence": "confirmed",
+        "speedMbps": 1000,
+        "vlan": "20",
+        "nativeVlan": 20,
+        "taggedVlans": [],
+        "poe": { "enabled": false },
+        "evidence": ["LLDP neighbour declaration"]
+      }
+    ]
+  }
+}
+```
+
+`topology.connections` contains only known-to-known links whose
+`fromDeviceId` / `toDeviceId` exist exactly once in `inventory`. Unresolved
+neighbours, same-physical-device observations, and WAN uplinks stay on the
+additive `unresolvedTopology` object.
+
+Additional additive keys current ArcAtlas receivers **ignore** and must later
+consume if WAN/Internet presentation is wanted:
+
+| Field | Meaning |
+| --- | --- |
+| `edge` | Conservative WAN metadata: gateway inventory id/IP/MAC, `internet` logical node, optional `viaDeviceId` / `viaUnresolvedId` ONT, uplink connection |
+| `logicalNodes` | Presentation-only nodes. `logical:internet` is **not** a scanned inventory device (`physical: false`) |
+| `unresolvedTopology` | Neighbours and links that failed the known-known contract |
+
+Do not invent an ISP. If public IP/ASN cannot be determined, `edge.internet.label` is `"Internet"`.
+
+Inventory-only sends remain `schemaVersion: 1` with the same keys as before.
+
 ## Handoff id / retries
 
 Generate one UUID for a send attempt before network transmission.
