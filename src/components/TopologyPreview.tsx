@@ -33,7 +33,9 @@ import {
   vlanLabel,
   type DeviceNameLookup,
   type DeviceTypeLookup,
+  type PhysicalDeviceLookup,
   type PreviewKind,
+  type PreviewNode,
   type TopologyConnection,
   type TopologySnapshot,
   type UnresolvedNode,
@@ -43,6 +45,7 @@ export interface TopologyPreviewProps {
   snapshot: TopologySnapshot;
   names: DeviceNameLookup;
   types: DeviceTypeLookup;
+  physical?: PhysicalDeviceLookup;
 }
 
 const KIND_LABEL: Record<PreviewKind, string> = {
@@ -60,6 +63,13 @@ const KIND_LABEL: Record<PreviewKind, string> = {
   camera: "Camera",
   unknown: "Unknown",
 };
+
+function roleCaption(node: PreviewNode): string {
+  const kind = KIND_LABEL[node.kind];
+  if (node.roleSource === "topology") return `${kind} · FDB`;
+  if (!node.physical) return `${kind} · logical`;
+  return kind;
+}
 
 function KindIcon({ kind }: { kind: PreviewKind }) {
   const cls = "h-4 w-4";
@@ -97,15 +107,15 @@ function strokeFor(confidence: TopologyConnection["confidence"]): { dash: string
   return { dash: "4 4", width: 1.5 };
 }
 
-export function TopologyPreview({ snapshot, names, types }: TopologyPreviewProps) {
+export function TopologyPreview({ snapshot, names, types, physical }: TopologyPreviewProps) {
   const [showEndpoints, setShowEndpoints] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const unknownNodes: UnresolvedNode[] = snapshot.unknownNodes ?? [];
 
   const layout = useMemo(
-    () => layoutTopology({ snapshot, names, types, showEndpoints }),
-    [snapshot, names, types, showEndpoints],
+    () => layoutTopology({ snapshot, names, types, physical, showEndpoints }),
+    [snapshot, names, types, physical, showEndpoints],
   );
 
   const viewW = Math.max(layout.width / zoom, 1);
@@ -250,8 +260,7 @@ export function TopologyPreview({ snapshot, names, types }: TopologyPreviewProps
                       {node.label}
                     </span>
                     <span className="block truncate text-[10px] leading-tight text-text-muted">
-                      {KIND_LABEL[node.kind]}
-                      {node.physical ? "" : " · logical"}
+                      {roleCaption(node)}
                     </span>
                   </span>
                 </div>

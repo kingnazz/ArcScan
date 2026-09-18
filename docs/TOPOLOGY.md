@@ -197,6 +197,17 @@ strong links are solid and thinner, inferred links are dashed. Click, hover, or
 tab to a connection and press Enter or Space for ports, protocol, confidence,
 speed, VLAN, PoE and the first evidence line.
 
+Inventory rows that share an explicit non-empty `physical_device` key render as
+**one** node, with every distinct switch link kept. That grouping is preview-only:
+transport-local inventory ids and the ArcAtlas handoff payload stay unmerged.
+Hostname-only duplicates stay separate. Blank or absent physical-device keys do
+not group.
+
+A device whose inventory type is unknown is not guessed from its name. If it
+sourced FDB/BRIDGE evidence (it published a MAC table), the preview may show a
+presentation-only `Switch · FDB` role and place it on the switch layer. That
+label does not write a classification into inventory.
+
 ## Integrated contract invariants
 
 - Do not fold unresolved connections into `topology.connections` for ArcAtlas.

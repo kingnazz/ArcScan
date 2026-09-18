@@ -12,6 +12,7 @@ import {
   layoutTopology,
   looksLikeSecretLeak,
   nameLookupFromInventory,
+  physicalLookupFromInventory,
   protocolLabel,
   speedLabel,
   summaryLine,
@@ -421,5 +422,193 @@ describe("topology preview layout", () => {
     expect(layout.edges.some((edge) => edge.connection.toDeviceId === 9 && edge.connection.kind === "wan")).toBe(
       true,
     );
+  });
+
+  it("groups two inventory rows that share an explicit physical_device into one node", () => {
+    const snapshot: TopologySnapshot = {
+      capturedAt: "2026-09-16T12:00:00Z",
+      connections: [
+        {
+          fromDeviceId: 2,
+          toDeviceId: 21,
+          fromPort: "g7",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["Exactly one unicast MAC 90:09:D0:93:66:76 on g7"],
+        },
+        {
+          fromDeviceId: 2,
+          toDeviceId: 22,
+          fromPort: "g8",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["Exactly one unicast MAC 90:09:D0:93:66:77 on g8"],
+        },
+        {
+          fromDeviceId: 21,
+          toDeviceId: 22,
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "inferred",
+          evidence: ["Same host, two NICs — not a cable"],
+        },
+      ],
+    };
+    const layout = layoutTopology({
+      snapshot,
+      names: {
+        byId: new Map([
+          [2, "Netgear"],
+          [21, "BC-NAS1"],
+          [22, "BC-NAS1"],
+        ]),
+        byIp: new Map(),
+      },
+      types: {
+        byId: new Map([
+          [2, "unknown"],
+          [21, "nas"],
+          [22, "nas"],
+        ]),
+      },
+      physical: physicalLookupFromInventory([
+        { device_id: 21, physical_device_key: "mac||9009d0936676" },
+        { device_id: 22, physical_device_key: "mac||9009d0936676" },
+      ]),
+    });
+    const nasNodes = layout.nodes.filter((node) => node.label === "BC-NAS1");
+    expect(nasNodes).toHaveLength(1);
+    expect(nasNodes[0].kind).toBe("nas");
+    expect(nasNodes[0].physicalDeviceKey).toBe("mac||9009d0936676");
+    expect(nasNodes[0].deviceIds).toEqual([21, 22]);
+    const nasLinks = layout.edges.filter((edge) => edge.to === nasNodes[0].id || edge.from === nasNodes[0].id);
+    expect(nasLinks).toHaveLength(2);
+    expect(nasLinks.map((edge) => edge.connection.fromPort).sort()).toEqual(["g7", "g8"]);
+    expect(layout.edges.every((edge) => edge.from !== edge.to)).toBe(true);
+    expect(layout.nodes.filter((node) => node.deviceIds?.includes(21) && node.deviceIds?.includes(22))).toHaveLength(
+      1,
+    );
+  });
+
+  it("keeps hostname-only duplicates as separate nodes", () => {
+    const snapshot: TopologySnapshot = {
+      capturedAt: "2026-09-16T12:00:00Z",
+      connections: [
+        {
+          fromDeviceId: 2,
+          toDeviceId: 21,
+          fromPort: "g7",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["MAC on g7"],
+        },
+        {
+          fromDeviceId: 2,
+          toDeviceId: 22,
+          fromPort: "g8",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["MAC on g8"],
+        },
+      ],
+    };
+    const layout = layoutTopology({
+      snapshot,
+      names: {
+        byId: new Map([
+          [2, "Netgear"],
+          [21, "BC-NAS1"],
+          [22, "BC-NAS1"],
+        ]),
+        byIp: new Map(),
+      },
+      types: { byId: new Map([[21, "nas"], [22, "nas"]]) },
+      physical: physicalLookupFromInventory([
+        { device_id: 21, physical_device_key: null },
+        { device_id: 22, physical_device_key: "   " },
+      ]),
+    });
+    expect(layout.nodes.filter((node) => node.label === "BC-NAS1")).toHaveLength(2);
+    expect(layout.edges).toHaveLength(2);
+  });
+
+  it("uses FDB/BRIDGE evidence as a presentation-only switch role when inventory type is unknown", () => {
+    const snapshot: TopologySnapshot = {
+      capturedAt: "2026-09-16T12:00:00Z",
+      connections: [
+        {
+          fromDeviceId: 2,
+          toDeviceId: 4,
+          fromPort: "g7",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["Exactly one unicast MAC learned on access port g7"],
+        },
+      ],
+    };
+    const types = typeLookupFromScan(
+      [{ device_id: 2, host: { discovery: null } }, { device_id: 4, host: { discovery: { device_type: "nas" } } }],
+      [
+        { device_id: 2, user_device_type: null, discovery: { device_type: "unknown" } },
+        { device_id: 4, user_device_type: null, discovery: { device_type: "nas" } },
+      ],
+    );
+    expect(types.byId.get(2)).toBe("unknown");
+    const layout = layoutTopology({
+      snapshot,
+      names: {
+        byId: new Map([
+          [2, "192.168.60.2"],
+          [4, "BC-NAS1"],
+        ]),
+        byIp: new Map(),
+      },
+      types,
+    });
+    const sw = layout.nodes.find((node) => node.deviceId === 2);
+    const nas = layout.nodes.find((node) => node.deviceId === 4);
+    expect(sw?.kind).toBe("switch");
+    expect(sw?.layer).toBe("switch");
+    expect(sw?.roleSource).toBe("topology");
+    expect(nas?.kind).toBe("nas");
+    expect(nas?.roleSource).toBe("inventory");
+    expect(sw!.y).toBeLessThan(nas!.y);
+  });
+
+  it("does not invent a switch role for an FDB endpoint with unknown type", () => {
+    const snapshot: TopologySnapshot = {
+      capturedAt: "2026-09-16T12:00:00Z",
+      connections: [
+        {
+          fromDeviceId: 2,
+          toDeviceId: 9,
+          fromPort: "g11",
+          kind: "ethernet",
+          protocol: "fdb",
+          confidence: "strong",
+          evidence: ["Exactly one unicast MAC on g11"],
+        },
+      ],
+    };
+    const layout = layoutTopology({
+      snapshot,
+      names: {
+        byId: new Map([
+          [2, "Netgear"],
+          [9, "Printer"],
+        ]),
+        byIp: new Map(),
+      },
+      types: { byId: new Map([[2, "switch"], [9, "unknown"]]) },
+    });
+    const endpoint = layout.nodes.find((node) => node.deviceId === 9);
+    expect(endpoint?.kind).toBe("unknown");
+    expect(endpoint?.layer).toBe("endpoint");
+    expect(endpoint?.roleSource).toBeUndefined();
   });
 });

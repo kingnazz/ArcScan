@@ -354,6 +354,22 @@ export interface DeviceTypeLookup {
   byId: Map<number, string>;
 }
 
+/** Explicit non-empty `physical_device` keys, keyed by local inventory id. */
+export interface PhysicalDeviceLookup {
+  byId: Map<number, string>;
+}
+
+export function physicalLookupFromInventory(
+  rows?: Array<{ device_id: number; physical_device_key?: string | null }>,
+): PhysicalDeviceLookup {
+  const byId = new Map<number, string>();
+  for (const row of rows ?? []) {
+    const key = typeof row.physical_device_key === "string" ? row.physical_device_key.trim() : "";
+    if (key) byId.set(row.device_id, key);
+  }
+  return { byId };
+}
+
 export function typeLookupFromScan(
   rows: Array<{
     device_id: number | null;
@@ -436,6 +452,8 @@ export function isEndpointLayer(layer: PreviewLayer): boolean {
   return layer === "endpoint";
 }
 
+export type PreviewRoleSource = "inventory" | "topology";
+
 export interface PreviewNode {
   id: string;
   label: string;
@@ -443,6 +461,10 @@ export interface PreviewNode {
   layer: PreviewLayer;
   physical: boolean;
   deviceId?: number;
+  deviceIds?: number[];
+  physicalDeviceKey?: string;
+  /** Inventory classification, or a presentation-only role derived from SNMP/FDB. */
+  roleSource?: PreviewRoleSource;
   unresolvedId?: string;
   logicalId?: string;
   x: number;
@@ -481,6 +503,7 @@ export function layoutTopology(args: {
   snapshot: TopologySnapshot;
   names: DeviceNameLookup;
   types: DeviceTypeLookup;
+  physical?: PhysicalDeviceLookup;
   showEndpoints?: boolean;
 }): { nodes: PreviewNode[]; edges: PreviewEdge[]; width: number; height: number } {
   const showEndpoints = args.showEndpoints !== false;
@@ -529,6 +552,8 @@ export function layoutTopology(args: {
         layer: previewLayerForKind(kind),
         physical: true,
         deviceId,
+        deviceIds: [deviceId],
+        roleSource: kind === "unknown" ? undefined : "inventory",
       });
       return;
     }
@@ -563,23 +588,29 @@ export function layoutTopology(args: {
     });
   }
 
+  const { nodes: grouped, previewIdForDevice } = collapsePhysicalPreviewNodes(
+    nodesById,
+    args.physical ?? { byId: new Map() },
+  );
+  applyTopologyRoleHints(grouped, args.snapshot);
+
   const viaDeviceId = args.snapshot.edge?.viaDeviceId;
   if (viaDeviceId != null) {
-    const id = `device:${viaDeviceId}`;
-    const existing = nodesById.get(id);
+    const id = previewIdForDevice.get(viaDeviceId) ?? `device:${viaDeviceId}`;
+    const existing = grouped.get(id);
     if (existing) {
-      nodesById.set(id, { ...existing, layer: "wan" });
+      grouped.set(id, { ...existing, layer: "wan" });
     }
   }
   const viaUnresolvedId = args.snapshot.edge?.viaUnresolvedId;
   if (viaUnresolvedId) {
-    const existing = nodesById.get(viaUnresolvedId);
+    const existing = grouped.get(viaUnresolvedId);
     if (existing) {
-      nodesById.set(viaUnresolvedId, { ...existing, layer: "wan" });
+      grouped.set(viaUnresolvedId, { ...existing, layer: "wan" });
     }
   }
 
-  const filtered = [...nodesById.values()].filter((node) => {
+  const filtered = [...grouped.values()].filter((node) => {
     if (showEndpoints) return true;
     return !isEndpointLayer(node.layer);
   });
@@ -623,9 +654,12 @@ export function layoutTopology(args: {
 
   const edges: PreviewEdge[] = [];
   connections.forEach((connection, index) => {
-    const from = endpointId(connection, "from");
-    const to = endpointId(connection, "to");
-    if (!from || !to) return;
+    const fromRaw = endpointId(connection, "from");
+    const toRaw = endpointId(connection, "to");
+    if (!fromRaw || !toRaw) return;
+    const from = remapPreviewEndpoint(fromRaw, previewIdForDevice);
+    const to = remapPreviewEndpoint(toRaw, previewIdForDevice);
+    if (from === to) return;
     if (!visible.has(from) || !visible.has(to)) return;
     edges.push({
       id: `${from}->${to}:${connection.protocol}:${index}`,
@@ -652,6 +686,103 @@ function connectionsForPreview(snapshot: TopologySnapshot): TopologyConnection[]
   );
   if (!already) connections.push(uplink);
   return connections;
+}
+
+function remapPreviewEndpoint(id: string, previewIdForDevice: Map<number, string>): string {
+  if (!id.startsWith("device:")) return id;
+  const deviceId = Number(id.slice("device:".length));
+  return previewIdForDevice.get(deviceId) ?? id;
+}
+
+function collapsePhysicalPreviewNodes(
+  nodesById: Map<string, Omit<PreviewNode, "x" | "y">>,
+  physical: PhysicalDeviceLookup,
+): {
+  nodes: Map<string, Omit<PreviewNode, "x" | "y">>;
+  previewIdForDevice: Map<number, string>;
+} {
+  const nodes = new Map<string, Omit<PreviewNode, "x" | "y">>();
+  const previewIdForDevice = new Map<number, string>();
+  for (const node of nodesById.values()) {
+    if (node.deviceId == null) {
+      nodes.set(node.id, node);
+      continue;
+    }
+    const key = physical.byId.get(node.deviceId);
+    const groupedId = key ? `physical:${key}` : node.id;
+    previewIdForDevice.set(node.deviceId, groupedId);
+    const existing = nodes.get(groupedId);
+    if (!existing) {
+      nodes.set(groupedId, {
+        ...node,
+        id: groupedId,
+        deviceIds: [node.deviceId],
+        physicalDeviceKey: key,
+      });
+      continue;
+    }
+    nodes.set(groupedId, mergeGroupedPreviewNodes(existing, node, groupedId, key));
+  }
+  return { nodes, previewIdForDevice };
+}
+
+function mergeGroupedPreviewNodes(
+  existing: Omit<PreviewNode, "x" | "y">,
+  incoming: Omit<PreviewNode, "x" | "y">,
+  groupedId: string,
+  key: string | undefined,
+): Omit<PreviewNode, "x" | "y"> {
+  const incomingId = incoming.deviceId;
+  const deviceIds = [
+    ...new Set([...(existing.deviceIds ?? []), ...(incomingId != null ? [incomingId] : [])]),
+  ].sort((a, b) => a - b);
+  const kind = preferPreviewKind(existing.kind, incoming.kind);
+  const roleSource = kind === existing.kind ? existing.roleSource : incoming.roleSource;
+  return {
+    ...existing,
+    id: groupedId,
+    label: pickPreviewLabel(existing.label, incoming.label),
+    kind,
+    layer: previewLayerForKind(kind),
+    deviceId: deviceIds[0],
+    deviceIds,
+    physicalDeviceKey: key,
+    roleSource,
+  };
+}
+
+function preferPreviewKind(a: PreviewKind, b: PreviewKind): PreviewKind {
+  if (a === "unknown") return b;
+  if (b === "unknown") return a;
+  return a;
+}
+
+function pickPreviewLabel(a: string, b: string): string {
+  if (/^Device \d+$/.test(a) && !/^Device \d+$/.test(b)) return b;
+  return a;
+}
+
+function applyTopologyRoleHints(
+  nodesById: Map<string, Omit<PreviewNode, "x" | "y">>,
+  snapshot: TopologySnapshot,
+): void {
+  for (const [id, node] of [...nodesById.entries()]) {
+    if (node.kind !== "unknown" || node.logicalId) continue;
+    const ids = node.deviceIds ?? (node.deviceId != null ? [node.deviceId] : []);
+    if (!ids.some((deviceId) => deviceSourcedFdb(deviceId, snapshot))) continue;
+    nodesById.set(id, {
+      ...node,
+      kind: "switch",
+      layer: "switch",
+      roleSource: "topology",
+    });
+  }
+}
+
+function deviceSourcedFdb(deviceId: number, snapshot: TopologySnapshot): boolean {
+  return snapshot.connections.some(
+    (connection) => connection.fromDeviceId === deviceId && connection.protocol === "fdb",
+  );
 }
 
 function looksLikeOntLabel(text: string): boolean {
