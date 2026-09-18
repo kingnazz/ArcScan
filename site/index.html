@@ -801,38 +801,37 @@
         <div class="wrap">
           <div class="section-head">
             <p class="eyebrow">New in 1.9.0</p>
-            <h2>Cleaner ArcAtlas handoffs from current scans.</h2>
+            <h2>Deep discovery and evidence-based topology mapping.</h2>
             <p>
-              ArcScan now sends only devices the latest compatible scan actually found to ArcAtlas.
-              Missing and unknown historical inventory stays available in ArcScan without being treated
-              as current discovery evidence. Hostname persistence and infrastructure classification are
-              also more resilient.
+              ArcScan can now go beyond a device list with optional deep Windows discovery and
+              SNMP-powered topology mapping. Review the Internet path, gateways, switches, ports,
+              VLANs and supporting evidence before sending topology to ArcAtlas.
               <a href="whats-new-1.9.0.html">What&rsquo;s new in 1.9.0</a>
             </p>
           </div>
 
           <div class="whats-new">
             <article>
-              <h3>Current devices only</h3>
+              <h3>Deep device discovery</h3>
               <p>
-                Send to ArcAtlas now includes only inventory rows marked present by the latest compatible
-                scan, so historical devices do not enter the normal discovery candidate set.
+                Deep Scan can inspect discovered services, while optional session-only Windows
+                credentials add exact OS/build, hardware identity, domain information and system role.
               </p>
             </article>
 
             <article>
-              <h3>History stays visible, not actionable</h3>
+              <h3>Topology from network evidence</h3>
               <p>
-                Missing and unknown devices remain in ArcScan Inventory for context and history, while the
-                send confirmation reports that those historical rows were excluded from the handoff.
+                Explicit SNMP v2c or v3 credentials unlock LLDP/CDP neighbours, switch FDB evidence,
+                real port labels, VLANs, speed and PoE without spraying default communities.
               </p>
             </article>
 
             <article>
-              <h3>Stronger identity evidence</h3>
+              <h3>Internet to endpoint preview</h3>
               <p>
-                Blank later observations no longer erase a durable hostname, and family identity for
-                common Synology, Ubiquiti and Dell infrastructure takes precedence over incidental services.
+                A hierarchical preview correlates the default gateway, managed switches and endpoints,
+                keeps confidence visible, and never invents an ISP or endpoint-side port it did not observe.
               </p>
             </article>
           </div>
