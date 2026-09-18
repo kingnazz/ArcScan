@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONFIDENCE_HINT,
   DEVICE_TYPE_LABEL,
+  WINDOWS_PRODUCT_TYPE_HINT,
   confidenceLabel,
   confidenceTone,
   deviceTypeLabel,
@@ -9,6 +10,8 @@ import {
   discoveryModeLabel,
   hasNameConflict,
   resolveDisplayName,
+  deepSummaryParts,
+  osSummary,
   serviceName,
   servicesLabel,
   sourceLabel,
@@ -293,5 +296,189 @@ describe("discovery quality", () => {
     expect(discoverySummaryLine({ discovery_quality: "complete", discovery_summary: "junk" })).toBe(
       "Complete",
     );
+  });
+});
+
+describe("operating-system summary (v1.9)", () => {
+  it("reads as a technician would say it", () => {
+    expect(
+      osSummary({
+        os_product: "Windows 11",
+        os_edition: "Pro",
+        os_version: "24H2",
+        os_build: "26100",
+        os_architecture: "x64",
+      }),
+    ).toBe("Windows 11 Pro 24H2 (build 26100, x64)");
+  });
+
+  it("does not repeat a server year that is already in the product", () => {
+    expect(
+      osSummary({
+        os_product: "Windows Server 2022",
+        os_edition: "Standard",
+        os_version: "2022",
+        os_build: "20348",
+        os_architecture: "x64",
+      }),
+    ).toBe("Windows Server 2022 Standard (build 20348, x64)");
+  });
+
+  it("degrades to whatever was established", () => {
+    expect(osSummary({ os_product: "Windows Server 2025" })).toBe("Windows Server 2025");
+    expect(osSummary({ os_product: "Windows 10", os_edition: "Home" })).toBe("Windows 10 Home");
+  });
+
+  it("falls back to the family when only a family is known", () => {
+    // What an IIS banner establishes: Windows, and nothing about which one.
+    expect(osSummary({ os_family: "windows" })).toBe("Windows");
+    expect(osSummary({ os_family: "linux" })).toBe("Linux");
+  });
+
+  it("returns null when nothing was established", () => {
+    // Null renders nothing. A dash would read as "asked and found nothing",
+    // which is not what a Quick Scan did.
+    expect(osSummary(null)).toBeNull();
+    expect(osSummary(undefined)).toBeNull();
+    expect(osSummary({})).toBeNull();
+    expect(osSummary({ os_product: "   " })).toBeNull();
+  });
+
+  it("explains each Windows product type in words", () => {
+    expect(WINDOWS_PRODUCT_TYPE_HINT["1"]).toContain("workstation");
+    expect(WINDOWS_PRODUCT_TYPE_HINT["2"]).toContain("domain controller");
+    expect(WINDOWS_PRODUCT_TYPE_HINT["3"]).toContain("server");
+  });
+});
+
+describe("v1.9 device types and sources", () => {
+  it("labels every new device type", () => {
+    for (const [id, label] of [
+      ["workstation", "Workstation"],
+      ["server", "Server"],
+      ["domain_controller", "Domain controller"],
+      ["switch", "Switch"],
+      ["access_point", "Access point"],
+      ["firewall", "Firewall"],
+      ["management_controller", "Management controller"],
+    ] as const) {
+      expect(deviceTypeLabel(id)).toBe(label);
+    }
+  });
+
+  it("keeps the v1.8 types labelled exactly as they were", () => {
+    // A database written by an earlier build still holds these.
+    expect(deviceTypeLabel("computer")).toBe("Computer");
+    expect(deviceTypeLabel("network_equipment")).toBe("Network equipment");
+    expect(deviceTypeLabel("nas")).toBe("NAS");
+  });
+
+  it("labels the new evidence sources", () => {
+    expect(sourceLabel("windows_credentialed")).toBe("Windows (signed in)");
+    expect(sourceLabel("tls")).toBe("TLS certificate");
+    expect(sourceLabel("smb")).toBe("SMB");
+    expect(sourceLabel("http")).toBe("Web interface");
+    expect(sourceLabel("banner")).toBe("Service banner");
+  });
+
+  it("shows an unrecognised type as its own value rather than as blank", () => {
+    expect(deviceTypeLabel("something_from_a_newer_build")).toBe("something_from_a_newer_build");
+  });
+});
+
+describe("deep and credentialed reporting (v1.9)", () => {
+  const report = (patch: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      mdns_attempted: true,
+      ssdp_attempted: true,
+      mdns_responses: 4,
+      ssdp_responses: 2,
+      ...patch,
+    });
+
+  it("says nothing extra for a Quick scan", () => {
+    // A Quick Scan's summary must read exactly as it did before v1.9.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report(),
+    });
+    expect(line).toBe("Complete · 4 mDNS · 2 SSDP");
+  });
+
+  it("reports what the deep pass identified", () => {
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({ deep_attempted: true, deep_devices_enriched: 7 }),
+    });
+    expect(line).toContain("Deep: 7 identified");
+  });
+
+  it("reports a credentialed pass that answered nothing rather than staying silent", () => {
+    // The line a technician needs when they expected twelve machines and got
+    // none. Silence would let a wrong password look like a network with no
+    // Windows on it.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 0,
+        credentialed_failed: 12,
+      }),
+    });
+    expect(line).toContain("Credentialed: 0 of 12");
+  });
+
+  it("counts hosts without a WinRM listener apart from failures", () => {
+    // A workstation with remote management off was never asked. Counting it as
+    // a failure would dilute a genuinely wrong password from "0 of 12" to
+    // "0 of 60" and bury the signal under every desktop on the site.
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 3,
+        credentialed_failed: 1,
+        credentialed_skipped: 48,
+      }),
+    });
+    expect(line).toContain("Credentialed: 3 of 4");
+    expect(line).toContain("48 without WinRM");
+  });
+
+  it("says nothing about skipped hosts when there were none", () => {
+    const line = discoverySummaryLine({
+      discovery_quality: "complete",
+      discovery_summary: report({
+        credentialed_attempted: true,
+        credentialed_answered: 2,
+        credentialed_failed: 0,
+        credentialed_skipped: 0,
+      }),
+    });
+    expect(line).toContain("Credentialed: 2 of 2");
+    expect(line).not.toContain("without WinRM");
+  });
+
+  it("reports the deep passes even when the multicast pass was skipped", () => {
+    // They are independent: a routed scan sends no multicast and can still run
+    // every deep probe.
+    const line = discoverySummaryLine({
+      discovery_quality: "skipped",
+      discovery_quality_reason: "Not run",
+      discovery_summary: report({ deep_attempted: true, deep_devices_enriched: 3 }),
+    });
+    expect(line).toContain("Deep: 3 identified");
+  });
+
+  it("reads a report written before v1.9 as having attempted neither", () => {
+    const parsed = parseDiscoveryReport(report());
+    expect(parsed?.deep_attempted).toBe(false);
+    expect(parsed?.credentialed_attempted).toBe(false);
+    expect(deepSummaryParts(parsed)).toEqual([]);
+  });
+
+  it("survives a corrupted summary rather than throwing in a list render", () => {
+    expect(parseDiscoveryReport("not json")).toBeNull();
+    expect(deepSummaryParts(null)).toEqual([]);
   });
 });

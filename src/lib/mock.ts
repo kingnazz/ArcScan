@@ -41,6 +41,7 @@ import type {
   ScanResult,
   ScanSummary,
   ServiceInfo,
+  WindowsCredentialStatus,
 } from "../types";
 import type { ScanListeners } from "./api";
 import { DEFAULT_PORTS } from "./profiles";
@@ -51,6 +52,18 @@ import { parsePorts, serviceWithPort } from "./format";
 import type { RuntimeInfo } from "./runtime";
 import { PUBLIC_IP_PROVIDERS, abortError, lookupPublicIp } from "./publicIp";
 import { APP_VERSION } from "../version";
+import {
+  EMPTY_CREDENTIAL_STATUS,
+  INTERNET_NODE_ID,
+  type CredentialInput,
+  type CredentialStatus,
+  type LogicalNode,
+  type TopologyConnection,
+  type TopologyEdge,
+  type TopologyRequest,
+  type TopologyResult,
+  type TopologyTarget,
+} from "./topology";
 
 /**
  * The type vocabulary, taken from the label table so the demo cannot accept a
@@ -1588,6 +1601,11 @@ let mockArcAtlas: import("./arcatlas").ArcAtlasConnection = {
 };
 let mockArcAtlasToken: string | null = null;
 
+let mockTopologyCredentials: CredentialStatus = { ...EMPTY_CREDENTIAL_STATUS };
+let mockTopologySecret = false;
+let mockTopologyLast: TopologyResult | null = null;
+let mockTopologyCancel = false;
+
 function abortableSleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -1833,6 +1851,14 @@ export const mock = {
       cancelled: stopped,
       ports: opts.ports.length > 0 ? opts.ports : DEFAULT_PORTS,
       arp_assist: opts.arp_assist,
+      scope_hint: isDemo
+        ? {
+            local_network: DEMO_CIDR,
+            gateway_ip: "192.168.1.1",
+            gateway_mac: "F4:92:BF:1A:0C:31",
+            interface: "Wi-Fi",
+          }
+        : null,
       discovery: {
         mdns_attempted: discoveryRan,
         ssdp_attempted: discoveryRan,
@@ -1857,6 +1883,7 @@ export const mock = {
 
   cancelScan(): void {
     cancelRequested = true;
+    mockTopologyCancel = true;
   },
 
   previewScan(opts: ScanOptions): ScanPreview {
@@ -1883,6 +1910,25 @@ export const mock = {
   serviceCatalog(): ServiceInfo[] {
     // Empty leaves the built-in fallback table in place.
     return [];
+  },
+
+  /**
+   * The browser has no credential store and no Windows to query, so the mock
+   * reports the feature as unsupported rather than pretending to hold a
+   * credential it could not use.
+   */
+  windowsCredentialStatus(): WindowsCredentialStatus {
+    return {
+      configured: false,
+      account: null,
+      supported: false,
+      unsupported_reason:
+        "Credentialed Windows discovery needs the desktop app. The browser preview has no way to reach a Windows management stack.",
+    };
+  },
+
+  setWindowsCredential(): WindowsCredentialStatus {
+    return this.windowsCredentialStatus();
   },
 
   save(result: ScanResult): SavedScan {
@@ -2269,6 +2315,86 @@ export const mock = {
       status: 201,
     };
   },
+
+  setTopologyCredentials(credentials: CredentialInput): CredentialStatus {
+    if (credentials.version === "v2c") {
+      if (!credentials.community?.trim()) {
+        throw "Enter an SNMP community string. ArcScan never tries public, private or any other default.";
+      }
+      mockTopologySecret = true;
+      mockTopologyCredentials = {
+        configured: true,
+        version: "v2c",
+        username: null,
+        authProtocol: null,
+        privProtocol: null,
+        sessionOnly: true,
+      };
+      return { ...mockTopologyCredentials };
+    }
+    if (!credentials.username?.trim() || !credentials.authProtocol?.trim() || !credentials.authPassword?.trim()) {
+      throw "ArcScan does not send SNMPv3 with noAuthNoPriv. Choose authentication, and privacy when the device requires it.";
+    }
+    mockTopologySecret = true;
+    mockTopologyCredentials = {
+      configured: true,
+      version: "v3",
+      username: "[configured]",
+      authProtocol: credentials.authProtocol,
+      privProtocol: credentials.privProtocol ?? null,
+      sessionOnly: true,
+    };
+    return { ...mockTopologyCredentials };
+  },
+
+  clearTopologyCredentials(): CredentialStatus {
+    mockTopologySecret = false;
+    mockTopologyCredentials = { ...EMPTY_CREDENTIAL_STATUS };
+    return { ...mockTopologyCredentials };
+  },
+
+  getTopologyCredentials(): CredentialStatus {
+    return { ...mockTopologyCredentials };
+  },
+
+  async discoverTopology(request: TopologyRequest): Promise<TopologyResult> {
+    if (!mockTopologyCredentials.configured || !mockTopologySecret) {
+      throw "Enter SNMP credentials before discovering topology.";
+    }
+    mockTopologyCancel = false;
+    await sleep(40);
+    if (mockTopologyCancel) {
+      const empty: TopologyResult = {
+        snapshot: { capturedAt: new Date().toISOString(), connections: [], unknownNodes: [] },
+        summary: {
+          devicesQueried: 0,
+          devicesResponded: 0,
+          devicesFailed: 0,
+          confirmed: 0,
+          strong: 0,
+          inferred: 0,
+          unknownNodes: 0,
+          durationMs: 40,
+          cancelled: true,
+          timedOut: false,
+          failures: [],
+        },
+      };
+      mockTopologyLast = empty;
+      return empty;
+    }
+    const result = demoTopologyResult(request);
+    mockTopologyLast = result;
+    return result;
+  },
+
+  lastTopologySnapshot(): TopologyResult | null {
+    return mockTopologyLast;
+  },
+
+  cancelTopology(): void {
+    mockTopologyCancel = true;
+  },
 };
 
 function requireDevice(id: number): Device {
@@ -2285,6 +2411,187 @@ function requireDevice(id: number): Device {
 function withScopeName<T extends ScanSummary>(summary: T): T {
   const scope = DEMO_SCOPES.find((s) => s.id === summary.network_scope_id);
   return scope ? { ...summary, scope_name: scope.display_name } : summary;
+}
+
+/**
+ * Browser-demo topology. Mirrors the issue #42 site story against the home
+ * inventory: the default gateway is the WAN edge, an unknown core switch is
+ * confirmed via LLDP, single-MAC access ports are strong, and a busy uplink
+ * does not mint fake endpoint links. Credentials are never copied into the
+ * snapshot.
+ */
+function demoTopologyResult(request: TopologyRequest): TopologyResult {
+  const targets = request.targets;
+  const byIp = new Map(targets.filter((t) => t.ip).map((t) => [t.ip, t]));
+  const id = (ip: string) => byIp.get(ip)?.deviceId ?? null;
+  const capturedAt = "2026-09-16T12:00:00Z";
+  const unknownSwitch = "unknown:chassis:001a2b000002";
+  const connections: TopologyConnection[] = [
+    {
+      fromDeviceId: id("192.168.1.1"),
+      toDeviceId: null,
+      toUnresolvedId: unknownSwitch,
+      fromPort: "LAN",
+      toPort: "48",
+      kind: "ethernet",
+      protocol: "lldp",
+      confidence: "confirmed" as const,
+      speedMbps: 1000,
+      vlan: "trunk",
+      nativeVlan: 10,
+      taggedVlans: [10, 20, 30],
+      evidence: [
+        "LLDP neighbour on Home Router (LAN): chassis 00:1A:2B:00:00:02, sysName core-sw, remote port 48",
+      ],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.12"),
+      fromPort: "Port 12",
+      toPort: "eth0",
+      kind: "ethernet",
+      protocol: "lldp",
+      confidence: "confirmed" as const,
+      speedMbps: 1000,
+      vlan: "20",
+      nativeVlan: 20,
+      taggedVlans: [],
+      poe: { enabled: true, watts: 8.2 },
+      evidence: ["LLDP neighbour on core-sw (Port 12) reports macbook-air eth0"],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.50"),
+      fromPort: "Port 20",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (00:11:32:5D:A2:77) learned on access port Port 20"],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.15"),
+      fromPort: "Port 7",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (18:66:DA:70:2B:14) learned on access port Port 7"],
+    },
+    {
+      fromUnresolvedId: unknownSwitch,
+      toDeviceId: id("192.168.1.31"),
+      fromPort: "g7",
+      kind: "ethernet",
+      protocol: "fdb",
+      confidence: "strong" as const,
+      speedMbps: 1000,
+      vlan: "10",
+      nativeVlan: 10,
+      taggedVlans: [],
+      evidence: ["Exactly one unicast MAC (3C:D9:2B:6F:08:AA) learned on access port g7"],
+    },
+  ].filter((connection) => {
+    if (connection.toDeviceId == null && !connection.toUnresolvedId) return false;
+    if (connection.fromDeviceId == null && !connection.fromUnresolvedId) return false;
+    return true;
+  });
+
+  const wan = demoWanEdge(targets, request);
+  if (wan) connections.unshift(wan.uplink);
+  const responded = byIp.has("192.168.1.1") ? 1 : 0;
+  const queried = Math.max(targets.length, 1);
+  return {
+    snapshot: {
+      capturedAt,
+      connections,
+      unknownNodes: [
+        {
+          id: unknownSwitch,
+          chassisId: "00:1A:2B:00:00:02",
+          sysName: "core-sw",
+          reason: "LLDP neighbour is not present in this scan's inventory.",
+          source: "lldp",
+        },
+      ],
+      logicalNodes: wan ? [wan.internet] : [],
+      edge: wan,
+    },
+    summary: {
+      devicesQueried: queried,
+      devicesResponded: responded,
+      devicesFailed: Math.max(0, queried - responded),
+      confirmed: connections.filter((c) => c.confidence === "confirmed").length,
+      strong: connections.filter((c) => c.confidence === "strong").length,
+      inferred: connections.filter((c) => c.confidence === "inferred").length,
+      unknownNodes: 1,
+      durationMs: 640,
+      cancelled: false,
+      timedOut: false,
+      failures: targets
+        .filter((t) => t.ip !== "192.168.1.1")
+        .slice(0, 3)
+        .map((t) => ({
+          ip: t.ip,
+          reason:
+            "The device did not answer SNMP in time. That can mean it is not an SNMP agent, or that the credentials are wrong — ArcScan cannot tell those apart, and will not guess another community.",
+        })),
+    },
+  };
+}
+
+function demoWanEdge(targets: TopologyTarget[], request: TopologyRequest): TopologyEdge | null {
+  const hintedIp = request.gatewayIp?.trim() || null;
+  const hintedMac = request.gatewayMac?.trim().toUpperCase() || null;
+  const byIp = hintedIp ? targets.find((target) => target.ip === hintedIp) : undefined;
+  const byMac = hintedMac
+    ? targets.find((target) => (target.mac ?? "").toUpperCase() === hintedMac)
+    : undefined;
+  if (hintedIp && hintedMac && byIp && byMac && byIp.deviceId !== byMac.deviceId) {
+    return null;
+  }
+  const hit =
+    hintedIp || hintedMac
+      ? byIp && byMac
+        ? byIp
+        : (byIp ?? byMac)
+      : targets.find((target) => target.ip === "192.168.1.1");
+  if (!hit?.deviceId) return null;
+  const confidence = hintedIp && hintedMac && byIp && byMac ? "strong" : hintedIp || hintedMac ? "inferred" : "strong";
+  const internet: LogicalNode = {
+    id: INTERNET_NODE_ID,
+    kind: "internet",
+    label: "Internet",
+    physical: false,
+  };
+  const evidence =
+    confidence === "strong"
+      ? ["Default route and gateway MAC both match Home Router."]
+      : ["Default route matches a device in this scan's inventory."];
+  const uplink: TopologyConnection = {
+    fromLogicalId: INTERNET_NODE_ID,
+    toDeviceId: hit.deviceId,
+    kind: "wan",
+    protocol: "default-route",
+    confidence,
+    evidence,
+  };
+  return {
+    gatewayDeviceId: hit.deviceId,
+    gatewayIp: hit.ip,
+    gatewayMac: hit.mac ?? null,
+    internet,
+    uplink,
+    confidence,
+    evidence,
+  };
 }
 
 /** Address count for a target, used by the mock's scan preview. */

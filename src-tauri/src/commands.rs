@@ -212,6 +212,7 @@ struct RemovedEvent {
 #[tauri::command]
 pub fn cancel_scan() {
     scanner::request_cancel();
+    crate::topology::engine::request_cancel();
 }
 
 /// Save a scan and return its change summary in the same call, so the UI never
@@ -710,4 +711,52 @@ mod tests {
         let installed = RuntimePaths::installed(std::path::PathBuf::from("/app/data"));
         assert!(validate_export_destination(&inside.to_string_lossy(), &installed).is_ok());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Credentialed Windows discovery (v1.9)
+//
+// Three commands, and a deliberate asymmetry between them: a credential can be
+// set and cleared, and it can never be read back. `windows_credential_status`
+// returns the account name and whether one is configured — there is no command
+// that returns a password, because there is no legitimate caller for one.
+//
+// The credential lives in `discovery::windows::credential_store()`, which is
+// process memory and nothing else: not SQLite, not the keyring, not a config
+// file. Closing ArcScan is how a credential is forgotten.
+// ---------------------------------------------------------------------------
+
+/// Set the Windows credential for this session.
+///
+/// The password crosses the IPC boundary exactly once, here, and is moved into
+/// the store. It is never echoed back, logged, or written anywhere.
+#[tauri::command]
+pub fn set_windows_credential(
+    username: String,
+    domain: Option<String>,
+    password: String,
+) -> Result<crate::discovery::windows::CredentialStatus, String> {
+    // Refused up front on a build that cannot use it, so an operator is told
+    // now rather than discovering it one scan later.
+    crate::discovery::windows::platform_support()?;
+    let credential =
+        crate::discovery::windows::WindowsCredential::new(&username, domain.as_deref(), &password)?;
+    let store = crate::discovery::windows::credential_store();
+    store.set(credential);
+    Ok(store.status())
+}
+
+/// Forget the Windows credential. Always succeeds, including when none was set.
+#[tauri::command]
+pub fn clear_windows_credential() -> crate::discovery::windows::CredentialStatus {
+    let store = crate::discovery::windows::credential_store();
+    store.clear();
+    store.status()
+}
+
+/// Whether a credential is set, which account it names, and whether this build
+/// can use one. Carries no password and no way to obtain one.
+#[tauri::command]
+pub fn windows_credential_status() -> crate::discovery::windows::CredentialStatus {
+    crate::discovery::windows::credential_store().status()
 }

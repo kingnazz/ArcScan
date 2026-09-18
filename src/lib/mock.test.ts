@@ -367,3 +367,66 @@ describe("demo discovery", () => {
     expect(cancelled?.discovery_mode).toBe("none");
   });
 });
+
+describe("the demo topology engine", () => {
+  it("refuses discovery without technician-entered credentials", async () => {
+    mock.clearTopologyCredentials();
+    await expect(
+      mock.discoverTopology({
+        targets: [{ ip: "192.168.1.1", deviceId: 1 }],
+      }),
+    ).rejects.toMatch(/credentials/i);
+  });
+
+  it("stores session credentials without echoing them, then discovers links", async () => {
+    const status = mock.setTopologyCredentials({
+      version: "v2c",
+      community: "site-read-secret",
+    });
+    expect(status.configured).toBe(true);
+    expect(JSON.stringify(status)).not.toContain("site-read-secret");
+    expect(status.sessionOnly).toBe(true);
+
+    const home = mock.inventory().rows.filter((r) => r.network_name === "Home Wi-Fi" && r.current_ip);
+    const result = await mock.discoverTopology({
+      targets: home.map((r) => ({
+        ip: r.current_ip as string,
+        mac: r.mac,
+        deviceId: r.device_id,
+        hostname: r.hostname,
+        detectedName: r.display_name,
+      })),
+    });
+    const dumped = JSON.stringify(result);
+    expect(dumped).not.toContain("site-read-secret");
+    expect(result.snapshot.connections.some((c) => c.protocol === "lldp" && c.confidence === "confirmed")).toBe(
+      true,
+    );
+    expect(result.snapshot.connections.some((c) => c.protocol === "fdb" && c.confidence === "strong")).toBe(true);
+    expect(result.snapshot.unknownNodes?.[0]?.id.startsWith("unknown:")).toBe(true);
+    expect(result.snapshot.logicalNodes?.some((node) => node.id === "logical:internet" && !node.physical)).toBe(
+      true,
+    );
+    expect(result.snapshot.edge?.internet.physical).toBe(false);
+    expect(result.snapshot.connections.some((c) => c.kind === "wan" && c.protocol === "default-route")).toBe(true);
+    expect(
+      result.snapshot.connections.some((c) => c.protocol === "fdb" && c.fromPort === "g7" && !c.toPort),
+    ).toBe(true);
+    expect(result.summary.failures.every((f) => !f.reason.toLowerCase().includes("site-read"))).toBe(true);
+    mock.clearTopologyCredentials();
+    expect(mock.getTopologyCredentials().configured).toBe(false);
+  });
+
+  it("does not invent a WAN edge when the default route is not in inventory", async () => {
+    mock.setTopologyCredentials({ version: "v2c", community: "site-read-secret" });
+    const result = await mock.discoverTopology({
+      targets: [{ ip: "10.20.0.10", mac: "AA:BB:CC:00:00:10", deviceId: 99 }],
+      gatewayIp: "10.255.255.1",
+      gatewayMac: "DE:AD:00:00:00:01",
+    });
+    expect(result.snapshot.edge).toBeFalsy();
+    expect(result.snapshot.logicalNodes ?? []).toHaveLength(0);
+    expect(result.snapshot.connections.some((c) => c.kind === "wan")).toBe(false);
+    mock.clearTopologyCredentials();
+  });
+});

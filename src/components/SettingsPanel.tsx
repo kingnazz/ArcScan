@@ -4,9 +4,11 @@
 // surface stays about the scan. Grouped by what the operator is trying to change,
 // with the privacy-relevant switches stated plainly rather than buried.
 
-import { useState } from "react";
-import { Check, Copy, ExternalLink, FolderOpen, RotateCcw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Copy, ExternalLink, FolderOpen, KeyRound, RotateCcw } from "lucide-react";
 import { Button, Field, FieldRow, SectionHeading, Select } from "../ui/primitives";
+import { windowsCredentials } from "../lib/windowsCredential";
+import type { WindowsCredentialStatus } from "../types";
 import { Drawer } from "../ui/Drawer";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PROFILES, PROFILE_ORDER } from "../lib/profiles";
@@ -338,6 +340,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
               still shows it, dated by how many discovery scans have missed it.
             </p>
           </section>
+
+          <div className="divider" />
+
+          <WindowsCredentialSection />
 
           <div className="divider" />
 
@@ -674,5 +680,152 @@ function NumberRow({
         }}
       />
     </div>
+  );
+}
+
+/**
+ * The Windows credential a credentialed deep scan uses.
+ *
+ * # What this section promises, and how it keeps it
+ *
+ * The password is typed here, sent to the backend once, and held in process
+ * memory until ArcScan closes. It is not written to SQLite, to the system
+ * keyring, to a configuration file or to `localStorage`; it is not sent to
+ * ArcAtlas; it does not appear in a diagnostic report or an export. There is no
+ * command that reads it back, so nothing on this screen — or anywhere else in
+ * the interface — can display it.
+ *
+ * The local field is cleared the moment the credential is handed over, so the
+ * password does not sit in a React state tree for the rest of the session
+ * either.
+ *
+ * One credential, typed by a person. ArcScan has no list of accounts to try, no
+ * fallback, and no retry with a different password: a machine that refuses the
+ * credential is recorded as having refused it and left alone, which is what
+ * stops a scan from locking out a domain account.
+ */
+function WindowsCredentialSection() {
+  const [status, setStatus] = useState<WindowsCredentialStatus | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Subscribed, so this panel and the command bar's depth picker can never
+  // disagree about whether a credential is set.
+  useEffect(() => {
+    const unsubscribe = windowsCredentials.subscribe(setStatus);
+    void windowsCredentials.refresh().then((next) => {
+      if (!next) {
+        setStatus({
+          configured: false,
+          account: null,
+          supported: false,
+          unsupported_reason: "ArcScan could not reach its credential store.",
+        });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const supported = status?.supported !== false;
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      // Through the store, so every other reader is told at the same moment.
+      await windowsCredentials.set(username, null, password);
+      // Cleared immediately: there is no reason for the password to stay in a
+      // React state tree once the backend has it.
+      setPassword("");
+      setUsername("");
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clear() {
+    setBusy(true);
+    setError(null);
+    try {
+      await windowsCredentials.clear();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <SectionHeading>Windows credential</SectionHeading>
+      <p className="mb-3 text-xs leading-relaxed text-text-secondary">
+        A credentialed deep scan asks Windows machines about themselves, which is the only way to
+        establish an exact edition, version and build — and the only way to tell a workstation from
+        a server with certainty rather than by guessing from open ports.
+      </p>
+      <p className="mb-3 text-xs leading-relaxed text-text-secondary">
+        The password is kept in memory for this session only. It is never written to disk, never
+        sent to ArcAtlas, never logged, and never included in a diagnostic report or an export.
+        Closing ArcScan forgets it. ArcScan tries the one account you give it and nothing else: a
+        machine that refuses it is recorded as having refused it and left alone.
+      </p>
+
+      {!supported ? (
+        <p className="rounded-md border border-border bg-surface-sunken px-3 py-2 text-xs leading-relaxed text-text-muted">
+          {status?.unsupported_reason ??
+            "Credentialed Windows discovery is unavailable in this build."}
+        </p>
+      ) : status?.configured ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-sunken px-3 py-2">
+          <span className="flex min-w-0 items-center gap-2 text-[13px]">
+            <KeyRound className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden />
+            <span className="truncate font-mono text-text">{status.account}</span>
+          </span>
+          <Button onClick={clear} busy={busy} title="Forget this credential">
+            Forget
+          </Button>
+        </div>
+      ) : (
+        <form onSubmit={save} className="space-y-3">
+          <FieldRow
+            label="User name"
+            htmlFor="settings-windows-user"
+            hint="DOMAIN\\user, user@domain, or a local account name."
+          >
+            <Field
+              id="settings-windows-user"
+              mono
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="CORP\\svc-arcscan"
+              autoComplete="off"
+            />
+          </FieldRow>
+          <FieldRow label="Password" htmlFor="settings-windows-password" error={error}>
+            <Field
+              id="settings-windows-password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="off"
+              error={error}
+            />
+          </FieldRow>
+          <Button
+            type="submit"
+            variant="primary"
+            busy={busy}
+            disabled={!username.trim() || !password}
+          >
+            Use for this session
+          </Button>
+        </form>
+      )}
+    </section>
   );
 }

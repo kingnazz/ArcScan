@@ -1,9 +1,10 @@
 // The toolbar above the results table: filtering, the change summary, and export.
 
 import { forwardRef, useRef, useState } from "react";
-import { Download, Filter, Search, Sparkles, X } from "lucide-react";
+import { Download, Filter, Network, Search, Sparkles, X } from "lucide-react";
 import { Badge, Button, Field, IconButton } from "../ui/primitives";
-import { Popover } from "../ui/Popover";
+import { Popover, Tooltip } from "../ui/Popover";
+import { TOPOLOGY_HINT } from "../lib/topology";
 import { formatCount } from "../lib/format";
 import type { ExportFormat, ScanComparison } from "../types";
 import type { TableFilter } from "../lib/table";
@@ -18,12 +19,15 @@ export interface ResultsToolbarProps {
   onViewChanges: () => void;
   /** True while the comparison is showing instead of the table. */
   comparisonOpen: boolean;
+  /** Topology is an optional post-scan step and never part of Quick discovery. */
+  onViewTopology: () => void;
+  topologyOpen: boolean;
   canExport: boolean;
 }
 
 export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
   function ResultsToolbar(
-    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, comparisonOpen, canExport },
+    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, comparisonOpen, onViewTopology, topologyOpen, canExport },
     filterRef,
   ) {
     const exportButton = useRef<HTMLButtonElement>(null);
@@ -102,6 +106,17 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <Tooltip content={TOPOLOGY_HINT}>
+            <Button
+              size="sm"
+              variant={topologyOpen ? "primary" : "ghost"}
+              icon={<Network className="h-3.5 w-3.5" />}
+              aria-pressed={topologyOpen}
+              onClick={onViewTopology}
+            >
+              Topology
+            </Button>
+          </Tooltip>
           {/*
            * One button in every case, so the comparison is always reachable.
            * A scan with no comparison has a *reason* — it was stopped early, or
