@@ -14,18 +14,25 @@ pub mod engine;
 pub mod error;
 pub mod model;
 pub mod providers;
+pub mod replay;
 pub mod serialize;
 pub mod snmp;
 pub mod vlan;
 
 pub use credentials::{CredentialInput, CredentialStatus, CredentialStore, SnmpSecret};
 pub use display::INTERNET_NODE_ID;
-pub use engine::{request_cancel, run, run_from_request, set_scan_cancel_check};
+pub use engine::{
+    request_cancel, run, run_from_request, run_from_request_with_capture, set_scan_cancel_check,
+    TopologyRunCapture,
+};
 pub use error::TopologyError;
 pub use model::{
     ContractConnection, ContractTopology, LogicalNode, TopologyConfidence, TopologyConnection,
     TopologyEdge, TopologyHandoffPreview, TopologyRequest, TopologyResult, TopologySnapshot,
     TopologySummary, TopologyTarget, UnresolvedTopology,
+};
+pub use replay::{
+    assert_topology_fixture, compare_expected, replay_fixture, ReplayFixture, FIXTURE_VERSION,
 };
 pub use serialize::{
     assert_arc_atlas13_contract, handoff_preview_to_json, issue42_fixture, preview_from_snapshot,

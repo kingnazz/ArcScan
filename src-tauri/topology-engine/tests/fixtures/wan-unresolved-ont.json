@@ -1,0 +1,21 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [{ "ip": "192.0.2.1", "mac": "00:AA:CC:00:00:01", "deviceId": 1, "hostname": "FIREWALL", "detectedName": "Firewall" }],
+  "deviceViews": [{
+    "targetIp": "192.0.2.1",
+    "inventoryHint": 1,
+    "sysName": "FIREWALL",
+    "interfaces": [{ "index": 9, "name": "WAN", "operStatus": 1 }],
+    "lldpNeighbors": [{ "localPortNum": 9, "chassisId": "00:AA:CC:00:00:09", "portId": "eth0", "sysName": "Fiber ONT" }]
+  }],
+  "edgeHint": { "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:CC:00:00:01" },
+  "metadata": { "description": "Synthetic WAN with unresolved ONT", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": {
+    "confirmedLinks": 1,
+    "strongLinks": 0,
+    "wan": { "present": true, "gatewayDeviceId": 1, "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:CC:00:00:01", "viaUnresolvedId": "unknown:chassis:00aacc000009", "confidence": "strong", "uplinkProtocol": "default-route" },
+    "unresolvedPeers": 1
+  }
+}

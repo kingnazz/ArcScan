@@ -1,0 +1,17 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.40", "mac": "00:55:66:00:00:40", "deviceId": 40, "hostname": "SW1", "detectedName": "SW1" },
+    { "ip": "192.0.2.41", "mac": "00:55:66:00:00:41", "deviceId": 41, "hostname": "AP1", "detectedName": "AP1" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.40",
+    "inventoryHint": 40,
+    "interfaces": [{ "index": 5, "name": "Port 5", "operStatus": 1 }],
+    "lldpNeighbors": [{ "localPortNum": 5, "chassisId": "opaque-chassis-1", "portId": "eth0", "sysName": "AP1" }]
+  }],
+  "metadata": { "description": "Synthetic hostname-only unresolved LLDP neighbour", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "confirmedLinks": 1, "strongLinks": 0, "unresolvedPeers": 1, "suppressed": { "hostname-only": 1 } }
+}

@@ -43,6 +43,7 @@ export interface TopologyPanelProps {
   onSaveCredentials: (input: CredentialInput) => Promise<void> | void;
   onClearCredentials: () => Promise<void> | void;
   onDiscover: () => Promise<void> | void;
+  onExportReplay?: () => Promise<boolean> | boolean;
   onCancel: () => void;
   onBack: () => void;
 }
@@ -59,6 +60,7 @@ export function TopologyPanel({
   onSaveCredentials,
   onClearCredentials,
   onDiscover,
+  onExportReplay,
   onCancel,
   onBack,
 }: TopologyPanelProps) {
@@ -310,7 +312,10 @@ export function TopologyPanel({
             ) : null}
 
             {result.diagnostics ? (
-              <TopologyDiagnosticsPanel diagnostics={result.diagnostics} />
+              <TopologyDiagnosticsPanel
+                diagnostics={result.diagnostics}
+                onExportReplay={onExportReplay}
+              />
             ) : null}
 
             {result.snapshot.connections.length === 0 ? (

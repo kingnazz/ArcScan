@@ -1,0 +1,25 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.20", "mac": "00:33:44:00:00:20", "deviceId": 20, "hostname": "NETGEAR-SW1", "detectedName": "NETGEAR-SW1" },
+    { "ip": "192.0.2.21", "mac": "00:33:44:00:00:21", "deviceId": 21, "hostname": "BC-NAS1", "detectedName": "BC-NAS1" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.20",
+    "inventoryHint": 20,
+    "bridgeAddress": "00:33:44:00:00:20",
+    "interfaces": [{ "index": 12, "name": "Port 12", "operStatus": 1, "speedMbps": 1000 }],
+    "fdb": [{ "mac": "00:33:44:00:00:21", "ifIndex": 12, "vlan": 10 }],
+    "arp": [{ "ip": "192.0.2.21", "mac": "00:33:44:00:00:21", "ifIndex": 12 }],
+    "pvid": { "12": 10 }
+  }],
+  "metadata": { "description": "Synthetic NETGEAR FDB-only access port", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": {
+    "confirmedLinks": 0,
+    "strongLinks": 1,
+    "unresolvedPeers": 0,
+    "links": [{ "fromDeviceId": 20, "toDeviceId": 21, "fromPort": "Port 12", "kind": "ethernet", "protocol": "fdb", "confidence": "strong", "speedMbps": 1000, "vlan": "10", "nativeVlan": 10, "taggedVlans": [] }]
+  }
+}

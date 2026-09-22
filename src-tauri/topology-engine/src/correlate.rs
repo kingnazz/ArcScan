@@ -31,8 +31,11 @@ pub const UPLINK_MAC_THRESHOLD: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct InventoryIndex {
-    by_ip: HashMap<String, i64>,
-    by_mac: HashMap<String, i64>,
+    // `None` records an ambiguous identity seen on more than one inventory
+    // device. Keeping the key prevents a later target from silently restoring
+    // last-write-wins behavior.
+    by_ip: HashMap<String, Option<i64>>,
+    by_mac: HashMap<String, Option<i64>>,
 }
 
 impl InventoryIndex {
@@ -43,9 +46,9 @@ impl InventoryIndex {
         };
         for t in targets {
             if let Some(id) = t.device_id {
-                idx.by_ip.insert(t.ip.clone(), id);
+                insert_unique_identity(&mut idx.by_ip, t.ip.clone(), id);
                 if let Some(mac) = t.mac.as_deref().and_then(normalize_mac) {
-                    idx.by_mac.insert(mac, id);
+                    insert_unique_identity(&mut idx.by_mac, mac, id);
                 }
             }
         }
@@ -53,7 +56,7 @@ impl InventoryIndex {
     }
 
     pub fn id_for_ip(&self, ip: &str) -> Option<i64> {
-        self.by_ip.get(ip).copied()
+        self.by_ip.get(ip).copied().flatten()
     }
 
     pub fn resolve_neighbor(
@@ -66,21 +69,31 @@ impl InventoryIndex {
         // canonical inventory match. Duplicate hostnames (the case that
         // started this v1.9 work) would otherwise wire the wrong device.
         if let Some(ip) = management_address {
-            if let Some(id) = self.by_ip.get(ip) {
-                return Some(*id);
+            if let Some(id) = self.id_for_ip(ip) {
+                return Some(id);
             }
         }
         if let Some(chassis) = chassis_id.and_then(normalize_mac) {
-            if let Some(id) = self.by_mac.get(&chassis) {
-                return Some(*id);
+            if let Some(id) = self.by_mac.get(&chassis).copied().flatten() {
+                return Some(id);
             }
         }
         None
     }
 
     pub fn resolve_mac(&self, mac: &str) -> Option<i64> {
-        normalize_mac(mac).and_then(|m| self.by_mac.get(&m).copied())
+        normalize_mac(mac).and_then(|m| self.by_mac.get(&m).copied().flatten())
     }
+}
+
+fn insert_unique_identity(map: &mut HashMap<String, Option<i64>>, key: String, id: i64) {
+    map.entry(key)
+        .and_modify(|existing| {
+            if existing.is_some_and(|existing_id| existing_id != id) {
+                *existing = None;
+            }
+        })
+        .or_insert(Some(id));
 }
 
 #[derive(Clone)]
@@ -1718,6 +1731,30 @@ mod tests {
             snap.connections[0].to_device_id,
             Some(10),
             "chassis MAC is strong identity"
+        );
+    }
+
+    #[test]
+    fn duplicate_ip_and_mac_identities_are_ambiguous() {
+        let targets = vec![
+            target(10, "192.168.1.10", "00:10:00:00:00:0A", "device-a"),
+            target(11, "192.168.1.10", "00:10:00:00:00:0B", "device-b"),
+            target(12, "192.168.1.12", "00:10:00:00:00:0C", "device-c"),
+            target(13, "192.168.1.13", "00:10:00:00:00:0C", "device-d"),
+        ];
+        let index = InventoryIndex::from_targets(&targets);
+
+        assert_eq!(index.id_for_ip("192.168.1.10"), None);
+        assert_eq!(index.resolve_mac("00:10:00:00:00:0C"), None);
+        assert_eq!(
+            index.resolve_neighbor(None, Some("device-a"), Some("192.168.1.10")),
+            None,
+            "ambiguous IP and hostname-only evidence must stay unresolved"
+        );
+        assert_eq!(
+            index.resolve_neighbor(Some("00:10:00:00:00:0C"), None, None),
+            None,
+            "ambiguous MAC evidence must stay unresolved"
         );
     }
 

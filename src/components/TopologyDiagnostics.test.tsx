@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TopologyPanel } from "./TopologyPanel";
 import { TopologyPreview } from "./TopologyPreview";
 import { EMPTY_CREDENTIAL_STATUS, type TopologyDiagnostics, type TopologyResult } from "../lib/topology";
@@ -199,6 +199,7 @@ const result: TopologyResult = {
 
 describe("Topology diagnostics panel", () => {
   it("shows run facts, expands one device, and does not render the whole FDB", () => {
+    const exportReplay = vi.fn().mockResolvedValue(true);
     render(
       <TopologyPanel
         credentialStatus={{ ...EMPTY_CREDENTIAL_STATUS, configured: true, version: "v2c" }}
@@ -211,19 +212,23 @@ describe("Topology diagnostics panel", () => {
         onSaveCredentials={async () => undefined}
         onClearCredentials={async () => undefined}
         onDiscover={async () => undefined}
+        onExportReplay={exportReplay}
         onCancel={() => undefined}
         onBack={() => undefined}
       />,
     );
     expect(screen.getByText("Topology diagnostics")).toBeTruthy();
     expect(screen.getByText("Suppressed candidates")).toBeTruthy();
-    expect(screen.getByText(/network inventory information/)).toBeTruthy();
+    expect(screen.getAllByText(/network inventory information/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).toMatch(/LLDP No neighbours/);
     expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).toMatch(/Links 40/);
     expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).not.toMatch(/LLDP Available/);
     expect(screen.getByText("192.168.60.5")).toBeTruthy();
     expect(screen.getByText(/SNMP timeout/)).toBeTruthy();
     expect(screen.queryByText("site-read-secret")).toBeNull();
+    expect(screen.getByText(/machine-readable parsed evidence/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Export replay fixture" }));
+    expect(exportReplay).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole("button", { name: /192\.168\.60\.2/ }));
     expect(screen.getAllByText(/14 relevant unicast MACs/).length).toBeGreaterThan(0);

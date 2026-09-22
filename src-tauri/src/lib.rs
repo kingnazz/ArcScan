@@ -176,6 +176,7 @@ pub fn run() {
             topology::discover_topology,
             topology::last_topology_snapshot,
             topology::cancel_topology,
+            topology::export_topology_replay_fixture,
             topology::topology_contract_fixture,
         ])
         .build(tauri::generate_context!())

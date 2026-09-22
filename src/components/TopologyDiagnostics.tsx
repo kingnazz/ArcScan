@@ -8,7 +8,13 @@ import {
 } from "../lib/topology";
 import { deviceCompactFacts, TopologyDeviceDiagnostics } from "./TopologyDeviceDiagnostics";
 
-export function TopologyDiagnosticsPanel({ diagnostics }: { diagnostics: TopologyDiagnostics }) {
+export function TopologyDiagnosticsPanel({
+  diagnostics,
+  onExportReplay,
+}: {
+  diagnostics: TopologyDiagnostics;
+  onExportReplay?: () => Promise<boolean> | boolean;
+}) {
   const [openIp, setOpenIp] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<string | null>(null);
   const summary = diagnostics.runSummary;
@@ -46,6 +52,16 @@ export function TopologyDiagnosticsPanel({ diagnostics }: { diagnostics: Topolog
     setCopyState("Downloaded.");
   };
 
+  const exportReplay = async () => {
+    if (!onExportReplay) return;
+    try {
+      const written = await onExportReplay();
+      if (written) setCopyState("Replay fixture exported.");
+    } catch (error) {
+      setCopyState(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -57,9 +73,21 @@ export function TopologyDiagnosticsPanel({ diagnostics }: { diagnostics: Topolog
           <Button size="sm" variant="ghost" onClick={download}>
             Download diagnostics JSON
           </Button>
+          {onExportReplay ? (
+            <Button size="sm" variant="ghost" onClick={() => void exportReplay()}>
+              Export replay fixture
+            </Button>
+          ) : null}
         </div>
       </div>
       <p className="mt-1 text-xs leading-relaxed text-text-muted">{DIAGNOSTICS_EXPORT_WARNING}</p>
+      {onExportReplay ? (
+        <p className="mt-1 text-xs leading-relaxed text-text-muted">
+          Replay fixtures are machine-readable parsed evidence for developers. They contain network
+          inventory information, never credentials, and nothing is uploaded automatically. Export
+          before forgetting the session credentials so ArcScan can perform its final secret scrub.
+        </p>
+      ) : null}
       {copyState ? <p className="mt-1 text-xs text-text-secondary">{copyState}</p> : null}
 
       <dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">

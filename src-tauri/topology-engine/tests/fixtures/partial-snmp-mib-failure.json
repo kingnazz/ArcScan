@@ -1,0 +1,23 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.70", "mac": "00:88:99:00:00:70", "deviceId": 70, "hostname": "PARTIAL-SW", "detectedName": "Partial Switch" },
+    { "ip": "192.0.2.71", "mac": "00:88:99:00:00:71", "deviceId": 71, "hostname": "NO-SNMP", "detectedName": "No SNMP" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.70",
+    "inventoryHint": 70,
+    "sysName": "PARTIAL-SW",
+    "interfaces": [{ "index": 1, "name": "Port 1", "operStatus": 1 }],
+    "probes": [
+      { "mib": "IF-MIB", "table": "ifDescr", "state": "available", "rows": 1 },
+      { "mib": "LLDP-MIB", "table": "lldpRemChassisId", "state": "timedOut", "rows": 0 },
+      { "mib": "BRIDGE-MIB", "table": "dot1dTpFdbPort", "state": "walkFailed", "rows": 0 }
+    ]
+  }],
+  "failures": [{ "ip": "192.0.2.71", "reason": "The device did not answer SNMP in time." }],
+  "metadata": { "description": "Synthetic partial MIB and device failure", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "confirmedLinks": 0, "strongLinks": 0, "unresolvedPeers": 0 }
+}
