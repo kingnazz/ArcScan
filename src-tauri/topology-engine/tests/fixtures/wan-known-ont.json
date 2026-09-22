@@ -1,0 +1,25 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.1", "mac": "00:AA:DD:00:00:01", "deviceId": 1, "hostname": "FIREWALL", "detectedName": "Firewall" },
+    { "ip": "192.0.2.9", "mac": "00:AA:DD:00:00:09", "deviceId": 9, "hostname": "FIBER-ONT", "detectedName": "Fiber ONT" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.1",
+    "inventoryHint": 1,
+    "sysName": "FIREWALL",
+    "interfaces": [{ "index": 9, "name": "WAN", "operStatus": 1 }],
+    "lldpNeighbors": [{ "localPortNum": 9, "chassisId": "00:AA:DD:00:00:09", "portId": "eth0", "sysName": "Fiber ONT", "managementAddress": "192.0.2.9" }]
+  }],
+  "edgeHint": { "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:DD:00:00:01" },
+  "metadata": { "description": "Synthetic WAN with known ONT", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": {
+    "confirmedLinks": 1,
+    "strongLinks": 0,
+    "wan": true,
+    "unresolvedPeers": 0,
+    "links": [{ "fromDeviceId": 1, "toDeviceId": 9, "fromPort": "WAN", "toPort": "eth0", "protocol": "lldp", "confidence": "confirmed" }]
+  }
+}

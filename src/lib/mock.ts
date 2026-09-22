@@ -2392,6 +2392,29 @@ export const mock = {
     return mockTopologyLast;
   },
 
+  exportTopologyReplayFixture(): string {
+    if (!mockTopologyLast) {
+      throw "Run topology discovery before exporting a replay fixture.";
+    }
+    return JSON.stringify(
+      {
+        fixtureVersion: 1,
+        capturedAt: mockTopologyLast.snapshot.capturedAt,
+        sourceVersion: "browser-demo",
+        targets: [],
+        deviceViews: [],
+        metadata: {
+          description: "Synthetic browser-demo topology run",
+          sanitized: true,
+          warning:
+            "This fixture contains network inventory information. It never contains ArcScan credentials and is not uploaded automatically.",
+        },
+      },
+      null,
+      2,
+    );
+  },
+
   cancelTopology(): void {
     mockTopologyCancel = true;
   },

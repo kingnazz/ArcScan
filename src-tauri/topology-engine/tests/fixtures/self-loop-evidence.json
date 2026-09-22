@@ -1,0 +1,14 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [{ "ip": "192.0.2.60", "mac": "00:77:88:00:00:60", "deviceId": 60, "hostname": "SW1", "detectedName": "SW1" }],
+  "deviceViews": [{
+    "targetIp": "192.0.2.60",
+    "inventoryHint": 60,
+    "interfaces": [{ "index": 1, "name": "Port 1", "operStatus": 1 }],
+    "lldpNeighbors": [{ "localPortNum": 1, "chassisId": "00:77:88:00:00:60", "portId": "loop", "sysName": "SW1", "managementAddress": "192.0.2.60" }]
+  }],
+  "metadata": { "description": "Synthetic self-loop evidence", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "confirmedLinks": 1, "strongLinks": 0, "unresolvedPeers": 0, "suppressed": { "self-loop": 1 } }
+}

@@ -1,0 +1,18 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.50", "mac": "00:66:77:00:00:50", "deviceId": 50, "hostname": "SW1", "detectedName": "SW1" },
+    { "ip": "192.0.2.51", "mac": "00:66:77:00:00:99", "deviceId": 51, "hostname": "DUP-A", "detectedName": "Duplicate A" },
+    { "ip": "192.0.2.52", "mac": "00:66:77:00:00:99", "deviceId": 52, "hostname": "DUP-B", "detectedName": "Duplicate B" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.50",
+    "inventoryHint": 50,
+    "interfaces": [{ "index": 8, "name": "Port 8", "operStatus": 1 }],
+    "lldpNeighbors": [{ "localPortNum": 8, "chassisId": "00:66:77:00:00:99", "portId": "eth0", "sysName": "duplicate-device" }]
+  }],
+  "metadata": { "description": "Synthetic duplicate inventory identity stays unresolved", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "confirmedLinks": 1, "strongLinks": 0, "unresolvedPeers": 0 }
+}

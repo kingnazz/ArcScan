@@ -1,0 +1,22 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.10", "mac": "00:22:33:00:00:10", "deviceId": 10, "hostname": "CISCO-SW1", "detectedName": "Cisco Switch" },
+    { "ip": "192.0.2.11", "mac": "00:22:33:00:00:11", "deviceId": 11, "hostname": "PHONE1", "detectedName": "Phone" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.10",
+    "inventoryHint": 10,
+    "interfaces": [{ "index": 7, "name": "Gi1/0/7", "operStatus": 1, "speedMbps": 1000 }],
+    "cdpNeighbors": [{ "ifIndex": 7, "deviceId": "PHONE1", "devicePort": "Port 1", "platform": "Cisco IP Phone", "address": "192.0.2.11", "nativeVlan": 20 }]
+  }],
+  "metadata": { "description": "Synthetic CDP confirmed neighbour", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": {
+    "confirmedLinks": 1,
+    "strongLinks": 0,
+    "unresolvedPeers": 0,
+    "links": [{ "fromDeviceId": 10, "toDeviceId": 11, "fromPort": "Gi1/0/7", "toPort": "Port 1", "protocol": "cdp", "confidence": "confirmed" }]
+  }
+}

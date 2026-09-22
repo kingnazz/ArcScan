@@ -546,6 +546,16 @@ export default function App() {
     void api.cancelTopology();
   }, []);
 
+  const exportTopologyReplay = useCallback(async () => {
+    try {
+      return await api.exportTopologyReplayFixture();
+    } catch (error) {
+      const { message, technical } = describeError(error);
+      reportError(`ArcScan could not export the topology replay fixture. ${message}`, technical);
+      return false;
+    }
+  }, [reportError]);
+
   const deleteScan = useCallback(
     async (summary: ScanSummary) => {
       try {
@@ -1423,6 +1433,7 @@ export default function App() {
                   onSaveCredentials={saveTopologyCredentials}
                   onClearCredentials={clearTopologyCredentials}
                   onDiscover={runTopology}
+                  onExportReplay={exportTopologyReplay}
                   onCancel={stopTopology}
                   onBack={() => setScanTab("devices")}
                 />

@@ -1,0 +1,23 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.2", "mac": "00:11:22:00:00:02", "deviceId": 1, "hostname": "SW1", "detectedName": "Core Switch" },
+    { "ip": "192.0.2.3", "mac": "00:11:22:00:00:03", "deviceId": 2, "hostname": "AP1", "detectedName": "Access Point" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.2",
+    "inventoryHint": 1,
+    "sysName": "SW1",
+    "interfaces": [{ "index": 12, "name": "Port 12", "operStatus": 1, "speedMbps": 1000, "poe": { "enabled": true, "watts": 8.2 } }],
+    "lldpNeighbors": [{ "localPortNum": 12, "chassisId": "00:11:22:00:00:03", "portId": "eth0", "sysName": "AP1", "managementAddress": "192.0.2.3" }]
+  }],
+  "metadata": { "description": "Synthetic LLDP confirmed neighbour", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": {
+    "confirmedLinks": 1,
+    "strongLinks": 0,
+    "unresolvedPeers": 0,
+    "links": [{ "fromDeviceId": 1, "toDeviceId": 2, "fromPort": "Port 12", "toPort": "eth0", "protocol": "lldp", "confidence": "confirmed" }]
+  }
+}

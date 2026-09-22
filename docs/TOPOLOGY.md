@@ -275,6 +275,78 @@ username, authentication password and privacy password are not fields of the
 model, and the export scrubber redacts those words if they ever appear in a
 string. Credentials stay session-only.
 
+## Topology replay fixtures
+
+Replay fixtures are developer/test artifacts for reproducing one topology run
+without access to the original network. They are not packet captures, an SNMP
+proxy, or a credential export. A fixture stores the already-parsed evidence
+that the normal correlator consumes, and replay passes that evidence through
+the same `correlate_detailed` and diagnostics code used by live discovery. It
+opens no socket and performs no SNMP request.
+
+Version 1 contains:
+
+- `fixtureVersion`, `capturedAt`, and the ArcScan `sourceVersion`
+- inventory target identity and the optional default-route `edgeHint`
+- parsed interfaces, LLDP, CDP, bridge/FDB, ARP, VLAN, PoE, ENTITY metadata,
+  per-table probe outcomes, rejected labels, notes, and sanitized device
+  failures
+- metadata that marks the export sanitized and warns that it contains network
+  inventory information
+- optional meaningful expectations: confidence counts, unresolved peers, WAN
+  presence, suppression counts, and selected exact links
+
+The format intentionally has no field for an SNMP community, SNMPv3 username,
+authentication/privacy password, Windows credential, ArcAtlas token, API key,
+session credential state, environment variable, raw SNMP packet, or socket.
+Export constructs a separate whitelist DTO from the parsed in-memory evidence,
+then recursively removes forbidden keys and scrubs credential-like text as a
+second defense. When the session credential is still present, its exact values
+are scrubbed too. The serializer rejects an export above 8 MiB rather than
+silently filtering FDB/ARP rows and changing correlation behavior.
+
+The Topology diagnostics section shows **Export replay fixture** only after a
+completed run. The operator must click it and choose a destination. The file
+can contain IP addresses, MAC addresses, hostnames, switch and port names,
+VLANs, models, manufacturers, and topology relationships. Nothing uploads it
+automatically; review it before sharing it outside the organization. This is
+separate from **Download diagnostics JSON**, which is a human/support report.
+Export before choosing **Forget credentials**; ArcScan discards the cached
+replay evidence when credentials change so a stale run can never be scrubbed
+with the wrong secret values.
+
+Replay one fixture from the repository root:
+
+```sh
+cargo run --manifest-path src-tauri/topology-engine/Cargo.toml \
+  --bin replay-topology -- \
+  src-tauri/topology-engine/tests/fixtures/netgear-fdb-only.json
+```
+
+The command validates `fixtureVersion`, performs offline correlation, checks
+any declared expectations, and prints the stable `TopologyResult`. On failure,
+the diff uses `CHANGED` / `REMOVED` / `ADDED` sections and includes related suppression
+diagnostics when available. Runtime duration is normalized to zero, the
+fixture's `capturedAt` is retained, and evidence, connections, nodes, probes,
+and diagnostic lists are sorted so repeated replay is deterministic.
+
+To add a regression fixture, copy the nearest synthetic file under
+`src-tauri/topology-engine/tests/fixtures/`, keep only evidence necessary for
+the behavior, set `fixtureVersion` to `1`, and add the filename to
+`tests/replay_fixtures.rs`. Prefer count and selected-link expectations over a
+snapshot of the entire result. Then run:
+
+```sh
+cargo test --manifest-path src-tauri/topology-engine/Cargo.toml topology_fixtures
+```
+
+The parser rejects unknown future versions; a format change must add an
+explicit reader/migration path rather than silently interpreting new fields as
+version 1. Built-in synthetic fixtures cover LLDP, CDP, FDB-only switches,
+multi-MAC uplink suppression, hostname-only neighbours, duplicate identities,
+self-loop evidence, partial MIB failures, and all three WAN/ONT shapes. Never
+commit exported customer fixtures to this repository.
+
 ## Integrated contract invariants
 
 - Do not fold unresolved connections into `topology.connections` for ArcAtlas.
@@ -285,4 +357,3 @@ string. Credentials stay session-only.
   in the same payload.
 - Quick Scan must stay fast. Topology stays opt-in / credentialed.
 - Windows WMI/WinRM is Claude's lane and is unused here.
-

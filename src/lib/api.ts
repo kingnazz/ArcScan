@@ -476,6 +476,14 @@ export const api = {
     return mock.lastTopologySnapshot();
   },
 
+  /** Export the parsed evidence from the last completed run. No new network work occurs. */
+  async exportTopologyReplayFixture(): Promise<boolean> {
+    const contents = isTauri()
+      ? await invoke<string>("export_topology_replay_fixture")
+      : mock.exportTopologyReplayFixture();
+    return writeExport(contents, "arcscan-topology-replay-v1.json", "json");
+  },
+
   async cancelTopology(): Promise<void> {
     if (isTauri()) return invoke<void>("cancel_topology");
     mock.cancelTopology();

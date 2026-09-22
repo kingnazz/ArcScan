@@ -38,6 +38,18 @@ static CANCEL_TOPOLOGY: AtomicU64 = AtomicU64::new(0);
 static NEXT_TOPOLOGY_ID: AtomicU64 = AtomicU64::new(1);
 static SCAN_CANCEL_CHECK: OnceLock<fn(u64) -> bool> = OnceLock::new();
 
+/// Credential-free parsed inputs retained only so an operator can explicitly
+/// export the completed run as a replay fixture. This is never serialized as
+/// part of ordinary discovery and cannot hold an SNMP session or secret.
+#[derive(Debug, Clone)]
+pub struct TopologyRunCapture {
+    pub captured_at: String,
+    pub targets: Vec<TopologyTarget>,
+    pub views: Vec<DeviceView>,
+    pub edge_hint: Option<EdgeHint>,
+    pub failures: Vec<TopologyDeviceFailure>,
+}
+
 /// Ask the in-flight topology run to stop. Safe to call when none is running.
 pub fn request_cancel() {
     CANCEL_TOPOLOGY.store(ACTIVE_TOPOLOGY.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -149,6 +161,35 @@ pub async fn run_with_wall(
     wall: Duration,
     edge_hint: Option<EdgeHint>,
 ) -> TopologyResult {
+    run_with_wall_capture(
+        secret,
+        inventory,
+        snmp_targets,
+        timeout,
+        concurrency,
+        scan_id,
+        factory,
+        wall,
+        edge_hint,
+    )
+    .await
+    .0
+}
+
+/// Discovery plus the credential-free parsed evidence required for an
+/// explicit replay-fixture export.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_wall_capture(
+    secret: &SnmpSecret,
+    inventory: Vec<TopologyTarget>,
+    snmp_targets: Vec<TopologyTarget>,
+    timeout: Duration,
+    concurrency: usize,
+    scan_id: Option<u64>,
+    factory: Option<SessionFactory>,
+    wall: Duration,
+    edge_hint: Option<EdgeHint>,
+) -> (TopologyResult, TopologyRunCapture) {
     let topology_id = NEXT_TOPOLOGY_ID.fetch_add(1, Ordering::Relaxed);
     ACTIVE_TOPOLOGY.store(topology_id, Ordering::Relaxed);
     CANCEL_TOPOLOGY.store(0, Ordering::Relaxed);
@@ -265,7 +306,7 @@ pub async fn run_with_wall(
     }
 
     let unknown_nodes = snapshot.unknown_nodes.len();
-    TopologyResult {
+    let result = TopologyResult {
         snapshot,
         diagnostics,
         summary: TopologySummary {
@@ -281,13 +322,28 @@ pub async fn run_with_wall(
             timed_out,
             failures,
         },
-    }
+    };
+    let capture = TopologyRunCapture {
+        captured_at,
+        targets: inventory,
+        views,
+        edge_hint,
+        failures: result.summary.failures.clone(),
+    };
+    (result, capture)
 }
 
 pub async fn run_from_request(
     store: &CredentialStore,
     request: TopologyRequest,
 ) -> Result<TopologyResult, TopologyError> {
+    Ok(run_from_request_with_capture(store, request).await?.0)
+}
+
+pub async fn run_from_request_with_capture(
+    store: &CredentialStore,
+    request: TopologyRequest,
+) -> Result<(TopologyResult, TopologyRunCapture), TopologyError> {
     let secret = store.get().ok_or(TopologyError::NotConfigured)?;
     let timeout = Duration::from_millis(
         request
@@ -309,7 +365,7 @@ pub async fn run_from_request(
     // speak it time out quickly and are isolated. We do not spray alternative
     // credentials at them.
     let snmp_targets = request.targets;
-    Ok(run_with_wall(
+    Ok(run_with_wall_capture(
         &secret,
         inventory,
         snmp_targets,

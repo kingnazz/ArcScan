@@ -1,0 +1,21 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [
+    { "ip": "192.0.2.30", "mac": "00:44:55:00:00:30", "deviceId": 30, "hostname": "SW1", "detectedName": "SW1" },
+    { "ip": "192.0.2.31", "mac": "00:44:55:00:00:31", "deviceId": 31, "hostname": "HOST1", "detectedName": "HOST1" },
+    { "ip": "192.0.2.32", "mac": "00:44:55:00:00:32", "deviceId": 32, "hostname": "HOST2", "detectedName": "HOST2" }
+  ],
+  "deviceViews": [{
+    "targetIp": "192.0.2.30",
+    "inventoryHint": 30,
+    "interfaces": [{ "index": 24, "name": "Port 24", "operStatus": 1 }],
+    "fdb": [
+      { "mac": "00:44:55:00:00:31", "ifIndex": 24 },
+      { "mac": "00:44:55:00:00:32", "ifIndex": 24 }
+    ]
+  }],
+  "metadata": { "description": "Synthetic multi-MAC uplink suppression", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "confirmedLinks": 0, "strongLinks": 0, "unresolvedPeers": 0, "suppressed": { "multi-mac-uplink": 1 } }
+}

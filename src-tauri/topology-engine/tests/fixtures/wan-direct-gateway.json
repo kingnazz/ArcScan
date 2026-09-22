@@ -1,0 +1,10 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-09-21T12:00:00Z",
+  "sourceVersion": "1.9.0",
+  "targets": [{ "ip": "192.0.2.1", "mac": "00:AA:BB:00:00:01", "deviceId": 1, "hostname": "FIREWALL", "detectedName": "Firewall" }],
+  "deviceViews": [{ "targetIp": "192.0.2.1", "inventoryHint": 1, "sysName": "FIREWALL" }],
+  "edgeHint": { "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:BB:00:00:01" },
+  "metadata": { "description": "Synthetic WAN directly to gateway", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
+  "expected": { "strongLinks": 0, "wan": true, "unresolvedPeers": 0 }
+}
