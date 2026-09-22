@@ -590,18 +590,18 @@ await step("the release section states the 1.9.0 improvements", async () => {
   return headings.map((h) => h.trim()).join(", ");
 });
 
-await step("the What changed link opens the local 1.9.0 page", async () => {
+await step("the What changed link opens the local 1.9 overview page", async () => {
   const link = page.locator("#release-notes-link");
   await link.waitFor({ timeout: 3000 });
   const href = await link.getAttribute("href");
-  // A first-party page, not GitHub: a visitor asking what changed should get
-  // something written for them before they get a commit list.
+  // Patch releases in the 1.9 line keep linking to the first-party 1.9 feature
+  // overview. The exact patch version is shown separately by version-fallback
+  // and the live GitHub release metadata.
   if (href !== "whats-new-1.9.0.html") {
     throw new Error(`the What changed link points at ${href}`);
   }
-  const shown = (await page.locator("#version-fallback").innerText()).replace(/^v/, "");
-  if (!(await link.innerText()).includes(shown)) {
-    throw new Error("the link text does not name the version the page shows");
+  if (!(await link.innerText()).includes("1.9.0")) {
+    throw new Error("the link text does not name the 1.9 overview it opens");
   }
   // It is a real anchor with a visible focus ring, not a click handler.
   await link.focus();
