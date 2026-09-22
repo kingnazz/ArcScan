@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Network, Square } from "lucide-react";
 import { Badge, Button, Field, FieldRow, Select } from "../ui/primitives";
 import { Tooltip } from "../ui/Popover";
+import { TopologyDiagnosticsPanel } from "./TopologyDiagnostics";
 import { TopologyPreview } from "./TopologyPreview";
 import {
   CONFIDENCE_HINT,
@@ -308,11 +309,21 @@ export function TopologyPanel({
               </ul>
             ) : null}
 
+            {result.diagnostics ? (
+              <TopologyDiagnosticsPanel diagnostics={result.diagnostics} />
+            ) : null}
+
             {result.snapshot.connections.length === 0 ? (
-              <p className="mt-3 text-[13px] leading-relaxed text-text-secondary">
-                No neighbour relationships were proven. That usually means the devices that answered
-                SNMP do not expose LLDP, CDP or a usable MAC table.
-              </p>
+              <div className="mt-3 space-y-2 text-[13px] leading-relaxed text-text-secondary">
+                <p>No neighbour relationships were proven.</p>
+                {(result.diagnostics?.devices ?? [])
+                  .map((device) => device.zeroLinkExplanation)
+                  .filter((line): line is string => Boolean(line))
+                  .slice(0, 6)
+                  .map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+              </div>
             ) : (
               <>
                 <div className="mt-3">
@@ -322,6 +333,7 @@ export function TopologyPanel({
                     names={names}
                     types={types}
                     physical={physical}
+                    diagnostics={result.diagnostics}
                   />
                 </div>
               <ul className="mt-3 divide-y divide-border">

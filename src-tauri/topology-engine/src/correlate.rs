@@ -12,6 +12,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::collect::{is_unicast_mac, normalize_mac, DeviceView};
+use super::diagnostics::{
+    confidence_name, hostname_resemblance, inventory_label, CorrelationNote, CorrelationTrace,
+    ObservedLink, Suppression,
+};
 use super::display::INTERNET_NODE_ID;
 use super::model::{
     EdgeHint, LogicalNode, TopologyConfidence, TopologyConnection, TopologyEdge, TopologyProtocol,
@@ -129,7 +133,7 @@ pub fn correlate(
     targets: &[TopologyTarget],
     captured_at: &str,
 ) -> TopologySnapshot {
-    correlate_with_edge(views, targets, captured_at, None)
+    correlate_detailed(views, targets, captured_at, None).0
 }
 
 pub fn correlate_with_edge(
@@ -137,6 +141,28 @@ pub fn correlate_with_edge(
     targets: &[TopologyTarget],
     captured_at: &str,
     edge_hint: Option<&EdgeHint>,
+) -> TopologySnapshot {
+    correlate_detailed(views, targets, captured_at, edge_hint).0
+}
+
+pub fn correlate_detailed(
+    views: &[DeviceView],
+    targets: &[TopologyTarget],
+    captured_at: &str,
+    edge_hint: Option<&EdgeHint>,
+) -> (TopologySnapshot, crate::diagnostics::TopologyDiagnostics) {
+    let mut trace = CorrelationTrace::default();
+    let snapshot = build_snapshot(views, targets, captured_at, edge_hint, &mut trace);
+    let diagnostics = crate::diagnostics::assemble(views, targets, &snapshot, &trace);
+    (snapshot, diagnostics)
+}
+
+fn build_snapshot(
+    views: &[DeviceView],
+    targets: &[TopologyTarget],
+    captured_at: &str,
+    edge_hint: Option<&EdgeHint>,
+    trace: &mut CorrelationTrace,
 ) -> TopologySnapshot {
     let index = InventoryIndex::from_targets(targets);
     let mut drafts: Vec<Draft> = Vec::new();
@@ -184,6 +210,70 @@ pub fn correlate_with_edge(
             } else {
                 None
             };
+            let ip_id = neigh
+                .management_address
+                .as_deref()
+                .and_then(|ip| index.id_for_ip(ip));
+            let mac_id = neigh
+                .chassis_id
+                .as_deref()
+                .and_then(|mac| index.resolve_mac(mac));
+            if let (Some(ip_device), Some(mac_device)) = (ip_id, mac_id) {
+                if ip_device != mac_device {
+                    trace.note(CorrelationNote {
+                        target_ip: view.target_ip.to_string(),
+                        summary: format!(
+                            "Management IP {} matches {} and chassis MAC {} matches {}. The existing rule keeps the management-IP match and still emits the link.",
+                            neigh.management_address.as_deref().unwrap_or("unknown"),
+                            inventory_label(targets, ip_device),
+                            neigh.chassis_id.as_deref().unwrap_or("unknown"),
+                            inventory_label(targets, mac_device),
+                        ),
+                    });
+                }
+            }
+            let resolution = if ip_id.is_some() && to_id == ip_id {
+                "management-ip"
+            } else if mac_id.is_some() && to_id == mac_id {
+                "chassis-mac"
+            } else {
+                "unresolved"
+            };
+            if to_id.is_none() {
+                if let Some(name) = neigh.sys_name.as_deref() {
+                    if let Some(resembled) = hostname_resemblance(targets, name) {
+                        trace.suppress(Suppression {
+                            target_ip: view.target_ip.to_string(),
+                            inventory_device_id: from_id,
+                            reason: "hostname-only".into(),
+                            summary: format!(
+                                "Name resembles {resembled}, but hostname alone is not sufficient to identify the physical device."
+                            ),
+                            port_label: from_port.clone(),
+                            mac_count: None,
+                        });
+                    }
+                }
+            }
+            if !keep_link(
+                trace,
+                view,
+                from_id,
+                to_id,
+                to_unresolved.as_ref().map(|node| node.id.clone()),
+                "lldp",
+                neigh.local_port_num,
+                "lldp-local-port",
+                &from_port,
+                &to_port,
+                neigh.chassis_id.clone(),
+                neigh.sys_name.clone(),
+                neigh.management_address.clone(),
+                resolution,
+                None,
+            ) {
+                continue;
+            }
             drafts.push(Draft {
                 from_device_id: from_id,
                 to_device_id: to_id,
@@ -209,6 +299,17 @@ pub fn correlate_with_edge(
             if lldp_ports.contains(&local_if) {
                 // LLDP already described this port. CDP is extra evidence, not
                 // a second link, and must not change confidence.
+                trace.suppress(Suppression {
+                    target_ip: view.target_ip.to_string(),
+                    inventory_device_id: from_id,
+                    reason: "neighbor-protocol-preferred".into(),
+                    summary: format!(
+                        "CDP neighbour on {} was not turned into a second link because LLDP already described that port.",
+                        view.port_name(local_if)
+                    ),
+                    port_label: Some(view.port_name(local_if)),
+                    mac_count: None,
+                });
                 continue;
             }
             let from_port = Some(view.port_name(local_if));
@@ -230,6 +331,47 @@ pub fn correlate_with_edge(
             } else {
                 None
             };
+            let address_id = neigh.address.as_deref().and_then(|ip| index.id_for_ip(ip));
+            let resolution = if address_id.is_some() && to_id == address_id {
+                "management-ip"
+            } else {
+                "unresolved"
+            };
+            if to_id.is_none() {
+                if let Some(name) = neigh.device_id.as_deref() {
+                    if let Some(resembled) = hostname_resemblance(targets, name) {
+                        trace.suppress(Suppression {
+                            target_ip: view.target_ip.to_string(),
+                            inventory_device_id: from_id,
+                            reason: "hostname-only".into(),
+                            summary: format!(
+                                "Name resembles {resembled}, but hostname alone is not sufficient to identify the physical device."
+                            ),
+                            port_label: from_port.clone(),
+                            mac_count: None,
+                        });
+                    }
+                }
+            }
+            if !keep_link(
+                trace,
+                view,
+                from_id,
+                to_id,
+                to_unresolved.as_ref().map(|node| node.id.clone()),
+                "cdp",
+                neigh.if_index,
+                "cdp-ifindex",
+                &from_port,
+                &to_port,
+                None,
+                neigh.device_id.clone(),
+                neigh.address.clone(),
+                resolution,
+                None,
+            ) {
+                continue;
+            }
             drafts.push(Draft {
                 from_device_id: from_id,
                 to_device_id: to_id,
@@ -263,11 +405,34 @@ pub fn correlate_with_edge(
             by_port.entry(entry.if_index).or_default().push(entry);
         }
         for (if_index, entries) in by_port {
+            let unique_macs: BTreeSet<&str> = entries.iter().map(|e| e.mac.as_str()).collect();
             if lldp_ports.contains(&if_index) || cdp_ports.contains(&if_index) {
+                trace.suppress(Suppression {
+                    target_ip: view.target_ip.to_string(),
+                    inventory_device_id: from_id,
+                    reason: "neighbor-protocol-preferred".into(),
+                    summary: format!(
+                        "FDB entries on {} were not promoted because LLDP or CDP already described that port.",
+                        view.port_name(if_index)
+                    ),
+                    port_label: Some(view.port_name(if_index)),
+                    mac_count: Some(unique_macs.len()),
+                });
                 continue;
             }
-            let unique_macs: BTreeSet<&str> = entries.iter().map(|e| e.mac.as_str()).collect();
             if unique_macs.len() >= UPLINK_MAC_THRESHOLD {
+                trace.suppress(Suppression {
+                    target_ip: view.target_ip.to_string(),
+                    inventory_device_id: from_id,
+                    reason: "multi-mac-uplink".into(),
+                    summary: format!(
+                        "Port {} learned {} relevant unicast MACs. The relationship was suppressed because this resembles an uplink or trunk rather than a directly attached endpoint.",
+                        view.port_name(if_index),
+                        unique_macs.len()
+                    ),
+                    port_label: Some(view.port_name(if_index)),
+                    mac_count: Some(unique_macs.len()),
+                });
                 continue;
             }
             if unique_macs.len() != 1 {
@@ -276,6 +441,17 @@ pub fn correlate_with_edge(
             if !view.is_access_port(if_index) {
                 // A trunk with one MAC is still not a trustworthy endpoint
                 // attachment; it is more likely a quiet uplink.
+                trace.suppress(Suppression {
+                    target_ip: view.target_ip.to_string(),
+                    inventory_device_id: from_id,
+                    reason: "trunk-single-mac".into(),
+                    summary: format!(
+                        "Port {} learned one relevant MAC, but the port is a VLAN trunk. A quiet trunk was not treated as a directly attached endpoint.",
+                        view.port_name(if_index)
+                    ),
+                    port_label: Some(view.port_name(if_index)),
+                    mac_count: Some(1),
+                });
                 continue;
             }
             let mac = *unique_macs.iter().next().unwrap();
@@ -284,6 +460,26 @@ pub fn correlate_with_edge(
                 // not a fabricated device.
                 let node = unresolved_mac(mac);
                 let (vlan, native, tagged) = view.vlan_for_port(if_index);
+                let port = Some(view.port_name(if_index));
+                if !keep_link(
+                    trace,
+                    view,
+                    from_id,
+                    None,
+                    Some(node.id.clone()),
+                    "fdb",
+                    if_index,
+                    "fdb",
+                    &port,
+                    &None,
+                    Some(mac.to_string()),
+                    None,
+                    None,
+                    "unresolved",
+                    None,
+                ) {
+                    continue;
+                }
                 drafts.push(Draft {
                     from_device_id: from_id,
                     to_device_id: None,
@@ -291,7 +487,7 @@ pub fn correlate_with_edge(
                     to_unresolved: Some(node),
                     from_logical_id: None,
                     to_logical_id: None,
-                    from_port: Some(view.port_name(if_index)),
+                    from_port: port,
                     to_port: None,
                     protocol: TopologyProtocol::Fdb,
                     confidence: TopologyConfidence::Strong,
@@ -316,10 +512,30 @@ pub fn correlate_with_edge(
                 "Exactly one unicast MAC ({mac}) learned on access port {}",
                 view.port_name(if_index)
             )];
-            if let Some(ip) = ip_hint {
+            if let Some(ip) = ip_hint.as_deref() {
                 evidence.push(format!("ARP maps {mac} to {ip}"));
             }
             let (vlan, native, tagged) = view.vlan_for_port(if_index);
+            let port = Some(view.port_name(if_index));
+            if !keep_link(
+                trace,
+                view,
+                from_id,
+                Some(to_id),
+                None,
+                "fdb",
+                if_index,
+                "fdb",
+                &port,
+                &None,
+                Some(mac.to_string()),
+                None,
+                None,
+                "fdb-mac",
+                ip_hint.clone(),
+            ) {
+                continue;
+            }
             drafts.push(Draft {
                 from_device_id: from_id,
                 to_device_id: Some(to_id),
@@ -327,7 +543,7 @@ pub fn correlate_with_edge(
                 to_unresolved: None,
                 from_logical_id: None,
                 to_logical_id: None,
-                from_port: Some(view.port_name(if_index)),
+                from_port: port,
                 to_port: None,
                 protocol: TopologyProtocol::Fdb,
                 confidence: TopologyConfidence::Strong,
@@ -371,8 +587,14 @@ pub fn correlate_with_edge(
         });
     }
 
-    let (logical_nodes, edge) =
-        attach_wan_edge(&mut connections, &mut unknown, views, &index, edge_hint);
+    let (logical_nodes, edge) = attach_wan_edge(
+        &mut connections,
+        &mut unknown,
+        views,
+        &index,
+        edge_hint,
+        trace,
+    );
 
     connections.sort_by(|a, b| {
         (a.from_device_id, a.to_device_id, &a.from_port, &a.to_port).cmp(&(
@@ -392,17 +614,74 @@ pub fn correlate_with_edge(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn keep_link(
+    trace: &mut CorrelationTrace,
+    view: &DeviceView,
+    from_id: Option<i64>,
+    to_id: Option<i64>,
+    to_unresolved_id: Option<String>,
+    protocol: &str,
+    raw_port: u32,
+    port_role: &str,
+    from_port: &Option<String>,
+    to_port: &Option<String>,
+    chassis_or_mac: Option<String>,
+    sys_name: Option<String>,
+    management_address: Option<String>,
+    resolution: &str,
+    arp_ip: Option<String>,
+) -> bool {
+    if to_id.is_some() && to_id == from_id {
+        // Diagnostic only. The connection stays in the snapshot so the v1.9
+        // handoff can park fromDeviceId === toDeviceId evidence on
+        // unresolvedTopology instead of dropping it.
+        trace.suppress(Suppression {
+            target_ip: view.target_ip.to_string(),
+            inventory_device_id: from_id,
+            reason: "self-loop".into(),
+            summary: "Neighbour evidence resolved to the same inventory device on both ends. The observation is retained and is not a canonical topology connection.".into(),
+            port_label: from_port.clone(),
+            mac_count: None,
+        });
+    }
+    let confidence = if protocol == "fdb" {
+        TopologyConfidence::Strong
+    } else {
+        TopologyConfidence::Confirmed
+    };
+    trace.link(ObservedLink {
+        source_ip: view.target_ip.to_string(),
+        from_device_id: from_id,
+        to_device_id: to_id,
+        to_unresolved_id,
+        protocol: protocol.to_string(),
+        confidence: confidence_name(confidence).to_string(),
+        from_port: from_port.clone(),
+        to_port: to_port.clone(),
+        raw_port,
+        port_role: port_role.to_string(),
+        chassis_or_mac,
+        sys_name,
+        management_address,
+        resolution: resolution.to_string(),
+        arp_ip,
+    });
+    true
+}
+
 fn attach_wan_edge(
     connections: &mut Vec<TopologyConnection>,
     unknown: &mut BTreeMap<String, UnresolvedNode>,
     views: &[DeviceView],
     index: &InventoryIndex,
     hint: Option<&EdgeHint>,
+    trace: &mut CorrelationTrace,
 ) -> (Vec<LogicalNode>, Option<TopologyEdge>) {
     let Some(hint) = hint else {
         return (Vec::new(), None);
     };
-    let Some(hit) = resolve_gateway(views, index, hint) else {
+    let Some(hit) = resolve_gateway(views, index, hint, trace) else {
         return (Vec::new(), None);
     };
     let gateway_id = hit.device_id;
@@ -500,6 +779,7 @@ fn resolve_gateway(
     views: &[DeviceView],
     index: &InventoryIndex,
     hint: &EdgeHint,
+    trace: &mut CorrelationTrace,
 ) -> Option<GatewayHit> {
     let ip = hint
         .gateway_ip
@@ -529,7 +809,21 @@ fn resolve_gateway(
         (Some(a), None, None) => (a, TopologyConfidence::Inferred),
         (None, Some(b), _) => (b, TopologyConfidence::Inferred),
         (None, None, Some(c)) => (c, TopologyConfidence::Inferred),
-        (Some(_), Some(_), _) => return None, // IP and MAC name two different devices
+        (Some(ip_device), Some(mac_device), _) => {
+            trace.suppress(Suppression {
+                target_ip: ip.unwrap_or("gateway").to_string(),
+                inventory_device_id: None,
+                reason: "gateway-identity-conflict".into(),
+                summary: format!(
+                    "Gateway IP {} matches inventory device {ip_device} and gateway MAC {} matches inventory device {mac_device}. No WAN edge was created.",
+                    ip.unwrap_or("unknown"),
+                    mac.as_deref().unwrap_or("unknown"),
+                ),
+                port_label: None,
+                mac_count: None,
+            });
+            return None;
+        }
         _ => return None,
     };
 

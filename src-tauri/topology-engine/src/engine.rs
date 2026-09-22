@@ -13,8 +13,9 @@ use chrono::Utc;
 use futures::stream::{self, StreamExt};
 
 use super::collect::DeviceView;
-use super::correlate::{correlate, correlate_with_edge};
+use super::correlate::correlate_detailed;
 use super::credentials::{CredentialStore, SnmpSecret};
+use super::diagnostics::absorb_failures;
 use super::error::TopologyError;
 use super::model::{
     EdgeHint, TopologyConfidence, TopologyDeviceFailure, TopologyRequest, TopologyResult,
@@ -242,12 +243,16 @@ pub async fn run_with_wall(
         }
     }
 
-    let snapshot = match &edge_hint {
+    let (snapshot, mut diagnostics) = match &edge_hint {
         Some(hint) if hint.gateway_ip.is_some() || hint.gateway_mac.is_some() => {
-            correlate_with_edge(&views, &inventory, &captured_at, Some(hint))
+            correlate_detailed(&views, &inventory, &captured_at, Some(hint))
         }
-        _ => correlate(&views, &inventory, &captured_at),
+        _ => correlate_detailed(&views, &inventory, &captured_at, None),
     };
+    absorb_failures(&mut diagnostics, &failures);
+    diagnostics.run_summary.devices_queried = queried;
+    diagnostics.run_summary.devices_responding = responded;
+    diagnostics.run_summary.devices_failed = failed;
     let mut confirmed = 0usize;
     let mut strong = 0usize;
     let mut inferred = 0usize;
@@ -262,6 +267,7 @@ pub async fn run_with_wall(
     let unknown_nodes = snapshot.unknown_nodes.len();
     TopologyResult {
         snapshot,
+        diagnostics,
         summary: TopologySummary {
             devices_queried: queried,
             devices_responded: responded,
@@ -396,6 +402,8 @@ mod tests {
         assert_eq!(result.summary.devices_failed, 1);
         assert!(!result.summary.failures[0].reason.contains("site-read"));
         assert!(!result.summary.cancelled);
+        let exported = crate::diagnostics::export_diagnostics_json(&result.diagnostics);
+        assert!(!exported.contains("site-read"));
     }
 
     #[tokio::test]

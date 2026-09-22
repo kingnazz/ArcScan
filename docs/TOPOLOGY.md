@@ -208,6 +208,73 @@ sourced FDB/BRIDGE evidence (it published a MAC table), the preview may show a
 presentation-only `Switch · FDB` role and place it on the switch layer. That
 label does not write a classification into inventory.
 
+## Topology diagnostics
+
+A topology run also returns `diagnostics` on the UI result. It is not part of
+the schemaVersion 2 handoff: `topology.connections`, `edge`, `logicalNodes`
+and `unresolvedTopology` are unchanged. ArcAtlas does not need a schema change
+to ignore it, because the handoff builder never copies it.
+
+Diagnostics are typed facts collected during the same SNMP walks and the same
+correlation decisions. They are not parsed out of log text, and they do not
+vote a link up or down. Enabling them does not add a second SNMP pass.
+
+### MIB states
+
+Each MIB family is one of:
+
+| State | Meaning |
+| --- | --- |
+| `available` | At least one walked table in that MIB returned rows. |
+| `noRows` | The walks succeeded and returned no rows. An empty LLDP remote table is "no neighbours", not "unsupported". |
+| `timedOut` | The walk hit the SNMP timeout. |
+| `walkFailed` | The walk failed for another protocol reason. |
+| `notQueried` | ArcScan did not walk it. A failed SNMP target leaves every MIB here. The second IP-MIB neighbour table is also `notQueried` when the first table already returned ARP rows. |
+| `partial` | Some tables in the MIB answered and another walk failed or timed out. One failed walk does not mark the whole MIB unsupported. |
+
+`ENTITY-MIB` model text is still the first physical row. Diagnostics say so.
+It is not a device classification.
+
+### Suppression reasons
+
+High-value refusals are recorded. Ordinary skipped rows (multicast MACs, the
+switch's own MACs) are not.
+
+| Reason | What ArcScan refused |
+| --- | --- |
+| `multi-mac-uplink` | Two or more relevant unicast MACs on one FDB port. No endpoint link is created. |
+| `trunk-single-mac` | One relevant MAC on a VLAN trunk. Treated as a quiet uplink, not an endpoint. |
+| `hostname-only` | LLDP sysName or CDP device-id resembles an inventory hostname. The neighbour stays unresolved. |
+| `self-loop` | Both ends resolved to the same inventory device. The observation stays in the snapshot so the handoff can keep it on `unresolvedTopology`. It is not a canonical `topology.connections` entry. |
+| `neighbor-protocol-preferred` | CDP or FDB on a port that LLDP/CDP already described. No second link. |
+| `gateway-identity-conflict` | Default-route IP and MAC name different inventory devices. No WAN edge. |
+| `malformed-port-label` | IF-MIB octets were not a printable name and no later candidate replaced them, so the numeric ifIndex is shown. |
+
+A management IP and a chassis MAC that name two different inventory devices
+are explained in `correlationNotes`. The existing rule still keeps the
+management-IP match and still emits the confirmed link. That match was not
+changed.
+
+### What "no links" means
+
+`zeroLinkExplanation` is filled only when that SNMP target produced no
+relationship. The sentence is chosen from the structured coverage:
+
+- SNMP responded, LLDP/CDP returned no neighbours, and there were no usable FDB entries.
+- FDB rows exist, but every relevant MAC sat on a multi-MAC port.
+- IF-MIB answered and the neighbour/bridge tables did not.
+- LLDP/CDP reported neighbours that the safety checks then dropped (for example a self-loop).
+- SNMP timed out, authentication failed, or the host was unreachable. The other targets still complete.
+
+### Export
+
+The Topology panel can copy or download `arcscan-topology-diagnostics.json`.
+Nothing is uploaded. The file is labeled as network inventory: IP addresses,
+MAC addresses and device names are present on purpose. SNMP community,
+username, authentication password and privacy password are not fields of the
+model, and the export scrubber redacts those words if they ever appear in a
+string. Credentials stay session-only.
+
 ## Integrated contract invariants
 
 - Do not fold unresolved connections into `topology.connections` for ArcAtlas.
