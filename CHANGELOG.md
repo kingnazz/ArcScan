@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.1] - 2026-09-22
+
+A compatibility and topology-diagnostics patch on top of 1.9.0.
+
+### Added
+
+- Exportable, credential-free topology replay fixtures for reproducing discovery and correlation behavior offline.
+- Deterministic replay expectations and synthetic topology fixtures for LLDP, CDP, FDB, WAN and ambiguous-identity cases.
+
+### Fixed
+
+- ArcScan now enforces the Ethernet VLAN range of `1–4094` before ArcAtlas handoff.
+- CDP native VLAN `0` is treated as unknown rather than causing ArcAtlas to reject the whole topology payload.
+- Wide or out-of-range SNMP VLAN values are dropped as individual facts instead of truncating into believable VLAN IDs.
+- Valid links and valid tagged VLANs survive when a neighboring VLAN fact is unusable.
+- Duplicate IP or MAC identity evidence remains ambiguous instead of resolving by last write.
+
 All notable changes to ArcScan. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
