@@ -12,5 +12,10 @@
   }],
   "edgeHint": { "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:CC:00:00:01" },
   "metadata": { "description": "Synthetic WAN with unresolved ONT", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
-  "expected": { "confirmedLinks": 1, "strongLinks": 0, "wan": true, "unresolvedPeers": 1 }
+  "expected": {
+    "confirmedLinks": 1,
+    "strongLinks": 0,
+    "wan": { "present": true, "gatewayDeviceId": 1, "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:CC:00:00:01", "viaUnresolvedId": "unknown:chassis:00aacc000009", "confidence": "strong", "uplinkProtocol": "default-route" },
+    "unresolvedPeers": 1
+  }
 }

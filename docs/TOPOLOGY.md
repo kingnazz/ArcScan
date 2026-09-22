@@ -203,6 +203,12 @@ transport-local inventory ids and the ArcAtlas handoff payload stay unmerged.
 Hostname-only duplicates stay separate. Blank or absent physical-device keys do
 not group.
 
+Correlation identity is also fail-closed: a MAC address or IP address assigned
+to more than one inventory device is ambiguous and cannot resolve an LLDP, CDP,
+FDB, or gateway observation to a canonical device. The evidence remains visible
+as unresolved where applicable. Hostnames remain descriptive evidence only and
+never become canonical identity.
+
 A device whose inventory type is unknown is not guessed from its name. If it
 sourced FDB/BRIDGE evidence (it published a MAC table), the preview may show a
 presentation-only `Switch · FDB` role and place it on the switch layer. That
@@ -291,10 +297,12 @@ Version 1 contains:
 - parsed interfaces, LLDP, CDP, bridge/FDB, ARP, VLAN, PoE, ENTITY metadata,
   per-table probe outcomes, rejected labels, notes, and sanitized device
   failures
-- metadata that marks the export sanitized and warns that it contains network
-  inventory information
-- optional meaningful expectations: confidence counts, unresolved peers, WAN
-  presence, suppression counts, and selected exact links
+- metadata that marks only the scrubbed export sanitized and warns that it
+  contains network inventory information; the pre-scrub captured fixture is
+  explicitly `sanitized: false`
+- optional meaningful expectations: confidence counts, unresolved peers,
+  suppression counts, selected link kind/protocol/ports/speed/VLAN/PoE facts,
+  and WAN gateway/via/confidence/uplink facts
 
 The format intentionally has no field for an SNMP community, SNMPv3 username,
 authentication/privacy password, Windows credential, ArcAtlas token, API key,

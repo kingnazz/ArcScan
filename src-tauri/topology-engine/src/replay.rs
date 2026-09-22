@@ -69,7 +69,7 @@ impl Default for ReplayMetadata {
     fn default() -> Self {
         Self {
             description: "ArcScan topology evidence".into(),
-            sanitized: true,
+            sanitized: false,
             warning: REPLAY_WARNING.into(),
         }
     }
@@ -104,7 +104,7 @@ pub struct ReplayExpectations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unresolved_peers: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wan: Option<bool>,
+    pub wan: Option<ExpectedWan>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub suppressed: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -113,7 +113,7 @@ pub struct ReplayExpectations {
     pub exact_links: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExpectedLink {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +130,68 @@ pub struct ExpectedLink {
     pub protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<TopologyConfidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_mbps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_vlan: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagged_vlans: Option<Vec<u16>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poe_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poe_watts: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ExpectedWan {
+    Present(bool),
+    Facts(ExpectedWanFacts),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExpectedWanFacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_device_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_mac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_device_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_unresolved_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<TopologyConfidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uplink_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uplink_from_port: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uplink_to_port: Option<String>,
+}
+
+impl ExpectedWan {
+    fn present(&self) -> Option<bool> {
+        match self {
+            Self::Present(present) => Some(*present),
+            Self::Facts(facts) => facts.present,
+        }
+    }
+
+    fn facts(&self) -> Option<&ExpectedWanFacts> {
+        match self {
+            Self::Present(_) => None,
+            Self::Facts(facts) => Some(facts),
+        }
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -351,6 +413,13 @@ impl ReplayFixture {
     pub fn to_sanitized_json(&self, secret: Option<&SnmpSecret>) -> Result<String, ReplayError> {
         let mut value = serde_json::to_value(self).map_err(|e| ReplayError::Json(e.to_string()))?;
         scrub_value(&mut value, secret);
+        let metadata = value
+            .get_mut("metadata")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| ReplayError::Invalid("metadata must be an object".into()))?;
+        // A captured fixture is intentionally unsanitized in memory. Only the
+        // scrubbed export value may make this claim.
+        metadata.insert("sanitized".into(), Value::Bool(true));
         let json =
             serde_json::to_string_pretty(&value).map_err(|e| ReplayError::Json(e.to_string()))?;
         if json.len() > MAX_REPLAY_FIXTURE_BYTES {
@@ -411,6 +480,14 @@ impl ReplayFixture {
             .sort_by(|a, b| a.target_ip.cmp(&b.target_ip));
         self.failures
             .sort_by(|a, b| (&a.ip, &a.reason).cmp(&(&b.ip, &b.reason)));
+        if let Some(expected) = &mut self.expected {
+            for link in &mut expected.links {
+                if let Some(tagged_vlans) = &mut link.tagged_vlans {
+                    tagged_vlans.sort_unstable();
+                    tagged_vlans.dedup();
+                }
+            }
+        }
         for view in &mut self.device_views {
             view.normalize();
         }
@@ -969,10 +1046,77 @@ pub fn compare_expected(fixture: &ReplayFixture, result: &TopologyResult) -> Str
         expected.unresolved_peers,
         result.snapshot.unknown_nodes.len(),
     );
-    if let Some(wan) = expected.wan {
-        let actual = result.snapshot.edge.is_some();
-        if actual != wan {
-            changes.push(format!("CHANGED\nWAN\nexpected: {wan}\nactual: {actual}"));
+    if let Some(wan) = expected.wan.as_ref() {
+        let edge = result.snapshot.edge.as_ref();
+        let mut fields = Vec::new();
+        if wan
+            .present()
+            .is_some_and(|present| present != edge.is_some())
+        {
+            fields.push(format!(
+                "present:\nexpected {:?}\nactual {}",
+                wan.present(),
+                edge.is_some()
+            ));
+        }
+        if let Some(wan) = wan.facts() {
+            compare_optional_field(
+                &mut fields,
+                "gatewayDeviceId",
+                wan.gateway_device_id.as_ref(),
+                edge.and_then(|edge| edge.gateway_device_id.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "gatewayIp",
+                wan.gateway_ip.as_ref(),
+                edge.and_then(|edge| edge.gateway_ip.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "gatewayMac",
+                wan.gateway_mac.as_ref(),
+                edge.and_then(|edge| edge.gateway_mac.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "viaDeviceId",
+                wan.via_device_id.as_ref(),
+                edge.and_then(|edge| edge.via_device_id.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "viaUnresolvedId",
+                wan.via_unresolved_id.as_ref(),
+                edge.and_then(|edge| edge.via_unresolved_id.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "confidence",
+                wan.confidence.as_ref(),
+                edge.map(|edge| &edge.confidence),
+            );
+            compare_optional_field(
+                &mut fields,
+                "uplink.protocol",
+                wan.uplink_protocol.as_ref(),
+                edge.map(|edge| &edge.uplink.protocol),
+            );
+            compare_optional_field(
+                &mut fields,
+                "uplink.fromPort",
+                wan.uplink_from_port.as_ref(),
+                edge.and_then(|edge| edge.uplink.from_port.as_ref()),
+            );
+            compare_optional_field(
+                &mut fields,
+                "uplink.toPort",
+                wan.uplink_to_port.as_ref(),
+                edge.and_then(|edge| edge.uplink.to_port.as_ref()),
+            );
+        }
+        if !fields.is_empty() {
+            changes.push(format!("CHANGED\nWAN\n{}", fields.join("\n")));
         }
     }
     for (reason, wanted) in &expected.suppressed {
@@ -995,37 +1139,7 @@ pub fn compare_expected(fixture: &ReplayFixture, result: &TopologyResult) -> Str
             .iter()
             .find(|link| same_endpoints(wanted, link))
         {
-            let mut fields = Vec::new();
-            if wanted
-                .protocol
-                .as_deref()
-                .is_some_and(|value| value != actual.protocol)
-            {
-                fields.push(format!(
-                    "protocol:\nexpected {}\nactual {}",
-                    wanted.protocol.as_deref().unwrap_or(""),
-                    actual.protocol
-                ));
-            }
-            if wanted
-                .confidence
-                .is_some_and(|value| value != actual.confidence)
-            {
-                fields.push(format!(
-                    "confidence:\nexpected {}\nactual {}",
-                    wanted
-                        .confidence
-                        .map(TopologyConfidence::as_str)
-                        .unwrap_or(""),
-                    actual.confidence.as_str()
-                ));
-            }
-            if wanted.to_port.is_some() && wanted.to_port != actual.to_port {
-                fields.push(format!(
-                    "toPort:\nexpected {:?}\nactual {:?}",
-                    wanted.to_port, actual.to_port
-                ));
-            }
+            let fields = link_field_changes(wanted, actual);
             if !fields.is_empty() {
                 changes.push(format!(
                     "CHANGED\n{}\n{}",
@@ -1069,6 +1183,86 @@ fn compare_count(changes: &mut Vec<String>, label: &str, expected: Option<usize>
     }
 }
 
+fn compare_optional_field<T: PartialEq + fmt::Debug>(
+    fields: &mut Vec<String>,
+    label: &str,
+    expected: Option<&T>,
+    actual: Option<&T>,
+) {
+    if let Some(expected) = expected {
+        if Some(expected) != actual {
+            fields.push(format!(
+                "{label}:\nexpected {expected:?}\nactual {actual:?}"
+            ));
+        }
+    }
+}
+
+fn link_field_changes(expected: &ExpectedLink, actual: &TopologyConnection) -> Vec<String> {
+    let mut fields = Vec::new();
+    compare_optional_field(
+        &mut fields,
+        "toPort",
+        expected.to_port.as_ref(),
+        actual.to_port.as_ref(),
+    );
+    compare_optional_field(
+        &mut fields,
+        "protocol",
+        expected.protocol.as_ref(),
+        Some(&actual.protocol),
+    );
+    compare_optional_field(
+        &mut fields,
+        "confidence",
+        expected.confidence.as_ref(),
+        Some(&actual.confidence),
+    );
+    compare_optional_field(
+        &mut fields,
+        "kind",
+        expected.kind.as_ref(),
+        Some(&actual.kind),
+    );
+    compare_optional_field(
+        &mut fields,
+        "speedMbps",
+        expected.speed_mbps.as_ref(),
+        actual.speed_mbps.as_ref(),
+    );
+    compare_optional_field(
+        &mut fields,
+        "vlan",
+        expected.vlan.as_ref(),
+        actual.vlan.as_ref(),
+    );
+    compare_optional_field(
+        &mut fields,
+        "nativeVlan",
+        expected.native_vlan.as_ref(),
+        actual.native_vlan.as_ref(),
+    );
+    compare_optional_field(
+        &mut fields,
+        "taggedVlans",
+        expected.tagged_vlans.as_ref(),
+        Some(&actual.tagged_vlans),
+    );
+    compare_optional_field(
+        &mut fields,
+        "poe.enabled",
+        expected.poe_enabled.as_ref(),
+        actual.poe.as_ref().map(|poe| &poe.enabled),
+    );
+    compare_optional_field(
+        &mut fields,
+        "poe.watts",
+        expected.poe_watts.as_ref(),
+        actual.poe.as_ref().and_then(|poe| poe.watts.as_ref()),
+    );
+    fields
+}
+
 fn same_endpoints(expected: &ExpectedLink, actual: &TopologyConnection) -> bool {
     expected.from_device_id == actual.from_device_id
         && expected.to_device_id == actual.to_device_id
@@ -1077,18 +1271,7 @@ fn same_endpoints(expected: &ExpectedLink, actual: &TopologyConnection) -> bool 
 }
 
 fn same_link(expected: &ExpectedLink, actual: &TopologyConnection) -> bool {
-    same_endpoints(expected, actual)
-        && expected
-            .protocol
-            .as_deref()
-            .is_none_or(|protocol| protocol == actual.protocol)
-        && expected
-            .confidence
-            .is_none_or(|confidence| confidence == actual.confidence)
-        && expected
-            .to_port
-            .as_ref()
-            .is_none_or(|port| Some(port) == actual.to_port.as_ref())
+    same_endpoints(expected, actual) && link_field_changes(expected, actual).is_empty()
 }
 
 fn expected_link_label(expected: &ExpectedLink, targets: &[TopologyTarget]) -> String {
@@ -1192,6 +1375,63 @@ mod tests {
     use super::*;
     use crate::credentials::CredentialInput;
 
+    fn rich_capture() -> TopologyRunCapture {
+        let targets = vec![
+            TopologyTarget {
+                ip: "192.0.2.1".into(),
+                mac: Some("00:11:22:00:00:01".into()),
+                device_id: Some(1),
+                hostname: Some("FIREWALL".into()),
+                detected_name: Some("Firewall".into()),
+            },
+            TopologyTarget {
+                ip: "192.0.2.9".into(),
+                mac: Some("00:11:22:00:00:09".into()),
+                device_id: Some(9),
+                hostname: Some("FIBER-ONT".into()),
+                detected_name: Some("Fiber ONT".into()),
+            },
+        ];
+        let mut view = DeviceView::new(Ipv4Addr::new(192, 0, 2, 1), Some(1));
+        view.sys_name = Some("FIREWALL".into());
+        view.interfaces.insert(
+            9,
+            Iface {
+                index: 9,
+                name: Some("WAN".into()),
+                oper_status: Some(1),
+                speed_mbps: Some(1000),
+                poe: Some(PoeInfo {
+                    enabled: true,
+                    watts: Some(8.2),
+                }),
+                ..Iface::default()
+            },
+        );
+        view.pvid.insert(9, 10);
+        view.tagged.insert(9, BTreeSet::from([20, 30]));
+        view.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 9,
+            chassis_id: Some("00:11:22:00:00:09".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("eth0".into()),
+            port_desc: None,
+            sys_name: Some("Fiber ONT".into()),
+            sys_desc: None,
+            management_address: Some("192.0.2.9".into()),
+        });
+        TopologyRunCapture {
+            captured_at: "2026-09-21T12:00:00Z".into(),
+            targets,
+            views: vec![view],
+            edge_hint: Some(EdgeHint {
+                gateway_ip: Some("192.0.2.1".into()),
+                gateway_mac: Some("00:11:22:00:00:01".into()),
+            }),
+            failures: vec![],
+        }
+    }
+
     fn malicious_fixture() -> ReplayFixture {
         ReplayFixture {
             fixture_version: FIXTURE_VERSION,
@@ -1249,6 +1489,7 @@ mod tests {
     #[test]
     fn export_is_structurally_credential_free_and_scrubs_embedded_secrets() {
         let fixture = malicious_fixture();
+        assert!(!fixture.metadata.sanitized);
         let secret = SnmpSecret::from_input(CredentialInput {
             version: "v3".into(),
             community: None,
@@ -1273,6 +1514,10 @@ mod tests {
             assert!(!json.contains(forbidden), "leaked {forbidden}: {json}");
         }
         let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value.pointer("/metadata/sanitized"),
+            Some(&Value::Bool(true))
+        );
         fn keys(value: &Value, out: &mut Vec<String>) {
             match value {
                 Value::Object(map) => {
@@ -1288,6 +1533,9 @@ mod tests {
         let mut all_keys = Vec::new();
         keys(&value, &mut all_keys);
         assert!(all_keys.iter().all(|key| !is_forbidden_key(key)));
+        let parsed = ReplayFixture::parse(&json).unwrap();
+        assert!(parsed.metadata.sanitized);
+        parsed.replay().unwrap();
     }
 
     #[test]
@@ -1337,6 +1585,7 @@ mod tests {
                 to_port: None,
                 protocol: Some("fdb".into()),
                 confidence: Some(TopologyConfidence::Strong),
+                ..ExpectedLink::default()
             }],
             ..ReplayExpectations::default()
         });
@@ -1347,57 +1596,112 @@ mod tests {
     }
 
     #[test]
-    fn replay_uses_the_same_correlation_result_as_live_evidence() {
-        let targets = vec![
-            TopologyTarget {
-                ip: "192.0.2.10".into(),
-                mac: Some("00:11:22:00:00:10".into()),
-                device_id: Some(10),
-                hostname: Some("SW1".into()),
-                detected_name: None,
-            },
-            TopologyTarget {
-                ip: "192.0.2.11".into(),
-                mac: Some("00:11:22:00:00:11".into()),
-                device_id: Some(11),
-                hostname: Some("NAS1".into()),
-                detected_name: None,
-            },
-        ];
-        let mut view = DeviceView::new(Ipv4Addr::new(192, 0, 2, 10), Some(10));
-        view.interfaces.insert(
-            7,
-            Iface {
-                index: 7,
-                name: Some("Port 7".into()),
-                oper_status: Some(1),
-                ..Iface::default()
-            },
-        );
-        view.fdb.push(FdbEntry {
-            mac: "00:11:22:00:00:11".into(),
-            if_index: 7,
-            vlan: None,
+    fn expected_link_diff_reports_vlan_speed_and_poe_changes() {
+        let capture = rich_capture();
+        let mut fixture = ReplayFixture::from_capture(&capture, "mutated link expectations");
+        let result = fixture.replay().unwrap();
+        fixture.expected = Some(ReplayExpectations {
+            links: vec![ExpectedLink {
+                from_device_id: Some(1),
+                to_device_id: Some(9),
+                from_port: Some("WAN".into()),
+                kind: Some("wireless".into()),
+                speed_mbps: Some(100),
+                vlan: Some("10".into()),
+                native_vlan: Some(99),
+                tagged_vlans: Some(vec![40]),
+                poe_enabled: Some(false),
+                poe_watts: Some(1.0),
+                ..ExpectedLink::default()
+            }],
+            ..ReplayExpectations::default()
         });
-        let (live_snapshot, _) = crate::correlate::correlate_detailed(
-            &[view.clone()],
-            &targets,
-            "2026-09-21T12:00:00Z",
-            None,
+
+        let diff = compare_expected(&fixture, &result);
+        assert!(diff.contains("CHANGED"));
+        for field in [
+            "kind",
+            "speedMbps",
+            "vlan",
+            "nativeVlan",
+            "taggedVlans",
+            "poe.enabled",
+            "poe.watts",
+        ] {
+            assert!(diff.contains(field), "missing {field} from diff:\n{diff}");
+        }
+    }
+
+    #[test]
+    fn expected_wan_diff_reports_gateway_via_confidence_and_uplink_changes() {
+        let capture = rich_capture();
+        let mut fixture = ReplayFixture::from_capture(&capture, "mutated WAN expectations");
+        let result = fixture.replay().unwrap();
+        fixture.expected = Some(ReplayExpectations {
+            wan: Some(ExpectedWan::Facts(ExpectedWanFacts {
+                present: Some(true),
+                gateway_device_id: Some(999),
+                gateway_ip: Some("198.51.100.1".into()),
+                gateway_mac: Some("00:FF:FF:00:00:01".into()),
+                via_device_id: Some(998),
+                confidence: Some(TopologyConfidence::Inferred),
+                uplink_protocol: Some("manual".into()),
+                uplink_from_port: Some("Internet".into()),
+                uplink_to_port: Some("WAN".into()),
+                ..ExpectedWanFacts::default()
+            })),
+            ..ReplayExpectations::default()
+        });
+
+        let diff = compare_expected(&fixture, &result);
+        assert!(diff.contains("CHANGED\nWAN"));
+        for field in [
+            "gatewayDeviceId",
+            "gatewayIp",
+            "gatewayMac",
+            "viaDeviceId",
+            "confidence",
+            "uplink.protocol",
+            "uplink.fromPort",
+            "uplink.toPort",
+        ] {
+            assert!(diff.contains(field), "missing {field} from diff:\n{diff}");
+        }
+    }
+
+    #[test]
+    fn replay_uses_the_same_correlation_result_as_live_evidence() {
+        let capture = rich_capture();
+        let (mut live_snapshot, _) = crate::correlate::correlate_detailed(
+            &capture.views,
+            &capture.targets,
+            &capture.captured_at,
+            capture.edge_hint.as_ref(),
         );
-        let capture = TopologyRunCapture {
-            captured_at: "2026-09-21T12:00:00Z".into(),
-            targets,
-            views: vec![view],
-            edge_hint: None,
-            failures: vec![],
-        };
+        normalize_snapshot(&mut live_snapshot);
         let fixture = ReplayFixture::from_capture(&capture, "same-engine check");
+        assert!(!fixture.metadata.sanitized);
+        assert!(serde_json::to_string(&fixture)
+            .unwrap()
+            .contains("\"sanitized\":false"));
         let json = fixture.to_sanitized_json(None).unwrap();
+        assert!(json.contains("\"sanitized\": true"));
         let parsed = ReplayFixture::parse(&json).unwrap();
+        assert!(parsed.metadata.sanitized);
         let first = parsed.replay().unwrap();
         let second = parsed.replay().unwrap();
         assert_eq!(first.snapshot, live_snapshot);
+        let lldp = first
+            .snapshot
+            .connections
+            .iter()
+            .find(|link| link.protocol == "lldp")
+            .unwrap();
+        assert_eq!(lldp.vlan.as_deref(), Some("trunk"));
+        assert_eq!(lldp.native_vlan, Some(10));
+        assert_eq!(lldp.tagged_vlans, vec![20, 30]);
+        assert_eq!(lldp.poe.as_ref().and_then(|poe| poe.watts), Some(8.2));
+        assert_eq!(first.snapshot.edge.as_ref().unwrap().via_device_id, Some(9));
         assert_eq!(
             serde_json::to_string(&first).unwrap(),
             serde_json::to_string(&second).unwrap()

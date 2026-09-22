@@ -20,6 +20,6 @@
     "confirmedLinks": 0,
     "strongLinks": 1,
     "unresolvedPeers": 0,
-    "links": [{ "fromDeviceId": 20, "toDeviceId": 21, "fromPort": "Port 12", "protocol": "fdb", "confidence": "strong" }]
+    "links": [{ "fromDeviceId": 20, "toDeviceId": 21, "fromPort": "Port 12", "kind": "ethernet", "protocol": "fdb", "confidence": "strong", "speedMbps": 1000, "vlan": "10", "nativeVlan": 10, "taggedVlans": [] }]
   }
 }

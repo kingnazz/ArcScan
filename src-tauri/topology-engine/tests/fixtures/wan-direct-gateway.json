@@ -6,5 +6,9 @@
   "deviceViews": [{ "targetIp": "192.0.2.1", "inventoryHint": 1, "sysName": "FIREWALL" }],
   "edgeHint": { "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:BB:00:00:01" },
   "metadata": { "description": "Synthetic WAN directly to gateway", "sanitized": true, "warning": "Synthetic fixture; contains network inventory information and no credentials." },
-  "expected": { "strongLinks": 0, "wan": true, "unresolvedPeers": 0 }
+  "expected": {
+    "strongLinks": 0,
+    "wan": true,
+    "unresolvedPeers": 0
+  }
 }

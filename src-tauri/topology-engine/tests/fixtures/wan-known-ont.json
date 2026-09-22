@@ -18,7 +18,7 @@
   "expected": {
     "confirmedLinks": 1,
     "strongLinks": 0,
-    "wan": true,
+    "wan": { "present": true, "gatewayDeviceId": 1, "gatewayIp": "192.0.2.1", "gatewayMac": "00:AA:DD:00:00:01", "viaDeviceId": 9, "confidence": "strong", "uplinkProtocol": "default-route" },
     "unresolvedPeers": 0,
     "links": [{ "fromDeviceId": 1, "toDeviceId": 9, "fromPort": "WAN", "toPort": "eth0", "protocol": "lldp", "confidence": "confirmed" }]
   }

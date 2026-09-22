@@ -18,6 +18,6 @@
     "confirmedLinks": 1,
     "strongLinks": 0,
     "unresolvedPeers": 0,
-    "links": [{ "fromDeviceId": 1, "toDeviceId": 2, "fromPort": "Port 12", "toPort": "eth0", "protocol": "lldp", "confidence": "confirmed" }]
+    "links": [{ "fromDeviceId": 1, "toDeviceId": 2, "fromPort": "Port 12", "toPort": "eth0", "kind": "ethernet", "protocol": "lldp", "confidence": "confirmed", "speedMbps": 1000, "poeEnabled": true, "poeWatts": 8.2 }]
   }
 }
