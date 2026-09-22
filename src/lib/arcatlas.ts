@@ -5,6 +5,7 @@
 // Rust errors into short UI copy. It never stores or returns the connection token.
 
 import { buildInventoryExport } from "./export";
+import { normalizeConnectionVlans } from "./topology";
 import type { LogicalNode, TopologyConnection, TopologyEdge, TopologySnapshot, UnresolvedNode } from "./topology";
 import type { InventoryRow } from "../types";
 import { APP_VERSION } from "../version";
@@ -285,12 +286,19 @@ export function buildHandoffEnvelope(args: {
       idCounts.get(to) === 1 &&
       !sameExplicitPhysicalDevice
     ) {
-      const contractConnection = { ...connection, fromDeviceId: from, toDeviceId: to };
+      // Last gate before the wire: ArcAtlas rejects the whole handoff over one
+      // VLAN ID outside 1-4094, so an unusable VLAN is dropped here and the
+      // link is still handed over.
+      const contractConnection = normalizeConnectionVlans({
+        ...connection,
+        fromDeviceId: from,
+        toDeviceId: to,
+      });
       delete contractConnection.fromUnresolvedId;
       delete contractConnection.toUnresolvedId;
       connections.push(contractConnection);
     } else {
-      unresolvedConnections.push(connection);
+      unresolvedConnections.push(normalizeConnectionVlans(connection));
     }
   }
 

@@ -458,6 +458,64 @@ export function speedLabel(mbps: number | null | undefined): string | null {
   return `${mbps} Mbps`;
 }
 
+// ArcAtlas accepts Ethernet VLAN IDs in 1-4094 and rejects a whole topology
+// handoff over a single ID outside it. The Rust engine normalizes VLAN facts
+// as it collects them; these helpers are the same rule on the last gate before
+// the wire, since the schema v2 envelope is assembled here.
+//
+// Out-of-range values become unknown. They are never clamped into range: a
+// wrong VLAN is worse than an absent one.
+export const MIN_VLAN_ID = 1;
+export const MAX_VLAN_ID = 4094;
+export const TRUNK_VLAN_LABEL = "trunk";
+
+export function isValidVlanId(vlan: unknown): vlan is number {
+  return (
+    typeof vlan === "number" &&
+    Number.isInteger(vlan) &&
+    vlan >= MIN_VLAN_ID &&
+    vlan <= MAX_VLAN_ID
+  );
+}
+
+export function normalizeVlanId(vlan: number | null | undefined): number | undefined {
+  return isValidVlanId(vlan) ? vlan : undefined;
+}
+
+export function normalizeVlanIds(vlans: number[] | null | undefined): number[] {
+  return (vlans ?? []).filter(isValidVlanId);
+}
+
+export function normalizeVlanLabel(label: string | null | undefined): string | undefined {
+  if (label == null) return undefined;
+  if (label === TRUNK_VLAN_LABEL) return TRUNK_VLAN_LABEL;
+  if (!/^\d+$/.test(label)) return undefined;
+  return isValidVlanId(Number(label)) ? label : undefined;
+}
+
+// Drop the VLAN facts ArcAtlas cannot accept, one fact at a time. The
+// connection, its ports, its evidence and its valid VLANs all survive: one
+// unusable VLAN must never discard otherwise valid topology.
+export function normalizeConnectionVlans<T extends TopologyConnection>(connection: T): T {
+  const normalized: T = { ...connection };
+  const vlan = normalizeVlanLabel(connection.vlan);
+  const nativeVlan = normalizeVlanId(connection.nativeVlan);
+  if (vlan === undefined) {
+    delete (normalized as TopologyConnection).vlan;
+  } else {
+    normalized.vlan = vlan;
+  }
+  if (nativeVlan === undefined) {
+    delete (normalized as TopologyConnection).nativeVlan;
+  } else {
+    normalized.nativeVlan = nativeVlan;
+  }
+  if (connection.taggedVlans !== undefined) {
+    normalized.taggedVlans = normalizeVlanIds(connection.taggedVlans);
+  }
+  return normalized;
+}
+
 export function vlanLabel(connection: TopologyConnection): string | null {
   if (connection.vlan === "trunk") {
     const tagged = connection.taggedVlans?.length

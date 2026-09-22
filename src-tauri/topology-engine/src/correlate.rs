@@ -566,7 +566,7 @@ fn build_snapshot(
         if let Some(node) = draft.to_unresolved.clone() {
             unknown.entry(node.id.clone()).or_insert(node);
         }
-        connections.push(TopologyConnection {
+        let mut connection = TopologyConnection {
             from_device_id: draft.from_device_id,
             to_device_id: draft.to_device_id,
             from_unresolved_id: draft.from_unresolved.as_ref().map(|n| n.id.clone()),
@@ -584,7 +584,11 @@ fn build_snapshot(
             tagged_vlans: draft.tagged_vlans,
             poe: draft.poe,
             evidence: draft.evidence,
-        });
+        };
+        // Every draft, from every protocol, converges here. A VLAN outside the
+        // ArcAtlas contract becomes unknown; the link itself is still emitted.
+        connection.normalize_vlans();
+        connections.push(connection);
     }
 
     let (logical_nodes, edge) = attach_wan_edge(
@@ -1111,6 +1115,188 @@ mod tests {
             target(5, "192.168.1.50", "AA:BB:CC:00:00:50", "workstation"),
             target(6, "192.168.1.3", "00:1A:2B:00:00:03", "access-sw"),
         ]
+    }
+
+    /// The ArcScan <-> ArcAtlas compatibility failure, at the correlation
+    /// layer: a CDP neighbour reports native VLAN 0 ("no native VLAN") on a
+    /// port with no PVID of its own. The link is real and must still be
+    /// emitted; only the VLAN is unknown.
+    #[test]
+    fn a_cdp_native_vlan_of_zero_leaves_the_link_intact() {
+        let mut core = switch_view();
+        core.pvid.remove(&36);
+        core.cdp_neighbors.push(CdpNeighbor {
+            if_index: 36,
+            device_id: Some("access-sw".into()),
+            device_port: Some("GigabitEthernet0/1".into()),
+            platform: Some("Cisco IOS".into()),
+            address: Some("192.168.1.3".into()),
+            native_vlan: Some(0),
+        });
+        let snap = correlate(&[core], &site_targets(), "t");
+        let link = snap
+            .connections
+            .iter()
+            .find(|c| c.to_device_id == Some(6))
+            .expect("the link survives an unusable native VLAN");
+        assert_eq!(link.native_vlan, None);
+        assert_eq!(link.vlan, None);
+        assert!(link.tagged_vlans.is_empty());
+        // Everything that is not a VLAN is untouched.
+        assert_eq!(link.protocol, "cdp");
+        assert_eq!(link.confidence, TopologyConfidence::Confirmed);
+        assert_eq!(link.from_device_id, Some(2));
+        assert_eq!(link.from_port.as_deref(), Some("Port 36"));
+        assert_eq!(link.to_port.as_deref(), Some("GigabitEthernet0/1"));
+        assert_eq!(link.speed_mbps, Some(1000));
+        assert!(!link.evidence.is_empty());
+    }
+
+    #[test]
+    fn an_out_of_range_native_vlan_is_dropped_but_never_clamped() {
+        for bad in [0u16, 4095, u16::MAX] {
+            let mut core = switch_view();
+            core.pvid.remove(&36);
+            core.cdp_neighbors.push(CdpNeighbor {
+                if_index: 36,
+                device_id: Some("access-sw".into()),
+                device_port: Some("GigabitEthernet0/1".into()),
+                platform: None,
+                address: Some("192.168.1.3".into()),
+                native_vlan: Some(bad),
+            });
+            let snap = correlate(&[core], &site_targets(), "t");
+            let link = snap
+                .connections
+                .iter()
+                .find(|c| c.to_device_id == Some(6))
+                .unwrap_or_else(|| panic!("native VLAN {bad} must not discard the link"));
+            assert_eq!(link.native_vlan, None, "native VLAN {bad}");
+            assert_ne!(
+                link.native_vlan,
+                Some(1),
+                "native VLAN {bad} was clamped up"
+            );
+            assert_ne!(
+                link.native_vlan,
+                Some(4094),
+                "native VLAN {bad} was clamped down"
+            );
+        }
+    }
+
+    #[test]
+    fn the_contract_edges_survive_correlation() {
+        for good in [1u16, 4094] {
+            let mut core = switch_view();
+            core.pvid.remove(&36);
+            core.cdp_neighbors.push(CdpNeighbor {
+                if_index: 36,
+                device_id: Some("access-sw".into()),
+                device_port: Some("GigabitEthernet0/1".into()),
+                platform: None,
+                address: Some("192.168.1.3".into()),
+                native_vlan: Some(good),
+            });
+            let snap = correlate(&[core], &site_targets(), "t");
+            let link = snap
+                .connections
+                .iter()
+                .find(|c| c.to_device_id == Some(6))
+                .unwrap();
+            assert_eq!(link.native_vlan, Some(good));
+        }
+    }
+
+    #[test]
+    fn tagged_vlans_on_a_link_are_filtered_entry_by_entry() {
+        let mut core = switch_view();
+        core.pvid.remove(&48);
+        core.tagged
+            .insert(48, BTreeSet::from([0u16, 1, 100, 4094, 4095]));
+        core.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 48,
+            chassis_id: Some("00:20:AA:00:00:01".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("X0".into()),
+            port_desc: None,
+            sys_name: Some("sonicwall".into()),
+            sys_desc: None,
+            management_address: Some("192.168.1.1".into()),
+        });
+        let snap = correlate(&[core], &site_targets(), "t");
+        let link = snap
+            .connections
+            .iter()
+            .find(|c| c.from_port.as_deref() == Some("Port 48"))
+            .expect("the trunk survives its rejected VLANs");
+        assert_eq!(link.tagged_vlans, vec![1, 100, 4094]);
+        assert_eq!(link.vlan.as_deref(), Some("trunk"));
+    }
+
+    /// One unusable VLAN anywhere must cost exactly one VLAN fact, never a
+    /// link and never another link's VLANs.
+    #[test]
+    fn one_invalid_vlan_does_not_discard_otherwise_valid_topology() {
+        let mut core = switch_view();
+        // Port 48: a good trunk, alongside one rejected tagged VLAN.
+        core.tagged
+            .insert(48, BTreeSet::from([10u16, 20, 30, 4095]));
+        core.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 48,
+            chassis_id: Some("00:20:AA:00:00:01".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("X0".into()),
+            port_desc: None,
+            sys_name: Some("sonicwall".into()),
+            sys_desc: None,
+            management_address: Some("192.168.1.1".into()),
+        });
+        // Port 36: a CDP neighbour whose native VLAN is unusable.
+        core.pvid.remove(&36);
+        core.cdp_neighbors.push(CdpNeighbor {
+            if_index: 36,
+            device_id: Some("access-sw".into()),
+            device_port: Some("GigabitEthernet0/1".into()),
+            platform: None,
+            address: Some("192.168.1.3".into()),
+            native_vlan: Some(0),
+        });
+        // Port 20: an ordinary access-port endpoint with a valid PVID.
+        core.fdb.push(FdbEntry {
+            mac: "00:11:32:00:00:20".into(),
+            if_index: 20,
+            vlan: Some(10),
+        });
+
+        let snap = correlate(&[core], &site_targets(), "t");
+        let to: BTreeSet<Option<i64>> = snap.connections.iter().map(|c| c.to_device_id).collect();
+        assert!(to.contains(&Some(1)), "LLDP uplink survived: {to:?}");
+        assert!(to.contains(&Some(6)), "CDP link survived: {to:?}");
+        assert!(to.contains(&Some(4)), "FDB endpoint survived: {to:?}");
+
+        let trunk = snap
+            .connections
+            .iter()
+            .find(|c| c.from_port.as_deref() == Some("Port 48"))
+            .unwrap();
+        assert_eq!(trunk.tagged_vlans, vec![10, 20, 30]);
+        let access = snap
+            .connections
+            .iter()
+            .find(|c| c.from_port.as_deref() == Some("Port 20"))
+            .unwrap();
+        assert_eq!(access.native_vlan, Some(10));
+        assert_eq!(access.vlan.as_deref(), Some("10"));
+
+        for conn in &snap.connections {
+            assert!(conn.native_vlan.is_none_or(crate::vlan::is_valid_vlan_id));
+            assert!(conn
+                .tagged_vlans
+                .iter()
+                .copied()
+                .all(crate::vlan::is_valid_vlan_id));
+        }
     }
 
     #[test]

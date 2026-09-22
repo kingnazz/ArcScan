@@ -11,6 +11,7 @@ use super::ber::{Oid, SnmpValue, VarBind};
 use super::error::TopologyError;
 use super::model::PoeInfo;
 use super::snmp::SnmpSession;
+use super::vlan::{normalize_vlan_id, normalize_vlan_ids};
 
 pub const SYS_DESCR: &[u32] = &[1, 3, 6, 1, 2, 1, 1, 1, 0];
 pub const SYS_OBJECT_ID: &[u32] = &[1, 3, 6, 1, 2, 1, 1, 2, 0];
@@ -277,12 +278,21 @@ impl DeviceView {
         port
     }
 
+    /// Port VLAN facts, normalized to the ArcAtlas `1..=4094` contract.
+    ///
+    /// This is the single funnel every correlator uses, so the trunk/access
+    /// decision below is made on VLANs that are real. An unusable PVID or a
+    /// rejected tagged entry becomes unknown here; the port itself is kept.
     pub fn vlan_for_port(&self, if_index: u32) -> (Option<String>, Option<u16>, Vec<u16>) {
-        let native = self.pvid.get(&if_index).copied();
+        let native = self
+            .pvid
+            .get(&if_index)
+            .copied()
+            .and_then(normalize_vlan_id);
         let tagged: Vec<u16> = self
             .tagged
             .get(&if_index)
-            .map(|s| s.iter().copied().collect())
+            .map(|s| normalize_vlan_ids(s.iter().copied()))
             .unwrap_or_default();
         if tagged.len() > 1
             || (tagged.len() == 1 && native.is_some() && !tagged.contains(&native.unwrap()))
@@ -682,7 +692,7 @@ async fn collect_fdb_qbridge(
                 view.fdb.push(FdbEntry {
                     mac,
                     if_index,
-                    vlan: Some(vlan),
+                    vlan,
                 });
             }
         }
@@ -703,9 +713,11 @@ async fn collect_vlans(
         DOT1Q_PVID,
         |view, bind| {
             if let Some(port) = last_index(&bind.oid, DOT1Q_PVID) {
-                if let Some(vid) = bind.value.as_u64() {
+                // A PVID outside the contract range is no PVID at all. The
+                // port keeps every other fact it reported.
+                if let Some(vid) = bind.value.as_u64().and_then(normalize_vlan_id) {
                     let if_index = *bridge_to_if.get(&port).unwrap_or(&port);
-                    view.pvid.insert(if_index, vid as u16);
+                    view.pvid.insert(if_index, vid);
                 }
             }
         },
@@ -722,12 +734,12 @@ async fn collect_vlans(
     .await?;
     for bind in binds {
         if let (Some(vid), Some(bytes)) = (
-            last_index(&bind.oid, DOT1Q_VLAN_CURRENT_EGRESS),
+            last_index(&bind.oid, DOT1Q_VLAN_CURRENT_EGRESS).and_then(normalize_vlan_id),
             bind.value.as_bytes(),
         ) {
             for port in ports_from_bitstring(bytes) {
                 let if_index = *bridge_to_if.get(&port).unwrap_or(&port);
-                view.tagged.entry(if_index).or_default().insert(vid as u16);
+                view.tagged.entry(if_index).or_default().insert(vid);
             }
         }
     }
@@ -741,18 +753,15 @@ async fn collect_vlans(
     .await?;
     for bind in binds {
         if let (Some(vid), Some(bytes)) = (
-            last_index(&bind.oid, DOT1Q_VLAN_CURRENT_UNTAGGED),
+            last_index(&bind.oid, DOT1Q_VLAN_CURRENT_UNTAGGED).and_then(normalize_vlan_id),
             bind.value.as_bytes(),
         ) {
             for port in ports_from_bitstring(bytes) {
                 let if_index = *bridge_to_if.get(&port).unwrap_or(&port);
-                view.untagged
-                    .entry(if_index)
-                    .or_default()
-                    .insert(vid as u16);
-                view.pvid.entry(if_index).or_insert(vid as u16);
+                view.untagged.entry(if_index).or_default().insert(vid);
+                view.pvid.entry(if_index).or_insert(vid);
                 if let Some(set) = view.tagged.get_mut(&if_index) {
-                    set.remove(&(vid as u16));
+                    set.remove(&vid);
                 }
             }
         }
@@ -1074,8 +1083,11 @@ async fn collect_cdp(
     .await?;
     for bind in binds {
         if let Some((if_index, dev)) = two_index(&bind.oid, CDP_CACHE_NATIVE_VLAN) {
+            // CDP reports 0 for "no native VLAN", and the object is wide
+            // enough to hold a value no VLAN ever has. Either way the
+            // neighbour keeps every other fact it reported.
             neighbors.entry((if_index, dev)).or_default().native_vlan =
-                bind.value.as_u64().map(|v| v as u16);
+                bind.value.as_u64().and_then(normalize_vlan_id);
             neighbors.entry((if_index, dev)).or_default().if_index = if_index;
         }
     }
@@ -1232,10 +1244,13 @@ fn mac_from_oid_suffix(oid: &Oid, prefix: &[u32]) -> Option<String> {
     None
 }
 
-fn vlan_mac_from_oid(oid: &Oid, prefix: &[u32]) -> Option<(u16, String)> {
+/// Split a `dot1qTpFdbPort` OID into its VLAN arc and MAC. The VLAN is
+/// returned as an option because an out-of-contract arc must not discard the
+/// forwarding entry that carries it.
+fn vlan_mac_from_oid(oid: &Oid, prefix: &[u32]) -> Option<(Option<u16>, String)> {
     let suffix = oid.suffix_after(prefix)?;
     if suffix.len() >= 7 {
-        let vlan = suffix[0] as u16;
+        let vlan = normalize_vlan_id(suffix[0]);
         let mac = &suffix[suffix.len() - 6..];
         let formatted = format!(
             "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -1352,6 +1367,256 @@ mod tests {
     use crate::error::TopologyError;
     use std::collections::BTreeMap;
     use std::net::Ipv4Addr;
+
+    /// One SNMP table with a CDP neighbour on port 12 whose native VLAN is
+    /// whatever the caller passes. Everything else about the neighbour is
+    /// valid, so a dropped VLAN is visible as a dropped VLAN and not as a
+    /// dropped neighbour.
+    fn cdp_native_vlan_table(native: SnmpValue) -> BTreeMap<String, SnmpValue> {
+        let mut t = BTreeMap::new();
+        t.insert(
+            Oid::from_slice(SYS_NAME).to_dotted(),
+            SnmpValue::OctetString(b"core-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.12", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"Gi1/0/12".to_vec()),
+        );
+        t.insert(
+            format!("{}.12.1", Oid::from_slice(CDP_CACHE_DEVICE_ID)),
+            SnmpValue::OctetString(b"access-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.12.1", Oid::from_slice(CDP_CACHE_DEVICE_PORT)),
+            SnmpValue::OctetString(b"Gi1/0/24".to_vec()),
+        );
+        t.insert(
+            format!("{}.12.1", Oid::from_slice(CDP_CACHE_NATIVE_VLAN)),
+            native,
+        );
+        t
+    }
+
+    async fn collected_cdp_native_vlan(native: SnmpValue) -> (Option<u16>, usize) {
+        let view = collect_device(
+            &crate::snmp::FixtureSession::new(cdp_native_vlan_table(native)),
+            Ipv4Addr::new(192, 168, 1, 2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        let neighbor = view.cdp_neighbors.first().expect("cdp neighbour");
+        assert_eq!(neighbor.device_id.as_deref(), Some("access-sw"));
+        assert_eq!(neighbor.device_port.as_deref(), Some("Gi1/0/24"));
+        (neighbor.native_vlan, view.cdp_neighbors.len())
+    }
+
+    #[tokio::test]
+    async fn cdp_native_vlan_zero_is_unknown_and_keeps_the_neighbour() {
+        // CDP reports 0 for "this port has no native VLAN". ArcAtlas rejects
+        // 0, so the fact is dropped -- the neighbour is not.
+        let (native, count) = collected_cdp_native_vlan(SnmpValue::Integer(0)).await;
+        assert_eq!(native, None);
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn cdp_native_vlan_one_is_preserved() {
+        assert_eq!(
+            collected_cdp_native_vlan(SnmpValue::Integer(1)).await.0,
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn cdp_native_vlan_4094_is_preserved() {
+        assert_eq!(
+            collected_cdp_native_vlan(SnmpValue::Integer(4094)).await.0,
+            Some(4094)
+        );
+    }
+
+    #[tokio::test]
+    async fn cdp_native_vlan_4095_is_unknown_and_is_not_clamped() {
+        let (native, count) = collected_cdp_native_vlan(SnmpValue::Integer(4095)).await;
+        assert_eq!(native, None);
+        assert_ne!(native, Some(4094), "4095 must not be clamped into range");
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_wide_cdp_native_vlan_is_unknown_rather_than_truncated() {
+        // 65546 truncates to VLAN 10 under `as u16`, and 4_294_971_390 to
+        // VLAN 4094. Both must read as unknown instead.
+        assert_eq!(65_546u64 as u16, 10);
+        let (native, count) = collected_cdp_native_vlan(SnmpValue::Gauge32(65_546)).await;
+        assert_eq!(native, None);
+        assert_eq!(count, 1);
+
+        assert_eq!(4_294_971_390u64 as u16, 4094);
+        let (native, _) = collected_cdp_native_vlan(SnmpValue::Counter64(4_294_971_390)).await;
+        assert_eq!(native, None);
+    }
+
+    /// One SNMP table with a PVID on port 12 and a port label, so a rejected
+    /// PVID leaves an otherwise intact port behind.
+    async fn collected_pvid(pvid: SnmpValue) -> DeviceView {
+        let mut t = BTreeMap::new();
+        t.insert(
+            Oid::from_slice(SYS_NAME).to_dotted(),
+            SnmpValue::OctetString(b"core-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.12", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"Gi1/0/12".to_vec()),
+        );
+        t.insert(format!("{}.12", Oid::from_slice(DOT1Q_PVID)), pvid);
+        collect_device(
+            &crate::snmp::FixtureSession::new(t),
+            Ipv4Addr::new(192, 168, 1, 2),
+            Some(2),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pvid_zero_is_unknown_and_the_port_survives() {
+        let view = collected_pvid(SnmpValue::Integer(0)).await;
+        assert_eq!(view.pvid.get(&12), None);
+        assert_eq!(view.vlan_for_port(12), (None, None, Vec::new()));
+        assert_eq!(view.port_name(12), "Gi1/0/12");
+    }
+
+    #[tokio::test]
+    async fn pvid_above_the_range_is_unknown() {
+        let view = collected_pvid(SnmpValue::Integer(4095)).await;
+        assert_eq!(view.pvid.get(&12), None);
+        let (label, native, _) = view.vlan_for_port(12);
+        assert_eq!(label, None);
+        assert_eq!(native, None);
+    }
+
+    #[tokio::test]
+    async fn a_wide_pvid_is_unknown_rather_than_truncated() {
+        let view = collected_pvid(SnmpValue::Gauge32(65_546)).await;
+        assert_eq!(view.pvid.get(&12), None, "65546 must not become VLAN 10");
+    }
+
+    #[tokio::test]
+    async fn pvid_keeps_the_contract_edges() {
+        assert_eq!(
+            collected_pvid(SnmpValue::Integer(1)).await.pvid.get(&12),
+            Some(&1)
+        );
+        assert_eq!(
+            collected_pvid(SnmpValue::Integer(4094)).await.pvid.get(&12),
+            Some(&4094)
+        );
+    }
+
+    #[tokio::test]
+    async fn tagged_vlans_are_filtered_one_entry_at_a_time() {
+        let mut t = BTreeMap::new();
+        t.insert(
+            Oid::from_slice(SYS_NAME).to_dotted(),
+            SnmpValue::OctetString(b"core-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.12", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"Gi1/0/12".to_vec()),
+        );
+        // Every VLAN below has port 12 in its egress set (octet 1, bit 3 from
+        // the MSB). 65546 is there too: under `as u16` it would become VLAN 10.
+        for vid in [0u32, 1, 100, 4094, 4095, 65_546] {
+            t.insert(
+                format!("{}.{vid}", Oid::from_slice(DOT1Q_VLAN_CURRENT_EGRESS)),
+                SnmpValue::OctetString(vec![0x00, 0x10]),
+            );
+        }
+        let view = collect_device(
+            &crate::snmp::FixtureSession::new(t),
+            Ipv4Addr::new(192, 168, 1, 2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        let tagged: Vec<u16> = view.tagged[&12].iter().copied().collect();
+        assert_eq!(tagged, vec![1, 100, 4094]);
+        let (label, native, tagged) = view.vlan_for_port(12);
+        assert_eq!(label.as_deref(), Some("trunk"));
+        assert_eq!(native, None);
+        assert_eq!(tagged, vec![1, 100, 4094]);
+    }
+
+    #[tokio::test]
+    async fn an_untagged_vlan_outside_the_range_sets_no_pvid() {
+        let mut t = BTreeMap::new();
+        t.insert(
+            Oid::from_slice(SYS_NAME).to_dotted(),
+            SnmpValue::OctetString(b"core-sw".to_vec()),
+        );
+        t.insert(
+            format!("{}.12", Oid::from_slice(IF_NAME)),
+            SnmpValue::OctetString(b"Gi1/0/12".to_vec()),
+        );
+        t.insert(
+            format!("{}.4095", Oid::from_slice(DOT1Q_VLAN_CURRENT_UNTAGGED)),
+            SnmpValue::OctetString(vec![0x00, 0x10]),
+        );
+        let view = collect_device(
+            &crate::snmp::FixtureSession::new(t),
+            Ipv4Addr::new(192, 168, 1, 2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.pvid.get(&12), None);
+        assert!(view.untagged.get(&12).is_none_or(|s| s.is_empty()));
+    }
+
+    #[test]
+    fn an_out_of_range_fdb_vlan_arc_keeps_the_learned_mac() {
+        let prefix = DOT1Q_TP_FDB_PORT;
+        let valid = Oid::from_slice(&[prefix, &[100, 0x00, 0x1A, 0x2B, 0x00, 0x00, 0x02]].concat());
+        assert_eq!(
+            vlan_mac_from_oid(&valid, prefix),
+            Some((Some(100), "00:1A:2B:00:00:02".into()))
+        );
+
+        // VLAN 0 and 65546 (which truncates to VLAN 10) leave the MAC intact
+        // and the VLAN unknown, so the forwarding entry is never discarded
+        // over the VLAN arc that indexes it.
+        for arc in [0u32, 4095, 65_546] {
+            let oid =
+                Oid::from_slice(&[prefix, &[arc, 0x00, 0x1A, 0x2B, 0x00, 0x00, 0x02]].concat());
+            assert_eq!(
+                vlan_mac_from_oid(&oid, prefix),
+                Some((None, "00:1A:2B:00:00:02".into())),
+                "arc {arc} must drop only the VLAN"
+            );
+        }
+    }
+
+    #[test]
+    fn vlan_for_port_rejects_facts_a_caller_inserted_directly() {
+        // Defence in depth: a view assembled outside `collect_device` still
+        // cannot hand an out-of-contract VLAN to the correlator.
+        let mut view = DeviceView::new(Ipv4Addr::new(192, 168, 1, 2), Some(2));
+        view.pvid.insert(12, 0);
+        view.tagged
+            .insert(12, BTreeSet::from([0u16, 1, 100, 4094, 4095]));
+        let (label, native, tagged) = view.vlan_for_port(12);
+        assert_eq!(label.as_deref(), Some("trunk"));
+        assert_eq!(native, None);
+        assert_eq!(tagged, vec![1, 100, 4094]);
+
+        let mut only_bad = DeviceView::new(Ipv4Addr::new(192, 168, 1, 3), Some(3));
+        only_bad.pvid.insert(1, 4095);
+        only_bad.tagged.insert(1, BTreeSet::from([0u16]));
+        assert_eq!(only_bad.vlan_for_port(1), (None, None, Vec::new()));
+        assert!(only_bad.is_access_port(1));
+    }
 
     #[test]
     fn bitstring_ports() {

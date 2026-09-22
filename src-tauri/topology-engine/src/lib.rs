@@ -16,6 +16,7 @@ pub mod model;
 pub mod providers;
 pub mod serialize;
 pub mod snmp;
+pub mod vlan;
 
 pub use credentials::{CredentialInput, CredentialStatus, CredentialStore, SnmpSecret};
 pub use display::INTERNET_NODE_ID;
@@ -28,7 +29,11 @@ pub use model::{
 };
 pub use serialize::{
     assert_arc_atlas13_contract, handoff_preview_to_json, issue42_fixture, preview_from_snapshot,
-    snapshot_to_json, split_for_contract, SCHEMA_VERSION,
+    snapshot_to_json, split_for_contract, vlan_contract_fixture, SCHEMA_VERSION,
+};
+pub use vlan::{
+    is_valid_vlan_id, normalize_vlan_id, normalize_vlan_ids, normalize_vlan_label, MAX_VLAN_ID,
+    MIN_VLAN_ID,
 };
 
 pub fn isolated_from_classifier() -> bool {
@@ -40,10 +45,10 @@ mod tests {
     use super::*;
     use crate::ber::{Oid, SnmpValue};
     use crate::collect::{
-        collect_device, CDP_CACHE_DEVICE_ID, CDP_CACHE_DEVICE_PORT, DOT1D_TP_FDB_PORT, IF_ALIAS,
-        IF_DESCR, IF_HIGH_SPEED, IF_NAME, IF_OPER_STATUS, IF_PHYS_ADDRESS, LLDP_LOC_CHASSIS_ID,
-        LLDP_REM_CHASSIS_ID, LLDP_REM_PORT_ID, LLDP_REM_SYS_NAME, PETH_PSE_DETECTION, SYS_DESCR,
-        SYS_NAME,
+        collect_device, CDP_CACHE_ADDRESS, CDP_CACHE_DEVICE_ID, CDP_CACHE_DEVICE_PORT,
+        CDP_CACHE_NATIVE_VLAN, DOT1D_TP_FDB_PORT, IF_ALIAS, IF_DESCR, IF_HIGH_SPEED, IF_NAME,
+        IF_OPER_STATUS, IF_PHYS_ADDRESS, LLDP_LOC_CHASSIS_ID, LLDP_REM_CHASSIS_ID,
+        LLDP_REM_PORT_ID, LLDP_REM_SYS_NAME, PETH_PSE_DETECTION, SYS_DESCR, SYS_NAME,
     };
     use crate::correlate::correlate;
     use crate::snmp::FixtureSession;
@@ -229,6 +234,110 @@ mod tests {
             .filter(|c| c.from_port.as_deref() == Some("Port 24"))
             .count();
         assert_eq!(fake, 0);
+    }
+
+    /// The ArcScan <-> ArcAtlas compatibility blocker, start to finish: a real
+    /// SNMP answer of `cdpCacheNativeVLAN = 0` walked, correlated and
+    /// serialized. Before VLAN normalization, that single 0 reached
+    /// `topology.connections[].nativeVlan` and ArcAtlas rejected the whole
+    /// handoff -- every other link in the payload with it.
+    #[tokio::test]
+    async fn a_cdp_native_vlan_of_zero_still_produces_a_usable_handoff() {
+        let mut table = core_switch_table();
+        // Port 36 has a CDP neighbour that reports "no native VLAN".
+        table.insert(
+            format!("{}.36", Oid::from_slice(IF_DESCR)),
+            octet("Port 36"),
+        );
+        table.insert(format!("{}.36", Oid::from_slice(IF_NAME)), octet("Port 36"));
+        table.insert(format!("{}.36", Oid::from_slice(IF_OPER_STATUS)), int(1));
+        table.insert(
+            format!("{}.36", Oid::from_slice(IF_HIGH_SPEED)),
+            gauge(1000),
+        );
+        table.insert(
+            format!("{}.36.1", Oid::from_slice(CDP_CACHE_DEVICE_ID)),
+            octet("synology"),
+        );
+        table.insert(
+            format!("{}.36.1", Oid::from_slice(CDP_CACHE_DEVICE_PORT)),
+            octet("eth0"),
+        );
+        table.insert(
+            format!("{}.36.1", Oid::from_slice(CDP_CACHE_ADDRESS)),
+            SnmpValue::IpAddress(std::net::Ipv4Addr::new(192, 168, 1, 20)),
+        );
+        table.insert(
+            format!("{}.36.1", Oid::from_slice(CDP_CACHE_NATIVE_VLAN)),
+            int(0),
+        );
+
+        let view = collect_device(
+            &FixtureSession::new(table),
+            Ipv4Addr::new(192, 168, 1, 2),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        let neighbor = view
+            .cdp_neighbors
+            .iter()
+            .find(|n| n.device_id.as_deref() == Some("synology"))
+            .expect("the CDP neighbour survives its unusable native VLAN");
+        assert_eq!(neighbor.native_vlan, None);
+
+        let snapshot = correlate(&[view], &site_targets(), "2026-09-22T12:00:00Z");
+        let cdp_link = snapshot
+            .connections
+            .iter()
+            .find(|c| c.protocol == "cdp")
+            .expect("ArcScan still emits the valid link");
+        assert_eq!(cdp_link.to_device_id, Some(4));
+        assert_eq!(cdp_link.from_port.as_deref(), Some("Port 36"));
+        assert_eq!(cdp_link.to_port.as_deref(), Some("eth0"));
+        assert_eq!(cdp_link.native_vlan, None, "nativeVlan is unknown, not 0");
+        assert_eq!(cdp_link.vlan, None);
+        // The LLDP links in the same snapshot are untouched by the bad VLAN.
+        assert!(snapshot
+            .connections
+            .iter()
+            .any(|c| c.to_device_id == Some(1)));
+        assert!(snapshot
+            .connections
+            .iter()
+            .any(|c| c.to_device_id == Some(3)));
+
+        let inventory: Vec<serde_json::Value> = site_targets()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "device_id": t.device_id,
+                    "device_name": t.detected_name,
+                    "current_ip": t.ip,
+                    "mac": t.mac,
+                })
+            })
+            .collect();
+        let preview = preview_from_snapshot(
+            &snapshot,
+            inventory,
+            "handoff-native-vlan-zero",
+            "Site LAN",
+            "2026-09-22T12:00:05Z",
+        );
+        let json = handoff_preview_to_json(&preview).unwrap();
+        // The handoff remains usable by ArcAtlas: it passes the contract, and
+        // the link is in it.
+        assert_arc_atlas13_contract(&json).unwrap();
+        let handed_over = preview
+            .topology
+            .connections
+            .iter()
+            .find(|c| c.protocol == "cdp")
+            .expect("the link reaches ArcAtlas");
+        assert_eq!(handed_over.to_device_id, 4);
+        assert_eq!(handed_over.native_vlan, None);
+        assert!(!json.contains("\"nativeVlan\": 0"));
     }
 
     #[test]
