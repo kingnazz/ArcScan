@@ -13,6 +13,7 @@ use super::model::{
     ContractConnection, ContractTopology, PoeInfo, TopologyConfidence, TopologyConnection,
     TopologyHandoffPreview, TopologySnapshot, UnresolvedTopology,
 };
+use super::vlan::{is_valid_vlan_id, normalize_vlan_ids, normalize_vlan_label, TRUNK_LABEL};
 
 pub const SCHEMA_VERSION: u32 = 2;
 
@@ -40,7 +41,7 @@ pub fn split_for_contract(
         if let Some(link) = contract_connection(conn, &counts) {
             contract_links.push(link);
         } else {
-            unresolved_links.push(conn.clone());
+            unresolved_links.push(conn.with_normalized_vlans());
         }
     }
     let unresolved = if snapshot.unknown_nodes.is_empty() && unresolved_links.is_empty() {
@@ -114,9 +115,12 @@ fn contract_connection(
         protocol: conn.protocol.clone(),
         confidence: conn.confidence,
         speed_mbps: conn.speed_mbps,
-        vlan: conn.vlan.clone(),
-        native_vlan: conn.native_vlan,
-        tagged_vlans: conn.tagged_vlans.clone(),
+        // Last gate before the wire. ArcAtlas rejects the whole handoff over
+        // one VLAN outside 1..=4094, so an unusable VLAN is dropped here and
+        // the link is still handed over.
+        vlan: normalize_vlan_label(conn.vlan.as_deref()),
+        native_vlan: conn.native_vlan.filter(|v| is_valid_vlan_id(*v)),
+        tagged_vlans: normalize_vlan_ids(conn.tagged_vlans.iter().copied()),
         poe: conn.poe.clone(),
         evidence: conn.evidence.clone(),
     })
@@ -226,6 +230,7 @@ pub fn assert_arc_atlas13_contract(json: &str) -> Result<(), String> {
                 "toDeviceId {to} does not exist exactly once in inventory"
             ));
         }
+        assert_contract_vlans(conn)?;
     }
     for row in inventory {
         if row.get("id").and_then(|v| v.as_str()) == Some(crate::display::INTERNET_NODE_ID)
@@ -235,6 +240,104 @@ pub fn assert_arc_atlas13_contract(json: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// ArcAtlas accepts VLAN IDs in `1..=4094` only, and rejects the entire
+/// handoff when one connection carries anything else. Checked on the
+/// serialized form, because that is what ArcAtlas actually parses.
+fn assert_contract_vlans(conn: &serde_json::Value) -> Result<(), String> {
+    if let Some(value) = conn.get("nativeVlan").filter(|v| !v.is_null()) {
+        let vlan = value
+            .as_u64()
+            .ok_or_else(|| format!("nativeVlan {value} is not a VLAN id"))?;
+        if u16::try_from(vlan).map(is_valid_vlan_id) != Ok(true) {
+            return Err(format!("nativeVlan {vlan} is outside the 1-4094 contract"));
+        }
+    }
+    if let Some(value) = conn.get("taggedVlans").filter(|v| !v.is_null()) {
+        let tagged = value
+            .as_array()
+            .ok_or_else(|| "taggedVlans must be an array".to_string())?;
+        for entry in tagged {
+            let vlan = entry
+                .as_u64()
+                .ok_or_else(|| format!("taggedVlans entry {entry} is not a VLAN id"))?;
+            if u16::try_from(vlan).map(is_valid_vlan_id) != Ok(true) {
+                return Err(format!(
+                    "taggedVlans entry {vlan} is outside the 1-4094 contract"
+                ));
+            }
+        }
+    }
+    if let Some(value) = conn.get("vlan").filter(|v| !v.is_null()) {
+        let label = value
+            .as_str()
+            .ok_or_else(|| format!("vlan {value} is not a label"))?;
+        if label != TRUNK_LABEL && normalize_vlan_label(Some(label)).is_none() {
+            return Err(format!("vlan {label:?} is outside the 1-4094 contract"));
+        }
+    }
+    Ok(())
+}
+
+/// A handoff whose VLAN facts sit exactly on the contract edges: no native
+/// VLAN at all, and tagged VLANs including both `1` and `4094`. Keeps the
+/// boundary of what ArcAtlas accepts pinned to something ArcScan can serialize.
+pub fn vlan_contract_fixture() -> TopologyHandoffPreview {
+    let inventory = vec![
+        serde_json::json!({
+            "device_id": 1,
+            "device_name": "Core Switch",
+            "current_ip": "192.168.1.2",
+            "mac": "00:20:AA:00:00:02",
+            "hostname": "core-sw",
+            "presence": "present"
+        }),
+        serde_json::json!({
+            "device_id": 2,
+            "device_name": "Access Switch",
+            "current_ip": "192.168.1.3",
+            "mac": "00:20:AA:00:00:03",
+            "hostname": "access-sw",
+            "presence": "present"
+        }),
+    ];
+    let snapshot = TopologySnapshot {
+        captured_at: "2026-09-22T12:00:00Z".into(),
+        connections: vec![TopologyConnection {
+            from_device_id: Some(1),
+            to_device_id: Some(2),
+            from_unresolved_id: None,
+            to_unresolved_id: None,
+            from_logical_id: None,
+            to_logical_id: None,
+            from_port: Some("Gi1/0/1".into()),
+            to_port: Some("Gi1/0/24".into()),
+            kind: "ethernet".into(),
+            protocol: "lldp".into(),
+            confidence: TopologyConfidence::Confirmed,
+            speed_mbps: Some(1000),
+            vlan: Some(TRUNK_LABEL.into()),
+            // No native VLAN: the trunk reported none, which is a fact ArcScan
+            // records as unknown rather than inventing one.
+            native_vlan: None,
+            tagged_vlans: vec![1, 100, 4094],
+            poe: None,
+            evidence: vec![
+                "LLDP neighbour on Gi1/0/1: chassis 00:20:AA:00:00:03, remote port Gi1/0/24".into(),
+            ],
+        }],
+        unknown_nodes: Vec::new(),
+        logical_nodes: Vec::new(),
+        edge: None,
+    };
+    preview_from_snapshot(
+        &snapshot,
+        inventory,
+        "vlan-contract-fixture",
+        "ArcScan VLAN contract",
+        "2026-09-22T12:00:05Z",
+    )
 }
 
 #[cfg(test)]
@@ -274,6 +377,201 @@ mod tests {
         assert!(!dumped.contains("public"));
         assert!(!dumped.contains("private"));
         assert_arc_atlas13_contract(&json).unwrap();
+    }
+
+    /// A link carrying every kind of unusable VLAN fact, so the serializer is
+    /// tested on the shape it actually has to defend against.
+    fn link_with_vlans(
+        vlan: Option<&str>,
+        native_vlan: Option<u16>,
+        tagged_vlans: Vec<u16>,
+    ) -> TopologyConnection {
+        TopologyConnection {
+            from_device_id: Some(2),
+            to_device_id: Some(1),
+            from_unresolved_id: None,
+            to_unresolved_id: None,
+            from_logical_id: None,
+            to_logical_id: None,
+            from_port: Some("Gi1/0/48".into()),
+            to_port: Some("X0".into()),
+            kind: "ethernet".into(),
+            protocol: "cdp".into(),
+            confidence: TopologyConfidence::Confirmed,
+            speed_mbps: Some(1000),
+            vlan: vlan.map(str::to_string),
+            native_vlan,
+            tagged_vlans,
+            poe: None,
+            evidence: vec!["CDP neighbour on Gi1/0/48".into()],
+        }
+    }
+
+    fn preview_with(connections: Vec<TopologyConnection>) -> TopologyHandoffPreview {
+        let snapshot = TopologySnapshot {
+            captured_at: "2026-09-22T12:00:00Z".into(),
+            connections,
+            unknown_nodes: vec![],
+            logical_nodes: vec![],
+            edge: None,
+        };
+        preview_from_snapshot(
+            &snapshot,
+            vec![
+                serde_json::json!({"device_id": 1, "device_name": "Firewall"}),
+                serde_json::json!({"device_id": 2, "device_name": "Core Switch"}),
+            ],
+            "handoff-vlan",
+            "Site LAN",
+            "2026-09-22T12:00:05Z",
+        )
+    }
+
+    /// The compatibility failure the audit found, end to end on the wire: a
+    /// CDP neighbour reported native VLAN 0, and that one fact used to make
+    /// ArcAtlas reject the whole handoff.
+    #[test]
+    fn a_native_vlan_of_zero_is_absent_and_the_link_is_still_handed_over() {
+        let preview = preview_with(vec![link_with_vlans(Some("0"), Some(0), vec![])]);
+        assert_eq!(preview.topology.connections.len(), 1);
+        let link = &preview.topology.connections[0];
+        assert_eq!(link.native_vlan, None);
+        assert_eq!(link.vlan, None);
+        assert_eq!(link.from_device_id, 2);
+        assert_eq!(link.to_device_id, 1);
+        assert_eq!(link.from_port.as_deref(), Some("Gi1/0/48"));
+        assert_eq!(link.confidence, TopologyConfidence::Confirmed);
+
+        let json = handoff_preview_to_json(&preview).unwrap();
+        assert_arc_atlas13_contract(&json).unwrap();
+        // Absent, not null and not 0: `nativeVlan` is skipped when unknown.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let conn = &value["topology"]["connections"][0];
+        assert!(conn.get("nativeVlan").is_none(), "{conn}");
+        assert!(conn.get("vlan").is_none(), "{conn}");
+        assert!(!json.contains("\"nativeVlan\": 0"));
+    }
+
+    #[test]
+    fn the_contract_edges_reach_the_wire_unchanged() {
+        let preview = preview_with(vec![link_with_vlans(
+            Some("trunk"),
+            Some(1),
+            vec![1, 100, 4094],
+        )]);
+        let link = &preview.topology.connections[0];
+        assert_eq!(link.native_vlan, Some(1));
+        assert_eq!(link.tagged_vlans, vec![1, 100, 4094]);
+        let json = handoff_preview_to_json(&preview).unwrap();
+        assert_arc_atlas13_contract(&json).unwrap();
+
+        let preview = preview_with(vec![link_with_vlans(Some("4094"), Some(4094), vec![])]);
+        let link = &preview.topology.connections[0];
+        assert_eq!(link.native_vlan, Some(4094));
+        assert_eq!(link.vlan.as_deref(), Some("4094"));
+        assert_arc_atlas13_contract(&handoff_preview_to_json(&preview).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_serialized_handoff_carries_no_vlan_outside_the_contract() {
+        let preview = preview_with(vec![
+            link_with_vlans(Some("0"), Some(0), vec![0, 1, 100, 4094, 4095]),
+            link_with_vlans(Some("4095"), Some(4095), vec![4095]),
+            link_with_vlans(Some("65546"), Some(u16::MAX), vec![u16::MAX, 20]),
+            link_with_vlans(Some("trunk"), Some(1), vec![1, 4094]),
+        ]);
+        let json = handoff_preview_to_json(&preview).unwrap();
+        assert_arc_atlas13_contract(&json).unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let connections = value["topology"]["connections"].as_array().unwrap();
+        assert_eq!(connections.len(), 4, "no link was discarded over a VLAN");
+        for conn in connections {
+            if let Some(native) = conn.get("nativeVlan") {
+                let native = native.as_u64().unwrap();
+                assert!((1..=4094).contains(&native), "nativeVlan {native}");
+            }
+            for tagged in conn
+                .get("taggedVlans")
+                .and_then(|v| v.as_array())
+                .unwrap_or(&Vec::new())
+            {
+                let tagged = tagged.as_u64().unwrap();
+                assert!((1..=4094).contains(&tagged), "taggedVlans {tagged}");
+            }
+            if let Some(label) = conn.get("vlan").and_then(|v| v.as_str()) {
+                if label != "trunk" {
+                    let parsed: u64 = label.parse().unwrap();
+                    assert!((1..=4094).contains(&parsed), "vlan {label}");
+                }
+            }
+        }
+        assert_eq!(
+            connections[0]["taggedVlans"],
+            serde_json::json!([1, 100, 4094])
+        );
+        assert_eq!(connections[2]["taggedVlans"], serde_json::json!([20]));
+    }
+
+    #[test]
+    fn unresolved_links_are_normalized_too() {
+        // `unresolvedTopology` rides the same envelope, so it gets the same
+        // treatment even though ArcAtlas ignores it today.
+        let mut orphan = link_with_vlans(Some("0"), Some(0), vec![0, 30, 4095]);
+        orphan.to_device_id = None;
+        orphan.to_unresolved_id = Some("unknown:chassis:deadbeef0001".into());
+        let preview = preview_with(vec![orphan]);
+        assert!(preview.topology.connections.is_empty());
+        let unresolved = preview.unresolved_topology.as_ref().expect("kept");
+        assert_eq!(unresolved.connections.len(), 1);
+        assert_eq!(unresolved.connections[0].native_vlan, None);
+        assert_eq!(unresolved.connections[0].vlan, None);
+        assert_eq!(unresolved.connections[0].tagged_vlans, vec![30]);
+        assert_eq!(
+            unresolved.connections[0].to_unresolved_id.as_deref(),
+            Some("unknown:chassis:deadbeef0001")
+        );
+    }
+
+    #[test]
+    fn the_contract_assertion_rejects_an_out_of_range_vlan() {
+        // The assertion is the gate the serializer is measured against, so it
+        // has to fail on a payload the serializer could never produce.
+        let preview = preview_with(vec![link_with_vlans(Some("trunk"), Some(10), vec![10])]);
+        let mut value: serde_json::Value =
+            serde_json::from_str(&handoff_preview_to_json(&preview).unwrap()).unwrap();
+        value["topology"]["connections"][0]["nativeVlan"] = serde_json::json!(0);
+        let err = assert_arc_atlas13_contract(&value.to_string()).unwrap_err();
+        assert!(err.contains("nativeVlan"), "{err}");
+
+        value["topology"]["connections"][0]["nativeVlan"] = serde_json::json!(10);
+        value["topology"]["connections"][0]["taggedVlans"] = serde_json::json!([10, 4095]);
+        let err = assert_arc_atlas13_contract(&value.to_string()).unwrap_err();
+        assert!(err.contains("taggedVlans"), "{err}");
+
+        value["topology"]["connections"][0]["taggedVlans"] = serde_json::json!([10]);
+        value["topology"]["connections"][0]["vlan"] = serde_json::json!("4095");
+        let err = assert_arc_atlas13_contract(&value.to_string()).unwrap_err();
+        assert!(err.contains("vlan"), "{err}");
+    }
+
+    #[test]
+    fn the_vlan_contract_fixture_sits_on_the_contract_edges() {
+        let fixture = vlan_contract_fixture();
+        assert_eq!(fixture.schema_version, SCHEMA_VERSION);
+        assert_eq!(fixture.topology.connections.len(), 1);
+        let link = &fixture.topology.connections[0];
+        assert_eq!(link.native_vlan, None, "native VLAN is unset, not invented");
+        assert_eq!(link.vlan.as_deref(), Some("trunk"));
+        assert_eq!(link.tagged_vlans, vec![1, 100, 4094]);
+        assert!(link.tagged_vlans.contains(&1));
+        assert!(link.tagged_vlans.contains(&4094));
+
+        let json = handoff_preview_to_json(&fixture).unwrap();
+        assert_arc_atlas13_contract(&json).unwrap();
+        assert!(!json.contains("nativeVlan"), "unset stays absent");
+        let parsed: TopologyHandoffPreview = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, fixture);
     }
 
     #[test]

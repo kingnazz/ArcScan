@@ -13,6 +13,8 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
+use crate::vlan::{normalize_vlan_id, normalize_vlan_ids, normalize_vlan_label};
+
 /// How sure ArcScan is about a physical or logical link.
 ///
 /// These three words are the issue #42 vocabulary. They are not scores and
@@ -222,6 +224,29 @@ pub struct TopologyConnection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poe: Option<PoeInfo>,
     pub evidence: Vec<String>,
+}
+
+impl TopologyConnection {
+    /// Drop VLAN facts ArcAtlas cannot accept, one fact at a time.
+    ///
+    /// ArcAtlas rejects a whole handoff over a single VLAN ID outside
+    /// `1..=4094`, so a link that carries one -- a CDP neighbour reporting
+    /// native VLAN 0, say -- would take the rest of the topology down with it.
+    /// The link, its ports, its evidence and its valid VLANs all survive; only
+    /// the unusable VLAN becomes unknown.
+    pub fn normalize_vlans(&mut self) {
+        self.vlan = normalize_vlan_label(self.vlan.as_deref());
+        self.native_vlan = self.native_vlan.and_then(normalize_vlan_id);
+        self.tagged_vlans = normalize_vlan_ids(std::mem::take(&mut self.tagged_vlans));
+    }
+
+    /// [`Self::normalize_vlans`] on a copy, for the serializers that must not
+    /// mutate the caller's snapshot.
+    pub fn with_normalized_vlans(&self) -> Self {
+        let mut copy = self.clone();
+        copy.normalize_vlans();
+        copy
+    }
 }
 
 /// Standalone topology payload used by the ArcScan UI. This is *not* the
