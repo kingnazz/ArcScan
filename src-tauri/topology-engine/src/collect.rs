@@ -131,6 +131,34 @@ pub struct ArpEntry {
     pub if_index: Option<u32>,
 }
 
+/// Outcome of one SNMP walk. Partial is an aggregate, not a single walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeState {
+    Available,
+    NoRows,
+    TimedOut,
+    WalkFailed,
+    NotQueried,
+}
+
+/// One table walk recorded while collecting a device. Counts only — the rows
+/// themselves stay on [`DeviceView`] and are not copied here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableProbe {
+    pub mib: &'static str,
+    pub table: &'static str,
+    pub state: ProbeState,
+    pub rows: usize,
+}
+
+/// IF-MIB octets that were rejected as a port label. Structured so diagnostics
+/// do not have to parse the human-readable note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedLabel {
+    pub field: String,
+    pub if_index: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EntityInfo {
     pub manufacturer: Option<String>,
@@ -164,6 +192,10 @@ pub struct DeviceView {
     pub notes: Vec<String>,
     /// Bridge port number → ifIndex, from BRIDGE-MIB.
     pub bridge_port_if: BTreeMap<u32, u32>,
+    /// Per-table walk outcomes from this collect. Empty when a view was built
+    /// in a unit test without SNMP.
+    pub probes: Vec<TableProbe>,
+    pub rejected_labels: Vec<RejectedLabel>,
 }
 
 impl DeviceView {
@@ -190,6 +222,8 @@ impl DeviceView {
             mibs_present: Vec::new(),
             notes: Vec::new(),
             bridge_port_if: BTreeMap::new(),
+            probes: Vec::new(),
+            rejected_labels: Vec::new(),
         }
     }
 
@@ -310,80 +344,151 @@ pub async fn collect_device(
         Err(err) => return Err(err),
     }
 
-    walk_ok(session, IF_DESCR, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_DESCR) {
-            assign_iface_label(view, "ifDescr", idx, &bind.value, |iface| &mut iface.descr);
-        }
-    })
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifDescr",
+        IF_DESCR,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_DESCR) {
+                assign_iface_label(view, "ifDescr", idx, &bind.value, |iface| &mut iface.descr);
+            }
+        },
+    )
     .await?;
     if !view.interfaces.is_empty() {
         view.mibs_present.push("IF-MIB".into());
     }
-    walk_ok(session, IF_NAME, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_NAME) {
-            assign_iface_label(view, "ifName", idx, &bind.value, |iface| &mut iface.name);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_ALIAS, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_ALIAS) {
-            assign_iface_label(view, "ifAlias", idx, &bind.value, |iface| &mut iface.alias);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_TYPE, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_TYPE) {
-            view.interfaces.entry(idx).or_default().if_type = bind.value.as_u64().map(|v| v as u32);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_PHYS_ADDRESS, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_PHYS_ADDRESS) {
-            view.interfaces.entry(idx).or_default().mac = mac_from_value(&bind.value);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_OPER_STATUS, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_OPER_STATUS) {
-            view.interfaces.entry(idx).or_default().oper_status =
-                bind.value.as_u64().map(|v| v as u8);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_ADMIN_STATUS, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_ADMIN_STATUS) {
-            view.interfaces.entry(idx).or_default().admin_status =
-                bind.value.as_u64().map(|v| v as u8);
-        }
-    })
-    .await?;
-    walk_ok(session, IF_HIGH_SPEED, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_HIGH_SPEED) {
-            if let Some(mbps) = bind.value.as_u64() {
-                if mbps > 0 {
-                    view.interfaces.entry(idx).or_default().speed_mbps = Some(mbps);
-                }
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifName",
+        IF_NAME,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_NAME) {
+                assign_iface_label(view, "ifName", idx, &bind.value, |iface| &mut iface.name);
             }
-        }
-    })
+        },
+    )
     .await?;
-    walk_ok(session, IF_SPEED, &mut view, |view, bind| {
-        if let Some(idx) = last_index(&bind.oid, IF_SPEED) {
-            let iface = view.interfaces.entry(idx).or_default();
-            if iface.speed_mbps.is_none() {
-                if let Some(bps) = bind.value.as_u64() {
-                    if bps > 0 {
-                        iface.speed_mbps = Some((bps / 1_000_000).max(1));
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifAlias",
+        IF_ALIAS,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_ALIAS) {
+                assign_iface_label(view, "ifAlias", idx, &bind.value, |iface| &mut iface.alias);
+            }
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifType",
+        IF_TYPE,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_TYPE) {
+                view.interfaces.entry(idx).or_default().if_type =
+                    bind.value.as_u64().map(|v| v as u32);
+            }
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifPhysAddress",
+        IF_PHYS_ADDRESS,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_PHYS_ADDRESS) {
+                view.interfaces.entry(idx).or_default().mac = mac_from_value(&bind.value);
+            }
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifOperStatus",
+        IF_OPER_STATUS,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_OPER_STATUS) {
+                view.interfaces.entry(idx).or_default().oper_status =
+                    bind.value.as_u64().map(|v| v as u8);
+            }
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifAdminStatus",
+        IF_ADMIN_STATUS,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_ADMIN_STATUS) {
+                view.interfaces.entry(idx).or_default().admin_status =
+                    bind.value.as_u64().map(|v| v as u8);
+            }
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifHighSpeed",
+        IF_HIGH_SPEED,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_HIGH_SPEED) {
+                if let Some(mbps) = bind.value.as_u64() {
+                    if mbps > 0 {
+                        view.interfaces.entry(idx).or_default().speed_mbps = Some(mbps);
                     }
                 }
             }
-        }
-    })
+        },
+    )
+    .await?;
+    walk_ok(
+        session,
+        &mut view,
+        "IF-MIB",
+        "ifSpeed",
+        IF_SPEED,
+        |view, bind| {
+            if let Some(idx) = last_index(&bind.oid, IF_SPEED) {
+                let iface = view.interfaces.entry(idx).or_default();
+                if iface.speed_mbps.is_none() {
+                    if let Some(bps) = bind.value.as_u64() {
+                        if bps > 0 {
+                            iface.speed_mbps = Some((bps / 1_000_000).max(1));
+                        }
+                    }
+                }
+            }
+        },
+    )
     .await?;
 
     // Bridge port → ifIndex map, used by FDB and PVID.
     let mut bridge_to_if = BTreeMap::new();
-    let binds = walk_table(session, DOT1D_BASE_PORT_IF_INDEX).await?;
+    let binds = probed(
+        session,
+        &mut view,
+        "BRIDGE-MIB",
+        "dot1dBasePortIfIndex",
+        DOT1D_BASE_PORT_IF_INDEX,
+    )
+    .await?;
     for bind in binds {
         if let (Some(port), Some(if_index)) = (
             last_index(&bind.oid, DOT1D_BASE_PORT_IF_INDEX),
@@ -411,57 +516,95 @@ pub async fn collect_device(
     Ok(view)
 }
 
-async fn walk_table(
+async fn walk_classified(
     session: &dyn SnmpSession,
     root: &[u32],
-) -> Result<Vec<VarBind>, TopologyError> {
+) -> Result<(Vec<VarBind>, ProbeState), TopologyError> {
     if let Some(err) = session.interrupted() {
         return Err(err);
     }
     match session.walk(&Oid::from_slice(root)).await {
-        Ok(binds) => Ok(binds),
+        Ok(binds) => {
+            let state = if binds.is_empty() {
+                ProbeState::NoRows
+            } else {
+                ProbeState::Available
+            };
+            Ok((binds, state))
+        }
         Err(TopologyError::Cancelled) => Err(TopologyError::Cancelled),
         Err(err) => {
             if let Some(interrupt) = session.interrupted() {
-                Err(interrupt)
-            } else {
-                let _ = err;
-                Ok(Vec::new())
+                return Err(interrupt);
             }
+            let state = match err {
+                TopologyError::Timeout => ProbeState::TimedOut,
+                _ => ProbeState::WalkFailed,
+            };
+            Ok((Vec::new(), state))
         }
     }
 }
 
+/// Walk one table and remember the outcome. Failures still yield no rows, so
+/// collection stays isolated; the probe is what diagnostics report.
+async fn probed(
+    session: &dyn SnmpSession,
+    view: &mut DeviceView,
+    mib: &'static str,
+    table: &'static str,
+    root: &[u32],
+) -> Result<Vec<VarBind>, TopologyError> {
+    let (binds, state) = walk_classified(session, root).await?;
+    let rows = binds.len();
+    view.probes.push(TableProbe {
+        mib,
+        table,
+        state,
+        rows,
+    });
+    Ok(binds)
+}
+
+fn note_failed_walk(view: &mut DeviceView, root: &[u32], state: ProbeState) {
+    let why = match state {
+        ProbeState::TimedOut => "timed out",
+        ProbeState::WalkFailed => "walk failed",
+        _ => return,
+    };
+    view.notes.push(format!(
+        "Partial SNMP support: {} walk failed ({why})",
+        Oid::from_slice(root)
+    ));
+}
+
 async fn walk_ok<F>(
     session: &dyn SnmpSession,
-    root: &[u32],
     view: &mut DeviceView,
+    mib: &'static str,
+    table: &'static str,
+    root: &[u32],
     mut each: F,
 ) -> Result<(), TopologyError>
 where
     F: FnMut(&mut DeviceView, VarBind),
 {
-    match walk_table(session, root).await {
-        Ok(binds) => {
-            for bind in binds {
-                each(view, bind);
-            }
-            Ok(())
-        }
-        Err(TopologyError::Cancelled) => Err(TopologyError::Cancelled),
-        Err(err) => {
-            if session.interrupted().is_some() {
-                Err(err)
-            } else {
-                view.notes.push(format!(
-                    "Partial SNMP support: {} walk failed ({})",
-                    Oid::from_slice(root),
-                    err
-                ));
-                Ok(())
-            }
-        }
+    let (binds, state) = walk_classified(session, root).await?;
+    let rows = binds.len();
+    view.probes.push(TableProbe {
+        mib,
+        table,
+        state,
+        rows,
+    });
+    if matches!(state, ProbeState::TimedOut | ProbeState::WalkFailed) {
+        note_failed_walk(view, root, state);
+        return Ok(());
     }
+    for bind in binds {
+        each(view, bind);
+    }
+    Ok(())
 }
 
 async fn collect_fdb_bridge(
@@ -470,7 +613,14 @@ async fn collect_fdb_bridge(
     bridge_to_if: &BTreeMap<u32, u32>,
 ) -> Result<(), TopologyError> {
     let mut ports: BTreeMap<String, u32> = BTreeMap::new();
-    let binds = walk_table(session, DOT1D_TP_FDB_PORT).await?;
+    let binds = probed(
+        session,
+        view,
+        "BRIDGE-MIB",
+        "dot1dTpFdbPort",
+        DOT1D_TP_FDB_PORT,
+    )
+    .await?;
     for bind in binds {
         if let Some(mac) = mac_from_oid_suffix(&bind.oid, DOT1D_TP_FDB_PORT) {
             if let Some(port) = bind.value.as_u64() {
@@ -479,7 +629,14 @@ async fn collect_fdb_bridge(
         }
     }
     let mut status: BTreeMap<String, i64> = BTreeMap::new();
-    let binds = walk_table(session, DOT1D_TP_FDB_STATUS).await?;
+    let binds = probed(
+        session,
+        view,
+        "BRIDGE-MIB",
+        "dot1dTpFdbStatus",
+        DOT1D_TP_FDB_STATUS,
+    )
+    .await?;
     for bind in binds {
         if let Some(mac) = mac_from_oid_suffix(&bind.oid, DOT1D_TP_FDB_STATUS) {
             if let Some(st) = bind.value.as_i64() {
@@ -507,7 +664,14 @@ async fn collect_fdb_qbridge(
     view: &mut DeviceView,
     bridge_to_if: &BTreeMap<u32, u32>,
 ) -> Result<(), TopologyError> {
-    let binds = walk_table(session, DOT1Q_TP_FDB_PORT).await?;
+    let binds = probed(
+        session,
+        view,
+        "Q-BRIDGE-MIB",
+        "dot1qTpFdbPort",
+        DOT1Q_TP_FDB_PORT,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("Q-BRIDGE-MIB".into());
     }
@@ -531,17 +695,31 @@ async fn collect_vlans(
     view: &mut DeviceView,
     bridge_to_if: &BTreeMap<u32, u32>,
 ) -> Result<(), TopologyError> {
-    walk_ok(session, DOT1Q_PVID, view, |view, bind| {
-        if let Some(port) = last_index(&bind.oid, DOT1Q_PVID) {
-            if let Some(vid) = bind.value.as_u64() {
-                let if_index = *bridge_to_if.get(&port).unwrap_or(&port);
-                view.pvid.insert(if_index, vid as u16);
+    walk_ok(
+        session,
+        view,
+        "Q-BRIDGE-MIB",
+        "dot1qPvid",
+        DOT1Q_PVID,
+        |view, bind| {
+            if let Some(port) = last_index(&bind.oid, DOT1Q_PVID) {
+                if let Some(vid) = bind.value.as_u64() {
+                    let if_index = *bridge_to_if.get(&port).unwrap_or(&port);
+                    view.pvid.insert(if_index, vid as u16);
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
 
-    let binds = walk_table(session, DOT1Q_VLAN_CURRENT_EGRESS).await?;
+    let binds = probed(
+        session,
+        view,
+        "Q-BRIDGE-MIB",
+        "dot1qVlanCurrentEgressPorts",
+        DOT1Q_VLAN_CURRENT_EGRESS,
+    )
+    .await?;
     for bind in binds {
         if let (Some(vid), Some(bytes)) = (
             last_index(&bind.oid, DOT1Q_VLAN_CURRENT_EGRESS),
@@ -553,7 +731,14 @@ async fn collect_vlans(
             }
         }
     }
-    let binds = walk_table(session, DOT1Q_VLAN_CURRENT_UNTAGGED).await?;
+    let binds = probed(
+        session,
+        view,
+        "Q-BRIDGE-MIB",
+        "dot1qVlanCurrentUntaggedPorts",
+        DOT1Q_VLAN_CURRENT_UNTAGGED,
+    )
+    .await?;
     for bind in binds {
         if let (Some(vid), Some(bytes)) = (
             last_index(&bind.oid, DOT1Q_VLAN_CURRENT_UNTAGGED),
@@ -579,7 +764,14 @@ async fn collect_arp(
     session: &dyn SnmpSession,
     view: &mut DeviceView,
 ) -> Result<(), TopologyError> {
-    let binds = walk_table(session, IP_NET_TO_MEDIA_PHYS).await?;
+    let binds = probed(
+        session,
+        view,
+        "IP-MIB",
+        "ipNetToMediaPhysAddress",
+        IP_NET_TO_MEDIA_PHYS,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("IP-MIB".into());
     }
@@ -595,7 +787,14 @@ async fn collect_arp(
         }
     }
     if view.arp.is_empty() {
-        let binds = walk_table(session, IP_NET_TO_PHYSICAL_PHYS).await?;
+        let binds = probed(
+            session,
+            view,
+            "IP-MIB",
+            "ipNetToPhysicalPhysAddress",
+            IP_NET_TO_PHYSICAL_PHYS,
+        )
+        .await?;
         for bind in binds {
             if let Some(mac) = mac_from_value(&bind.value) {
                 if let Some(ip) = ip_from_neighbor_oid(&bind.oid) {
@@ -607,6 +806,13 @@ async fn collect_arp(
                 }
             }
         }
+    } else {
+        view.probes.push(TableProbe {
+            mib: "IP-MIB",
+            table: "ipNetToPhysicalPhysAddress",
+            state: ProbeState::NotQueried,
+            rows: 0,
+        });
     }
     Ok(())
 }
@@ -615,26 +821,47 @@ async fn collect_lldp(
     session: &dyn SnmpSession,
     view: &mut DeviceView,
 ) -> Result<(), TopologyError> {
-    walk_ok(session, LLDP_LOC_PORT_ID, view, |view, bind| {
-        if let Some(port) = last_index(&bind.oid, LLDP_LOC_PORT_ID) {
-            if let Some(name) = mac_from_value(&bind.value).or_else(|| bind.value.as_utf8()) {
-                view.lldp_local_ports.insert(port, name);
+    walk_ok(
+        session,
+        view,
+        "LLDP-MIB",
+        "lldpLocPortId",
+        LLDP_LOC_PORT_ID,
+        |view, bind| {
+            if let Some(port) = last_index(&bind.oid, LLDP_LOC_PORT_ID) {
+                if let Some(name) = mac_from_value(&bind.value).or_else(|| bind.value.as_utf8()) {
+                    view.lldp_local_ports.insert(port, name);
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
-    walk_ok(session, LLDP_LOC_PORT_DESC, view, |view, bind| {
-        if let Some(port) = last_index(&bind.oid, LLDP_LOC_PORT_DESC) {
-            if let Some(desc) = bind.value.as_utf8() {
-                view.lldp_local_ports.entry(port).or_insert(desc);
+    walk_ok(
+        session,
+        view,
+        "LLDP-MIB",
+        "lldpLocPortDesc",
+        LLDP_LOC_PORT_DESC,
+        |view, bind| {
+            if let Some(port) = last_index(&bind.oid, LLDP_LOC_PORT_DESC) {
+                if let Some(desc) = bind.value.as_utf8() {
+                    view.lldp_local_ports.entry(port).or_insert(desc);
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
 
     let mut neighbors: BTreeMap<(u32, u32), LldpNeighbor> = BTreeMap::new();
 
-    let binds = walk_table(session, LLDP_REM_CHASSIS_ID).await?;
+    let binds = probed(
+        session,
+        view,
+        "LLDP-MIB",
+        "lldpRemChassisId",
+        LLDP_REM_CHASSIS_ID,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("LLDP-MIB".into());
     }
@@ -649,27 +876,69 @@ async fn collect_lldp(
             entry.chassis_id = chassis_from_value(&bind.value);
         }
     }
-    fill_lldp(session, LLDP_REM_CHASSIS_SUBTYPE, &mut neighbors, |n, v| {
-        n.chassis_subtype = v.as_i64();
-    })
+    fill_lldp(
+        session,
+        view,
+        "lldpRemChassisIdSubtype",
+        LLDP_REM_CHASSIS_SUBTYPE,
+        &mut neighbors,
+        |n, v| {
+            n.chassis_subtype = v.as_i64();
+        },
+    )
     .await?;
-    fill_lldp(session, LLDP_REM_PORT_ID, &mut neighbors, |n, v| {
-        n.port_id = mac_from_value(v).or_else(|| v.as_utf8());
-    })
+    fill_lldp(
+        session,
+        view,
+        "lldpRemPortId",
+        LLDP_REM_PORT_ID,
+        &mut neighbors,
+        |n, v| {
+            n.port_id = mac_from_value(v).or_else(|| v.as_utf8());
+        },
+    )
     .await?;
-    fill_lldp(session, LLDP_REM_PORT_DESC, &mut neighbors, |n, v| {
-        n.port_desc = v.as_utf8();
-    })
+    fill_lldp(
+        session,
+        view,
+        "lldpRemPortDesc",
+        LLDP_REM_PORT_DESC,
+        &mut neighbors,
+        |n, v| {
+            n.port_desc = v.as_utf8();
+        },
+    )
     .await?;
-    fill_lldp(session, LLDP_REM_SYS_NAME, &mut neighbors, |n, v| {
-        n.sys_name = v.as_utf8();
-    })
+    fill_lldp(
+        session,
+        view,
+        "lldpRemSysName",
+        LLDP_REM_SYS_NAME,
+        &mut neighbors,
+        |n, v| {
+            n.sys_name = v.as_utf8();
+        },
+    )
     .await?;
-    fill_lldp(session, LLDP_REM_SYS_DESC, &mut neighbors, |n, v| {
-        n.sys_desc = v.as_utf8();
-    })
+    fill_lldp(
+        session,
+        view,
+        "lldpRemSysDesc",
+        LLDP_REM_SYS_DESC,
+        &mut neighbors,
+        |n, v| {
+            n.sys_desc = v.as_utf8();
+        },
+    )
     .await?;
-    let binds = walk_table(session, LLDP_REM_MAN_ADDR).await?;
+    let binds = probed(
+        session,
+        view,
+        "LLDP-MIB",
+        "lldpRemManAddr",
+        LLDP_REM_MAN_ADDR,
+    )
+    .await?;
     for bind in binds {
         if let Some((_, local, rem)) = lldp_rem_index(&bind.oid, LLDP_REM_MAN_ADDR) {
             let entry = neighbors
@@ -698,6 +967,8 @@ async fn collect_lldp(
 
 async fn fill_lldp<F>(
     session: &dyn SnmpSession,
+    view: &mut DeviceView,
+    table: &'static str,
     prefix: &[u32],
     neighbors: &mut BTreeMap<(u32, u32), LldpNeighbor>,
     mut set: F,
@@ -705,7 +976,7 @@ async fn fill_lldp<F>(
 where
     F: FnMut(&mut LldpNeighbor, &SnmpValue),
 {
-    let binds = walk_table(session, prefix).await?;
+    let binds = probed(session, view, "LLDP-MIB", table, prefix).await?;
     for bind in binds {
         if let Some((_, local, rem)) = lldp_rem_index(&bind.oid, prefix) {
             let entry = neighbors
@@ -725,7 +996,14 @@ async fn collect_cdp(
     view: &mut DeviceView,
 ) -> Result<(), TopologyError> {
     let mut neighbors: BTreeMap<(u32, u32), CdpNeighbor> = BTreeMap::new();
-    let binds = walk_table(session, CDP_CACHE_DEVICE_ID).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-CDP-MIB",
+        "cdpCacheDeviceId",
+        CDP_CACHE_DEVICE_ID,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("CISCO-CDP-MIB".into());
     }
@@ -740,21 +1018,42 @@ async fn collect_cdp(
             entry.device_id = bind.value.as_utf8();
         }
     }
-    let binds = walk_table(session, CDP_CACHE_DEVICE_PORT).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-CDP-MIB",
+        "cdpCacheDevicePort",
+        CDP_CACHE_DEVICE_PORT,
+    )
+    .await?;
     for bind in binds {
         if let Some((if_index, dev)) = two_index(&bind.oid, CDP_CACHE_DEVICE_PORT) {
             neighbors.entry((if_index, dev)).or_default().device_port = bind.value.as_utf8();
             neighbors.entry((if_index, dev)).or_default().if_index = if_index;
         }
     }
-    let binds = walk_table(session, CDP_CACHE_PLATFORM).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-CDP-MIB",
+        "cdpCachePlatform",
+        CDP_CACHE_PLATFORM,
+    )
+    .await?;
     for bind in binds {
         if let Some((if_index, dev)) = two_index(&bind.oid, CDP_CACHE_PLATFORM) {
             neighbors.entry((if_index, dev)).or_default().platform = bind.value.as_utf8();
             neighbors.entry((if_index, dev)).or_default().if_index = if_index;
         }
     }
-    let binds = walk_table(session, CDP_CACHE_ADDRESS).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-CDP-MIB",
+        "cdpCacheAddress",
+        CDP_CACHE_ADDRESS,
+    )
+    .await?;
     for bind in binds {
         if let Some((if_index, dev)) = two_index(&bind.oid, CDP_CACHE_ADDRESS) {
             neighbors.entry((if_index, dev)).or_default().address = bind
@@ -765,7 +1064,14 @@ async fn collect_cdp(
             neighbors.entry((if_index, dev)).or_default().if_index = if_index;
         }
     }
-    let binds = walk_table(session, CDP_CACHE_NATIVE_VLAN).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-CDP-MIB",
+        "cdpCacheNativeVLAN",
+        CDP_CACHE_NATIVE_VLAN,
+    )
+    .await?;
     for bind in binds {
         if let Some((if_index, dev)) = two_index(&bind.oid, CDP_CACHE_NATIVE_VLAN) {
             neighbors.entry((if_index, dev)).or_default().native_vlan =
@@ -782,7 +1088,14 @@ async fn collect_poe(
     view: &mut DeviceView,
 ) -> Result<(), TopologyError> {
     let mut detection: BTreeMap<u32, i64> = BTreeMap::new();
-    let binds = walk_table(session, PETH_PSE_DETECTION).await?;
+    let binds = probed(
+        session,
+        view,
+        "POWER-ETHERNET-MIB",
+        "pethPsePortDetectionStatus",
+        PETH_PSE_DETECTION,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("POWER-ETHERNET-MIB".into());
     }
@@ -794,7 +1107,14 @@ async fn collect_poe(
         }
     }
     let mut watts: BTreeMap<u32, f64> = BTreeMap::new();
-    let binds = walk_table(session, CPE_EXT_PWR_ALLOCATED).await?;
+    let binds = probed(
+        session,
+        view,
+        "CISCO-POWER-ETHERNET-EXT-MIB",
+        "cpeExtPsePortPwrAllocated",
+        CPE_EXT_PWR_ALLOCATED,
+    )
+    .await?;
     for bind in binds {
         if let Some(if_index) = last_index(&bind.oid, CPE_EXT_PWR_ALLOCATED) {
             if let Some(mw) = bind.value.as_u64() {
@@ -820,14 +1140,35 @@ async fn collect_entity(
     session: &dyn SnmpSession,
     view: &mut DeviceView,
 ) -> Result<(), TopologyError> {
-    let binds = walk_table(session, ENT_PHYSICAL_MODEL).await?;
+    let binds = probed(
+        session,
+        view,
+        "ENTITY-MIB",
+        "entPhysicalModelName",
+        ENT_PHYSICAL_MODEL,
+    )
+    .await?;
     if !binds.is_empty() {
         view.mibs_present.push("ENTITY-MIB".into());
         view.entity.model = binds.iter().find_map(|b| b.value.as_utf8());
     }
-    let binds = walk_table(session, ENT_PHYSICAL_MFG).await?;
+    let binds = probed(
+        session,
+        view,
+        "ENTITY-MIB",
+        "entPhysicalMfgName",
+        ENT_PHYSICAL_MFG,
+    )
+    .await?;
     view.entity.manufacturer = binds.iter().find_map(|b| b.value.as_utf8());
-    let binds = walk_table(session, ENT_PHYSICAL_DESCR).await?;
+    let binds = probed(
+        session,
+        view,
+        "ENTITY-MIB",
+        "entPhysicalDescr",
+        ENT_PHYSICAL_DESCR,
+    )
+    .await?;
     view.entity.descr = binds.iter().find_map(|b| b.value.as_utf8());
     Ok(())
 }
@@ -844,6 +1185,10 @@ where
     }
     if let Some(bytes) = value.as_bytes() {
         if crate::display::is_nonempty_octets(bytes) {
+            view.rejected_labels.push(RejectedLabel {
+                field: field.to_string(),
+                if_index: idx,
+            });
             view.notes
                 .push(crate::display::rejected_octets_note(field, idx, bytes));
         }

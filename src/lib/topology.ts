@@ -90,9 +90,181 @@ export interface TopologySummary {
   failures: TopologyDeviceFailure[];
 }
 
+export type MibState = "available" | "noRows" | "timedOut" | "walkFailed" | "notQueried" | "partial";
+
+export type SnmpStatus =
+  | "responded"
+  | "timeout"
+  | "authFailed"
+  | "unreachable"
+  | "invalidAddress"
+  | "protocolError";
+
+export interface MibCoverage {
+  mib: string;
+  state: MibState;
+  rows: number;
+  detail?: string | null;
+}
+
+export interface InterfaceStats {
+  count: number;
+  up: number;
+  withName: number;
+  withSpeed: number;
+}
+
+export interface NeighborObservation {
+  localPort: string;
+  remotePort?: string | null;
+  chassisId?: string | null;
+  managementAddress?: string | null;
+  sysName?: string | null;
+  resolvedDeviceId?: number | null;
+  resolution: string;
+}
+
+export interface NeighborProtoDiag {
+  state: MibState;
+  neighbourCount: number;
+  resolved: number;
+  unresolved: number;
+  neighbours: NeighborObservation[];
+}
+
+export interface FdbPortDiag {
+  portLabel: string;
+  rawPort: number;
+  relevantMacs: number;
+  matchedInventory: number;
+  outcome: string;
+  summary: string;
+}
+
+export interface FdbDiag {
+  state: MibState;
+  totalRows: number;
+  unicastMacs: number;
+  matchedInventory: number;
+  unresolvedMacs: number;
+  singleMacPorts: number;
+  multiMacPorts: number;
+  strongLinks: number;
+  uplinkSuppressions: number;
+  portsOmitted: number;
+  ports: FdbPortDiag[];
+}
+
+export interface ArpDiag {
+  state: MibState;
+  entries: number;
+  fdbCorroborations: number;
+}
+
+export interface VlanDiag {
+  state: MibState;
+  pvidPorts: number;
+  accessPorts: number;
+  trunkPorts: number;
+}
+
+export interface PoeDiag {
+  detectionState: MibState;
+  wattageState: MibState;
+  enabledPorts: number;
+  portsWithWatts: number;
+  enabledWithoutWatts: number;
+}
+
+export interface PortMappingDiag {
+  role: string;
+  rawPort: number;
+  bridgePort?: number | null;
+  resolvedIfIndex: number;
+  displayLabel: string;
+  resolutionSource: string;
+  fellBackToNumeric: boolean;
+}
+
+export interface RelationshipDiag {
+  protocol: string;
+  confidence: TopologyConfidence | string;
+  fromDeviceId?: number | null;
+  toDeviceId?: number | null;
+  toUnresolvedId?: string | null;
+  fromPort?: string | null;
+  toPort?: string | null;
+  resolution: string;
+  why: string;
+  port?: PortMappingDiag | null;
+}
+
+export interface TopologySuppression {
+  targetIp: string;
+  inventoryDeviceId?: number | null;
+  reason: string;
+  summary: string;
+  portLabel?: string | null;
+  macCount?: number | null;
+}
+
+export interface CorrelationNote {
+  targetIp: string;
+  summary: string;
+}
+
+export interface DeviceTopologyDiagnostics {
+  targetIp: string;
+  inventoryDeviceId?: number | null;
+  displayName?: string | null;
+  snmpStatus: SnmpStatus;
+  failureReason?: string | null;
+  sysName?: string | null;
+  mibCoverage: MibCoverage[];
+  interfaces: InterfaceStats;
+  lldp: NeighborProtoDiag;
+  cdp: NeighborProtoDiag;
+  fdb: FdbDiag;
+  arp: ArpDiag;
+  vlan: VlanDiag;
+  poe: PoeDiag;
+  relationships: RelationshipDiag[];
+  relationshipsOmitted: number;
+  unresolvedPeers: number;
+  suppressions: TopologySuppression[];
+  suppressionsOmitted: number;
+  portMappings: PortMappingDiag[];
+  notes: string[];
+  hints: string[];
+  zeroLinkExplanation?: string | null;
+}
+
+export interface TopologyRunSummary {
+  devicesQueried: number;
+  devicesResponding: number;
+  devicesFailed: number;
+  lldpCdpNeighbours: number;
+  fdbRelationships: number;
+  confirmedLinks: number;
+  strongLinks: number;
+  inferredLinks: number;
+  unresolvedNeighbours: number;
+  suppressedCandidates: number;
+  partialSnmpDevices: number;
+}
+
+export interface TopologyDiagnostics {
+  kind: string;
+  devices: DeviceTopologyDiagnostics[];
+  runSummary: TopologyRunSummary;
+  suppressions: TopologySuppression[];
+  correlationNotes: CorrelationNote[];
+}
+
 export interface TopologyResult {
   snapshot: TopologySnapshot;
   summary: TopologySummary;
+  diagnostics?: TopologyDiagnostics | null;
 }
 
 export interface TopologyTarget {
@@ -295,6 +467,122 @@ export function vlanLabel(connection: TopologyConnection): string | null {
   if (connection.vlan) return `VLAN ${connection.vlan}`;
   if (connection.nativeVlan != null) return `VLAN ${connection.nativeVlan}`;
   return null;
+}
+
+export const DIAGNOSTICS_EXPORT_WARNING =
+  "This file contains network inventory information (IP addresses, MAC addresses, and device names). It does not contain SNMP credentials. ArcScan does not upload it.";
+
+export function mibStateLabel(state: MibState | string): string {
+  switch (state) {
+    case "available":
+      return "Available";
+    case "noRows":
+      return "No rows";
+    case "timedOut":
+      return "Timed out";
+    case "walkFailed":
+      return "Walk failed";
+    case "notQueried":
+      return "Not queried";
+    case "partial":
+      return "Partial";
+    default:
+      return state;
+  }
+}
+
+export function snmpStatusLabel(status: SnmpStatus | string): string {
+  switch (status) {
+    case "responded":
+      return "SNMP responded";
+    case "timeout":
+      return "SNMP timeout";
+    case "authFailed":
+      return "Authentication failed";
+    case "unreachable":
+      return "Unreachable";
+    case "invalidAddress":
+      return "Invalid address";
+    case "protocolError":
+      return "SNMP error";
+    default:
+      return status;
+  }
+}
+
+export function coverageState(device: DeviceTopologyDiagnostics, mib: string): MibState | "notQueried" {
+  return device.mibCoverage.find((item) => item.mib === mib)?.state ?? "notQueried";
+}
+
+export function compactProtocolLabel(device: DeviceTopologyDiagnostics, mib: string, emptyText: string): string {
+  const state = coverageState(device, mib);
+  if (mib === "LLDP-MIB" || mib === "CISCO-CDP-MIB") {
+    const count = mib === "LLDP-MIB" ? device.lldp.neighbourCount : device.cdp.neighbourCount;
+    if (count === 0 && state === "noRows") return emptyText;
+    if (count > 0) return `${count} neighbour${count === 1 ? "" : "s"}`;
+  }
+  return mibStateLabel(state);
+}
+
+export function whyForConnection(
+  connection: TopologyConnection,
+  diagnostics: TopologyDiagnostics | null | undefined,
+): string | null {
+  if (!diagnostics) return null;
+  for (const device of diagnostics.devices) {
+    const match = device.relationships.find((link) => {
+      const sameProtocol = link.protocol === connection.protocol;
+      const sameFrom = (link.fromDeviceId ?? null) === (connection.fromDeviceId ?? null);
+      const sameTo = (link.toDeviceId ?? null) === (connection.toDeviceId ?? null);
+      const samePort = (link.fromPort ?? null) === (connection.fromPort ?? null);
+      return sameProtocol && sameFrom && sameTo && samePort;
+    });
+    if (match) return match.why;
+  }
+  return null;
+}
+
+function scrubExportText(text: string): string {
+  return text.replace(
+    /\b(community|username|auth_password|priv_password|auth password|privacy password)\s+\S+/gi,
+    "$1 [redacted]",
+  );
+}
+
+export function formatDiagnosticsExport(diagnostics: TopologyDiagnostics): string {
+  const clone = JSON.parse(JSON.stringify(diagnostics)) as TopologyDiagnostics;
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") return scrubExportText(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value)) {
+        const lower = key.toLowerCase();
+        if (
+          lower === "community" ||
+          lower === "username" ||
+          lower === "authpassword" ||
+          lower === "privpassword" ||
+          lower === "auth_password" ||
+          lower === "priv_password"
+        ) {
+          continue;
+        }
+        out[key] = walk(child);
+      }
+      return out;
+    }
+    return value;
+  };
+  return JSON.stringify(
+    {
+      kind: "arcscan-topology-diagnostics",
+      warning: DIAGNOSTICS_EXPORT_WARNING,
+      diagnostics: walk(clone),
+    },
+    null,
+    2,
+  );
 }
 
 export function summaryLine(summary: TopologySummary): string {

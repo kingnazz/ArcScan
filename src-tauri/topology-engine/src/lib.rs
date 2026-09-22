@@ -8,6 +8,7 @@ pub mod ber;
 pub mod collect;
 pub mod correlate;
 pub mod credentials;
+pub mod diagnostics;
 pub mod display;
 pub mod engine;
 pub mod error;

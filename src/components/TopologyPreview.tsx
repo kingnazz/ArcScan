@@ -36,7 +36,9 @@ import {
   type PhysicalDeviceLookup,
   type PreviewKind,
   type PreviewNode,
+  whyForConnection,
   type TopologyConnection,
+  type TopologyDiagnostics,
   type TopologySnapshot,
   type UnresolvedNode,
 } from "../lib/topology";
@@ -46,6 +48,7 @@ export interface TopologyPreviewProps {
   names: DeviceNameLookup;
   types: DeviceTypeLookup;
   physical?: PhysicalDeviceLookup;
+  diagnostics?: TopologyDiagnostics | null;
 }
 
 const KIND_LABEL: Record<PreviewKind, string> = {
@@ -107,7 +110,13 @@ function strokeFor(confidence: TopologyConnection["confidence"]): { dash: string
   return { dash: "4 4", width: 1.5 };
 }
 
-export function TopologyPreview({ snapshot, names, types, physical }: TopologyPreviewProps) {
+export function TopologyPreview({
+  snapshot,
+  names,
+  types,
+  physical,
+  diagnostics,
+}: TopologyPreviewProps) {
   const [showEndpoints, setShowEndpoints] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -275,6 +284,7 @@ export function TopologyPreview({ snapshot, names, types, physical }: TopologyPr
           connection={selected}
           names={names}
           unknownNodes={unknownNodes}
+          why={whyForConnection(selected, diagnostics)}
           onDismiss={() => setSelectedId(null)}
         />
       ) : (
@@ -291,11 +301,13 @@ function ConnectionCard({
   connection,
   names,
   unknownNodes,
+  why,
   onDismiss,
 }: {
   connection: TopologyConnection;
   names: DeviceNameLookup;
   unknownNodes: UnresolvedNode[];
+  why: string | null;
   onDismiss: () => void;
 }) {
   const lines = connectionDetailLines(connection, names, unknownNodes);
@@ -323,6 +335,17 @@ function ConnectionCard({
         ) : null}
       </p>
       {connection.evidence[0] ? <p className="mt-1 text-text-muted">{connection.evidence[0]}</p> : null}
+      {connection.evidence.length > 0 || why ? (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-text">Why this connection?</summary>
+          {why ? <p className="mt-1 text-text-secondary">{why}</p> : null}
+          <ul className="mt-1 space-y-1 text-text-muted">
+            {connection.evidence.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </div>
   );
 }

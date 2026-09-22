@@ -340,12 +340,17 @@ pub struct TopologyDeviceFailure {
     pub reason: String,
 }
 
-/// The value returned to the UI: snapshot + summary.
+/// The value returned to the UI: snapshot + summary + diagnostics.
+///
+/// `diagnostics` is an ArcScan UI/support payload. It is not part of the
+/// schemaVersion 2 ArcAtlas handoff.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TopologyResult {
     pub snapshot: TopologySnapshot,
     pub summary: TopologySummary,
+    #[serde(default)]
+    pub diagnostics: crate::diagnostics::TopologyDiagnostics,
 }
 
 /// One inventory device the correlator may attach a link to.
