@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::collect::{is_unicast_mac, DeviceView, ProbeState, TableProbe};
+use crate::collect::{
+    is_unicast_mac, normalize_mac, CdpNeighbor, DeviceView, LldpNeighbor, ProbeState, TableProbe,
+};
 use crate::error::redact_secrets;
 use crate::model::{TopologyConfidence, TopologyDeviceFailure, TopologySnapshot, TopologyTarget};
 
@@ -225,6 +227,9 @@ pub struct DeviceTopologyDiagnostics {
     pub vlan: VlanDiag,
     pub poe: PoeDiag,
     pub relationships: Vec<RelationshipDiag>,
+    /// Total relationships before the rendered list is capped.
+    #[serde(default)]
+    pub relationship_count: usize,
     pub relationships_omitted: usize,
     pub unresolved_peers: usize,
     pub suppressions: Vec<Suppression>,
@@ -487,11 +492,16 @@ fn device_from_view(
         })
     });
     let coverage = mib_coverage(&view.probes);
-    let lldp_state = coverage_state(&coverage, "LLDP-MIB");
-    let cdp_state = coverage_state(&coverage, "CISCO-CDP-MIB");
-    let relationships = relationships_for(view, &target_ip, targets, trace);
-    let relationships_omitted = relationships.len().saturating_sub(MAX_LISTED_RELATIONSHIPS);
-    let relationships: Vec<_> = relationships
+    let lldp_state = neighbour_protocol_state(view, "lldp");
+    let cdp_state = neighbour_protocol_state(view, "cdp");
+    let all_relationships = relationships_for(view, &target_ip, targets, trace);
+    let relationship_count = all_relationships.len();
+    let unresolved_peers = all_relationships
+        .iter()
+        .filter(|link| link.to_device_id.is_none())
+        .count();
+    let relationships_omitted = relationship_count.saturating_sub(MAX_LISTED_RELATIONSHIPS);
+    let relationships: Vec<_> = all_relationships
         .into_iter()
         .take(MAX_LISTED_RELATIONSHIPS)
         .collect();
@@ -519,12 +529,8 @@ fn device_from_view(
     let arp = arp_diag(view, trace, &target_ip);
     let vlan = vlan_diag(view, &coverage);
     let poe = poe_diag(view, &coverage);
-    let lldp = neighbor_diag(view, targets, trace, &target_ip, "lldp", lldp_state);
-    let cdp = neighbor_diag(view, targets, trace, &target_ip, "cdp", cdp_state);
-    let unresolved_peers = relationships
-        .iter()
-        .filter(|link| link.to_device_id.is_none())
-        .count();
+    let lldp = neighbor_diag(view, trace, &target_ip, "lldp", lldp_state);
+    let cdp = neighbor_diag(view, trace, &target_ip, "cdp", cdp_state);
     let port_mappings: Vec<PortMappingDiag> = relationships
         .iter()
         .filter_map(|link| link.port.clone())
@@ -565,6 +571,7 @@ fn device_from_view(
         vlan,
         poe,
         relationships,
+        relationship_count,
         relationships_omitted,
         unresolved_peers,
         suppressions,
@@ -647,6 +654,7 @@ fn failed_device(ip: &str, reason: &str) -> DeviceTopologyDiagnostics {
             enabled_without_watts: 0,
         },
         relationships: Vec::new(),
+        relationship_count: 0,
         relationships_omitted: 0,
         unresolved_peers: 0,
         suppressions: Vec::new(),
@@ -793,9 +801,107 @@ fn coverage_state(coverage: &[MibCoverage], mib: &str) -> MibState {
         .unwrap_or(MibState::NotQueried)
 }
 
+fn same_identity(left: Option<&str>, right: Option<&str>) -> bool {
+    match (
+        left.map(str::trim).filter(|s| !s.is_empty()),
+        right.map(str::trim).filter(|s| !s.is_empty()),
+    ) {
+        (Some(a), Some(b)) => {
+            if let (Some(ma), Some(mb)) = (normalize_mac(a), normalize_mac(b)) {
+                ma == mb
+            } else {
+                a.eq_ignore_ascii_case(b)
+            }
+        }
+        _ => false,
+    }
+}
+
+fn only_link_on_port<'a>(on_port: &[&'a ObservedLink]) -> Option<&'a ObservedLink> {
+    if on_port.len() == 1 {
+        on_port.first().copied()
+    } else {
+        None
+    }
+}
+
+fn lldp_link_for<'a>(
+    links: &[&'a ObservedLink],
+    neighbor: &LldpNeighbor,
+) -> Option<&'a ObservedLink> {
+    let on_port: Vec<_> = links
+        .iter()
+        .copied()
+        .filter(|link| link.raw_port == neighbor.local_port_num)
+        .collect();
+    on_port
+        .iter()
+        .copied()
+        .find(|link| {
+            same_identity(
+                link.management_address.as_deref(),
+                neighbor.management_address.as_deref(),
+            ) || same_identity(
+                link.chassis_or_mac.as_deref(),
+                neighbor.chassis_id.as_deref(),
+            )
+        })
+        .or_else(|| only_link_on_port(&on_port))
+}
+
+fn cdp_link_for<'a>(
+    links: &[&'a ObservedLink],
+    neighbor: &CdpNeighbor,
+) -> Option<&'a ObservedLink> {
+    let on_port: Vec<_> = links
+        .iter()
+        .copied()
+        .filter(|link| link.raw_port == neighbor.if_index)
+        .collect();
+    on_port
+        .iter()
+        .copied()
+        .find(|link| {
+            same_identity(
+                link.management_address.as_deref(),
+                neighbor.address.as_deref(),
+            ) || same_identity(link.sys_name.as_deref(), neighbor.device_id.as_deref())
+        })
+        .or_else(|| only_link_on_port(&on_port))
+}
+
+/// Neighbour-protocol state follows the remote-neighbour table. Local LLDP
+/// port rows can make the MIB aggregate `Available` while the remote table is
+/// empty; that is "no neighbours", not a neighbour claim.
+fn neighbour_protocol_state(view: &DeviceView, protocol: &str) -> MibState {
+    let table = if protocol == "lldp" {
+        "lldpRemChassisId"
+    } else {
+        "cdpCacheDeviceId"
+    };
+    let count = if protocol == "lldp" {
+        view.lldp_neighbors.len()
+    } else {
+        view.cdp_neighbors.len()
+    };
+    if let Some(probe) = view.probes.iter().find(|probe| probe.table == table) {
+        return match probe.state {
+            ProbeState::Available => MibState::Available,
+            ProbeState::NoRows => MibState::NoRows,
+            ProbeState::TimedOut => MibState::TimedOut,
+            ProbeState::WalkFailed => MibState::WalkFailed,
+            ProbeState::NotQueried => MibState::NotQueried,
+        };
+    }
+    if count > 0 {
+        MibState::Available
+    } else {
+        MibState::NotQueried
+    }
+}
+
 fn neighbor_diag(
     view: &DeviceView,
-    targets: &[TopologyTarget],
     trace: &CorrelationTrace,
     source_ip: &str,
     protocol: &str,
@@ -811,15 +917,11 @@ fn neighbor_diag(
             .iter()
             .take(MAX_PORT_DETAILS)
             .map(|neighbor| {
-                let resolution = links
-                    .iter()
-                    .find(|link| link.raw_port == neighbor.local_port_num)
+                let matched = lldp_link_for(&links, neighbor);
+                let resolution = matched
                     .map(|link| link.resolution.as_str())
                     .unwrap_or("unresolved");
-                let resolved = links
-                    .iter()
-                    .find(|link| link.raw_port == neighbor.local_port_num)
-                    .and_then(|link| link.to_device_id);
+                let resolved = matched.and_then(|link| link.to_device_id);
                 NeighborObservation {
                     local_port: view.port_name(view.resolve_if_index(neighbor.local_port_num)),
                     remote_port: neighbor.port_id.clone().or(neighbor.port_desc.clone()),
@@ -836,9 +938,8 @@ fn neighbor_diag(
             .iter()
             .take(MAX_PORT_DETAILS)
             .map(|neighbor| {
-                let resolution = links
-                    .iter()
-                    .find(|link| link.raw_port == neighbor.if_index)
+                let matched = cdp_link_for(&links, neighbor);
+                let resolution = matched
                     .map(|link| link.resolution.as_str())
                     .unwrap_or("unresolved");
                 NeighborObservation {
@@ -847,16 +948,12 @@ fn neighbor_diag(
                     chassis_id: None,
                     management_address: neighbor.address.clone(),
                     sys_name: neighbor.device_id.clone(),
-                    resolved_device_id: links
-                        .iter()
-                        .find(|link| link.raw_port == neighbor.if_index)
-                        .and_then(|link| link.to_device_id),
+                    resolved_device_id: matched.and_then(|link| link.to_device_id),
                     resolution: resolution.to_string(),
                 }
             })
             .collect()
     };
-    let _ = targets;
     let count = if protocol == "lldp" {
         view.lldp_neighbors.len()
     } else {
@@ -867,11 +964,7 @@ fn neighbor_diag(
         .filter(|link| link.to_device_id.is_some())
         .count();
     NeighborProtoDiag {
-        state: if count > 0 && state == MibState::NotQueried {
-            MibState::Available
-        } else {
-            state
-        },
+        state,
         neighbour_count: count,
         resolved,
         unresolved: count.saturating_sub(resolved),
@@ -1245,12 +1338,12 @@ fn malformed_suppressions(view: &DeviceView, inventory_device_id: Option<i64>) -
 
 fn hints_for(view: &DeviceView, device: &DeviceTopologyDiagnostics) -> Vec<String> {
     let mut hints = Vec::new();
-    let lldp = coverage_state(&device.mib_coverage, "LLDP-MIB");
-    let cdp = coverage_state(&device.mib_coverage, "CISCO-CDP-MIB");
+    let lldp_mib = coverage_state(&device.mib_coverage, "LLDP-MIB");
+    let cdp_mib = coverage_state(&device.mib_coverage, "CISCO-CDP-MIB");
     let bridge = coverage_state(&device.mib_coverage, "BRIDGE-MIB");
     let if_mib = coverage_state(&device.mib_coverage, "IF-MIB");
     let fdb_usable = device.fdb.unicast_macs > 0 || device.fdb.state == MibState::Available;
-    if lldp == MibState::NoRows && fdb_usable {
+    if device.lldp.state == MibState::NoRows && fdb_usable {
         hints.push(
             "LLDP may be disabled on this switch. FDB topology is still available.".to_string(),
         );
@@ -1261,7 +1354,10 @@ fn hints_for(view: &DeviceView, device: &DeviceTopologyDiagnostics) -> Vec<Strin
             MibState::WalkFailed | MibState::NotQueried | MibState::TimedOut
         )
     };
-    if if_mib == MibState::Available && unavailable(bridge) && unavailable(lldp) && unavailable(cdp)
+    if if_mib == MibState::Available
+        && unavailable(bridge)
+        && unavailable(lldp_mib)
+        && unavailable(cdp_mib)
     {
         hints.push(
             "This device exposes interface data but no usable neighbour or bridge topology tables."
@@ -1274,7 +1370,9 @@ fn hints_for(view: &DeviceView, device: &DeviceTopologyDiagnostics) -> Vec<Strin
                 .into(),
         );
     }
-    if view.lldp_neighbors.is_empty() && lldp == MibState::WalkFailed && device.fdb.strong_links > 0
+    if view.lldp_neighbors.is_empty()
+        && matches!(device.lldp.state, MibState::WalkFailed | MibState::TimedOut)
+        && device.fdb.strong_links > 0
     {
         hints.push(
             "The LLDP walk failed. FDB links that passed the access-port rule are still listed."
@@ -1285,7 +1383,7 @@ fn hints_for(view: &DeviceView, device: &DeviceTopologyDiagnostics) -> Vec<Strin
 }
 
 fn zero_link_explanation(view: &DeviceView, device: &DeviceTopologyDiagnostics) -> Option<String> {
-    if !device.relationships.is_empty() {
+    if device.relationship_count > 0 {
         return None;
     }
     let neighbour_count = view.lldp_neighbors.len() + view.cdp_neighbors.len();
@@ -1490,7 +1588,7 @@ mod tests {
         ArpEntry, CdpNeighbor, FdbEntry, Iface, LldpNeighbor, ProbeState, RejectedLabel, TableProbe,
     };
     use crate::correlate::{correlate, correlate_detailed};
-    use crate::model::{EdgeHint, PoeInfo, TopologyConfidence};
+    use crate::model::{EdgeHint, PoeInfo, TopologyConfidence, TopologySnapshot};
     use std::collections::BTreeSet;
     use std::net::Ipv4Addr;
 
@@ -1719,11 +1817,176 @@ mod tests {
             management_address: Some("192.168.60.2".into()),
         });
         let (snap, diag) = correlate_detailed(&[core], &targets(), "t", None);
-        assert!(snap.connections.is_empty());
+        let link = snap
+            .connections
+            .iter()
+            .find(|connection| connection.from_device_id == Some(2))
+            .expect("self-loop evidence stays in the snapshot");
+        assert_eq!(link.to_device_id, Some(2));
+        assert_eq!(link.confidence, TopologyConfidence::Confirmed);
         assert!(device(&diag, "192.168.60.2")
             .suppressions
             .iter()
-            .any(|item| item.reason == "self-loop"));
+            .any(|item| item.reason == "self-loop"
+                && item.summary.contains("not a canonical topology connection")));
+    }
+
+    #[test]
+    fn empty_remote_neighbour_table_is_no_neighbours_when_local_tables_answer() {
+        let mut core = switch();
+        core.probes.push(TableProbe {
+            mib: "LLDP-MIB",
+            table: "lldpLocPortId",
+            state: ProbeState::Available,
+            rows: 4,
+        });
+        core.probes.push(TableProbe {
+            mib: "LLDP-MIB",
+            table: "lldpRemChassisId",
+            state: ProbeState::NoRows,
+            rows: 0,
+        });
+        core.probes.push(TableProbe {
+            mib: "CISCO-CDP-MIB",
+            table: "cdpCacheAddress",
+            state: ProbeState::Available,
+            rows: 2,
+        });
+        core.probes.push(TableProbe {
+            mib: "CISCO-CDP-MIB",
+            table: "cdpCacheDeviceId",
+            state: ProbeState::NoRows,
+            rows: 0,
+        });
+        let (_snap, diag) = correlate_detailed(&[core], &targets(), "t", None);
+        let dev = device(&diag, "192.168.60.2");
+        let lldp_mib = dev
+            .mib_coverage
+            .iter()
+            .find(|item| item.mib == "LLDP-MIB")
+            .unwrap();
+        let cdp_mib = dev
+            .mib_coverage
+            .iter()
+            .find(|item| item.mib == "CISCO-CDP-MIB")
+            .unwrap();
+        assert_eq!(lldp_mib.state, MibState::Available);
+        assert_eq!(cdp_mib.state, MibState::Available);
+        assert_eq!(dev.lldp.state, MibState::NoRows);
+        assert_eq!(dev.cdp.state, MibState::NoRows);
+        assert_eq!(dev.lldp.neighbour_count, 0);
+        assert_eq!(dev.cdp.neighbour_count, 0);
+    }
+
+    #[test]
+    fn neighbours_on_the_same_port_keep_their_own_resolution() {
+        let mut core = switch();
+        core.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 12,
+            chassis_id: Some("00:1A:2B:00:00:12".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("eth0".into()),
+            port_desc: None,
+            sys_name: Some("AP-Lobby".into()),
+            sys_desc: None,
+            management_address: Some("192.168.60.12".into()),
+        });
+        core.lldp_neighbors.push(LldpNeighbor {
+            local_port_num: 12,
+            chassis_id: Some("DE:AD:BE:EF:00:11".into()),
+            chassis_subtype: Some(4),
+            port_id: Some("eth1".into()),
+            port_desc: None,
+            sys_name: Some("BC-NAS1".into()),
+            sys_desc: None,
+            management_address: None,
+        });
+        core.cdp_neighbors.push(CdpNeighbor {
+            if_index: 20,
+            device_id: Some("BC-NAS1".into()),
+            device_port: Some("eth0".into()),
+            platform: None,
+            address: Some("192.168.60.20".into()),
+            native_vlan: Some(10),
+        });
+        core.cdp_neighbors.push(CdpNeighbor {
+            if_index: 20,
+            device_id: Some("AP-Lobby".into()),
+            device_port: Some("eth1".into()),
+            platform: None,
+            address: None,
+            native_vlan: None,
+        });
+        let (_snap, diag) = correlate_detailed(&[core], &targets(), "t", None);
+        let dev = device(&diag, "192.168.60.2");
+        let resolved = dev
+            .lldp
+            .neighbours
+            .iter()
+            .find(|item| item.management_address.as_deref() == Some("192.168.60.12"))
+            .unwrap();
+        let hostname_only = dev
+            .lldp
+            .neighbours
+            .iter()
+            .find(|item| item.chassis_id.as_deref() == Some("DE:AD:BE:EF:00:11"))
+            .unwrap();
+        assert_eq!(resolved.resolution, "management-ip");
+        assert_eq!(resolved.resolved_device_id, Some(3));
+        assert_eq!(hostname_only.resolution, "unresolved");
+        assert_eq!(hostname_only.resolved_device_id, None);
+        let cdp_resolved = dev
+            .cdp
+            .neighbours
+            .iter()
+            .find(|item| item.management_address.as_deref() == Some("192.168.60.20"))
+            .unwrap();
+        let cdp_name = dev
+            .cdp
+            .neighbours
+            .iter()
+            .find(|item| item.sys_name.as_deref() == Some("AP-Lobby"))
+            .unwrap();
+        assert_eq!(cdp_resolved.resolution, "management-ip");
+        assert_eq!(cdp_resolved.resolved_device_id, Some(4));
+        assert_eq!(cdp_name.resolution, "unresolved");
+        assert_eq!(cdp_name.resolved_device_id, None);
+    }
+
+    #[test]
+    fn relationship_counts_include_rows_omitted_from_the_rendered_list() {
+        let core = switch();
+        let mut trace = CorrelationTrace::default();
+        for index in 0..30u32 {
+            trace.link(ObservedLink {
+                source_ip: "192.168.60.2".into(),
+                from_device_id: Some(2),
+                to_device_id: if index < 5 { None } else { Some(4) },
+                to_unresolved_id: if index < 5 {
+                    Some(format!("unknown:{index}"))
+                } else {
+                    None
+                },
+                protocol: "fdb".into(),
+                confidence: "strong".into(),
+                from_port: Some(format!("Port {index}")),
+                to_port: None,
+                raw_port: index,
+                port_role: "fdb".into(),
+                chassis_or_mac: None,
+                sys_name: None,
+                management_address: None,
+                resolution: if index < 5 { "unresolved" } else { "fdb-mac" }.into(),
+                arp_ip: None,
+            });
+        }
+        let snapshot = TopologySnapshot::empty("t");
+        let diag = assemble(&[core], &targets(), &snapshot, &trace);
+        let dev = device(&diag, "192.168.60.2");
+        assert_eq!(dev.relationship_count, 30);
+        assert_eq!(dev.relationships.len(), MAX_LISTED_RELATIONSHIPS);
+        assert_eq!(dev.relationships_omitted, 30 - MAX_LISTED_RELATIONSHIPS);
+        assert_eq!(dev.unresolved_peers, 5);
     }
 
     #[test]

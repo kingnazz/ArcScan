@@ -245,7 +245,7 @@ switch's own MACs) are not.
 | `multi-mac-uplink` | Two or more relevant unicast MACs on one FDB port. No endpoint link is created. |
 | `trunk-single-mac` | One relevant MAC on a VLAN trunk. Treated as a quiet uplink, not an endpoint. |
 | `hostname-only` | LLDP sysName or CDP device-id resembles an inventory hostname. The neighbour stays unresolved. |
-| `self-loop` | Both ends resolved to the same inventory device. The link is not emitted. |
+| `self-loop` | Both ends resolved to the same inventory device. The observation stays in the snapshot so the handoff can keep it on `unresolvedTopology`. It is not a canonical `topology.connections` entry. |
 | `neighbor-protocol-preferred` | CDP or FDB on a port that LLDP/CDP already described. No second link. |
 | `gateway-identity-conflict` | Default-route IP and MAC name different inventory devices. No WAN edge. |
 | `malformed-port-label` | IF-MIB octets were not a printable name and no later candidate replaced them, so the numeric ifIndex is shown. |

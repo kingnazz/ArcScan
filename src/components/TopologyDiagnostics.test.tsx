@@ -26,7 +26,7 @@ function diagnostics(): TopologyDiagnostics {
         sysName: "NETGEAR-SW1",
         mibCoverage: [
           { mib: "IF-MIB", state: "available", rows: 8 },
-          { mib: "LLDP-MIB", state: "noRows", rows: 0, detail: "Remote neighbour table returned no rows." },
+          { mib: "LLDP-MIB", state: "available", rows: 4, detail: "Local port table answered. Remote neighbour table returned no rows." },
           { mib: "BRIDGE-MIB", state: "available", rows: 137 },
         ],
         interfaces: { count: 8, up: 6, withName: 8, withSpeed: 8 },
@@ -75,7 +75,8 @@ function diagnostics(): TopologyDiagnostics {
             why: "Switch FDB learned exactly one relevant inventory MAC on port Port 12. MAC belongs to BC-NAS1. ARP independently associates that MAC with 192.168.60.20.",
           },
         ],
-        relationshipsOmitted: 0,
+        relationshipCount: 40,
+        relationshipsOmitted: 39,
         unresolvedPeers: 0,
         suppressions: [
           {
@@ -132,6 +133,7 @@ function diagnostics(): TopologyDiagnostics {
           enabledWithoutWatts: 0,
         },
         relationships: [],
+        relationshipCount: 0,
         relationshipsOmitted: 0,
         unresolvedPeers: 0,
         suppressions: [],
@@ -216,6 +218,9 @@ describe("Topology diagnostics panel", () => {
     expect(screen.getByText("Topology diagnostics")).toBeTruthy();
     expect(screen.getByText("Suppressed candidates")).toBeTruthy();
     expect(screen.getByText(/network inventory information/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).toMatch(/LLDP No neighbours/);
+    expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).toMatch(/Links 40/);
+    expect(screen.getByRole("button", { name: /192\.168\.60\.2/ }).textContent).not.toMatch(/LLDP Available/);
     expect(screen.getByText("192.168.60.5")).toBeTruthy();
     expect(screen.getByText(/SNMP timeout/)).toBeTruthy();
     expect(screen.queryByText("site-read-secret")).toBeNull();

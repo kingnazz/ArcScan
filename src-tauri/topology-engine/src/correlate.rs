@@ -633,15 +633,17 @@ fn keep_link(
     arp_ip: Option<String>,
 ) -> bool {
     if to_id.is_some() && to_id == from_id {
+        // Diagnostic only. The connection stays in the snapshot so the v1.9
+        // handoff can park fromDeviceId === toDeviceId evidence on
+        // unresolvedTopology instead of dropping it.
         trace.suppress(Suppression {
             target_ip: view.target_ip.to_string(),
             inventory_device_id: from_id,
             reason: "self-loop".into(),
-            summary: "Neighbour evidence resolved to the same inventory device on both ends. The self-loop was suppressed.".into(),
+            summary: "Neighbour evidence resolved to the same inventory device on both ends. The observation is retained and is not a canonical topology connection.".into(),
             port_label: from_port.clone(),
             mac_count: None,
         });
-        return false;
     }
     let confidence = if protocol == "fdb" {
         TopologyConfidence::Strong

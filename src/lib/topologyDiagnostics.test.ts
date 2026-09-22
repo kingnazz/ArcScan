@@ -49,6 +49,7 @@ function device(partial: Partial<DeviceTopologyDiagnostics> = {}): DeviceTopolog
         why: "Switch FDB learned exactly one relevant inventory MAC on port Port 12. MAC belongs to BC-NAS1. ARP independently associates that MAC with 192.168.60.20.",
       },
     ],
+    relationshipCount: 1,
     relationshipsOmitted: 0,
     unresolvedPeers: 0,
     suppressions: [],
@@ -97,6 +98,55 @@ describe("topology diagnostics export", () => {
     expect(json).not.toContain("monitor-user");
     expect(json).not.toContain("hunter2");
     expect(json).not.toContain("priv-pass-xyz");
+  });
+
+  it("scrubs equals syntax, camelCase keys, repeats, and nested values", () => {
+    const payload = diagnostics([
+      device({
+        notes: ["community=site-read community=site-read-two username=monitor-user"],
+        hints: ["authPass=auth-secret privPass=priv-secret authPass=auth-again"],
+      }),
+    ]);
+    const nested = {
+      ...payload,
+      correlationNotes: [
+        {
+          targetIp: "192.168.60.2",
+          summary: "community=nested-secret username=nested-user",
+          authPass: "camel-auth",
+          privPass: "camel-priv",
+        },
+      ],
+    } as unknown as TopologyDiagnostics;
+    const json = formatDiagnosticsExport(nested);
+    for (const secret of [
+      "site-read",
+      "site-read-two",
+      "monitor-user",
+      "auth-secret",
+      "priv-secret",
+      "auth-again",
+      "nested-secret",
+      "nested-user",
+      "camel-auth",
+      "camel-priv",
+    ]) {
+      expect(json).not.toContain(secret);
+    }
+    expect(json).not.toMatch(/"authPass"/);
+    expect(json).not.toMatch(/"privPass"/);
+    expect(json.match(/\[redacted\]/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+  });
+
+  it("labels an empty remote LLDP table as no neighbours even when the MIB aggregate answered", () => {
+    const row = device({
+      mibCoverage: [{ mib: "LLDP-MIB", state: "available", rows: 4 }],
+      lldp: { state: "noRows", neighbourCount: 0, resolved: 0, unresolved: 0, neighbours: [] },
+      relationshipCount: 40,
+      relationshipsOmitted: 16,
+    });
+    expect(row.mibCoverage[0]?.state).toBe("available");
+    expect(row.lldp.state).toBe("noRows");
   });
 
   it("finds the structured reason for a connection", () => {

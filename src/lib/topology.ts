@@ -229,6 +229,8 @@ export interface DeviceTopologyDiagnostics {
   vlan: VlanDiag;
   poe: PoeDiag;
   relationships: RelationshipDiag[];
+  /** Total relationships before the rendered list is capped. */
+  relationshipCount: number;
   relationshipsOmitted: number;
   unresolvedPeers: number;
   suppressions: TopologySuppression[];
@@ -514,14 +516,16 @@ export function coverageState(device: DeviceTopologyDiagnostics, mib: string): M
   return device.mibCoverage.find((item) => item.mib === mib)?.state ?? "notQueried";
 }
 
-export function compactProtocolLabel(device: DeviceTopologyDiagnostics, mib: string, emptyText: string): string {
-  const state = coverageState(device, mib);
-  if (mib === "LLDP-MIB" || mib === "CISCO-CDP-MIB") {
-    const count = mib === "LLDP-MIB" ? device.lldp.neighbourCount : device.cdp.neighbourCount;
-    if (count === 0 && state === "noRows") return emptyText;
-    if (count > 0) return `${count} neighbour${count === 1 ? "" : "s"}`;
-  }
+export function neighbourFact(count: number, state: MibState | string, emptyText: string): string {
+  if (count === 0 && state === "noRows") return emptyText;
+  if (count > 0) return `${count} neighbour${count === 1 ? "" : "s"}`;
   return mibStateLabel(state);
+}
+
+export function compactProtocolLabel(device: DeviceTopologyDiagnostics, mib: string, emptyText: string): string {
+  if (mib === "LLDP-MIB") return neighbourFact(device.lldp.neighbourCount, device.lldp.state, emptyText);
+  if (mib === "CISCO-CDP-MIB") return neighbourFact(device.cdp.neighbourCount, device.cdp.state, emptyText);
+  return mibStateLabel(coverageState(device, mib));
 }
 
 export function whyForConnection(
@@ -542,11 +546,41 @@ export function whyForConnection(
   return null;
 }
 
+const EXPORT_SECRET_NEEDLES = [
+  "community=",
+  "community ",
+  "username=",
+  "username ",
+  "auth_password=",
+  "auth_password ",
+  "priv_password=",
+  "priv_password ",
+  "authpass=",
+  "authpass ",
+  "privpass=",
+  "privpass ",
+  "auth password ",
+  "privacy password ",
+];
+
+function redactFollowing(text: string, needle: string): string {
+  const wanted = needle.toLowerCase();
+  let out = "";
+  let rest = text;
+  while (rest.length > 0) {
+    const idx = rest.toLowerCase().indexOf(wanted);
+    if (idx < 0) return out + rest;
+    const start = idx + needle.length;
+    let end = start;
+    while (end < rest.length && !/[\s,;"']/.test(rest[end] ?? "")) end += 1;
+    out += `${rest.slice(0, start)}[redacted]`;
+    rest = rest.slice(end);
+  }
+  return out;
+}
+
 function scrubExportText(text: string): string {
-  return text.replace(
-    /\b(community|username|auth_password|priv_password|auth password|privacy password)\s+\S+/gi,
-    "$1 [redacted]",
-  );
+  return EXPORT_SECRET_NEEDLES.reduce((out, needle) => redactFollowing(out, needle), text);
 }
 
 export function formatDiagnosticsExport(diagnostics: TopologyDiagnostics): string {
@@ -564,7 +598,9 @@ export function formatDiagnosticsExport(diagnostics: TopologyDiagnostics): strin
           lower === "authpassword" ||
           lower === "privpassword" ||
           lower === "auth_password" ||
-          lower === "priv_password"
+          lower === "priv_password" ||
+          lower === "authpass" ||
+          lower === "privpass"
         ) {
           continue;
         }

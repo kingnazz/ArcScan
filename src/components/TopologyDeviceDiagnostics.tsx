@@ -1,6 +1,6 @@
 import {
-  coverageState,
   mibStateLabel,
+  neighbourFact,
   type DeviceTopologyDiagnostics,
   type MibState,
 } from "../lib/topology";
@@ -10,7 +10,6 @@ function stateText(state: MibState | string): string {
 }
 
 export function TopologyDeviceDiagnostics({ device }: { device: DeviceTopologyDiagnostics }) {
-  const lldp = coverageState(device, "LLDP-MIB");
   const sections: Array<{ title: string; body: string[] }> = [
     {
       title: "Discovery",
@@ -39,8 +38,8 @@ export function TopologyDeviceDiagnostics({ device }: { device: DeviceTopologyDi
     {
       title: "LLDP/CDP",
       body: [
-        `LLDP ${stateText(lldp)} · ${device.lldp.neighbourCount} neighbours · ${device.lldp.resolved} resolved`,
-        `CDP ${stateText(coverageState(device, "CISCO-CDP-MIB"))} · ${device.cdp.neighbourCount} neighbours · ${device.cdp.resolved} resolved`,
+        `LLDP ${neighbourFact(device.lldp.neighbourCount, device.lldp.state, "No neighbours")} · ${device.lldp.resolved} resolved`,
+        `CDP ${neighbourFact(device.cdp.neighbourCount, device.cdp.state, "No neighbours")} · ${device.cdp.resolved} resolved`,
         ...device.lldp.neighbours.map(
           (neighbour) =>
             `LLDP ${neighbour.localPort} → ${neighbour.remotePort ?? "remote port unknown"} · ${
@@ -143,18 +142,26 @@ export function TopologyDeviceDiagnostics({ device }: { device: DeviceTopologyDi
 
 export function deviceCompactFacts(device: DeviceTopologyDiagnostics): string[] {
   const lldp =
-    device.lldp.neighbourCount === 0 && coverageState(device, "LLDP-MIB") === "noRows"
+    device.lldp.neighbourCount === 0 && device.lldp.state === "noRows"
       ? "No neighbours"
       : device.lldp.neighbourCount > 0
         ? `${device.lldp.neighbourCount} neighbours`
-        : stateText(coverageState(device, "LLDP-MIB"));
+        : stateText(device.lldp.state);
+  const cdp =
+    device.cdp.neighbourCount === 0 && device.cdp.state === "noRows"
+      ? "No neighbours"
+      : device.cdp.neighbourCount > 0
+        ? `${device.cdp.neighbourCount} neighbours`
+        : stateText(device.cdp.state);
+  const links = device.relationshipCount ?? device.relationships.length + device.relationshipsOmitted;
   return [
     `LLDP ${lldp}`,
+    `CDP ${cdp}`,
     `FDB ${device.fdb.totalRows} MACs`,
     `ARP ${stateText(device.arp.state)}`,
     `VLAN ${stateText(device.vlan.state)}`,
     `PoE ${stateText(device.poe.detectionState)}`,
-    `Links ${device.relationships.length}`,
+    `Links ${links}`,
     `Suppressed ${device.suppressions.length + device.suppressionsOmitted}`,
   ];
 }

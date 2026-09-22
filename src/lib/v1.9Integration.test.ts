@@ -162,6 +162,36 @@ describe("ArcScan v1.9 integrated ArcAtlas contract", () => {
     );
   });
 
+  it("keeps a self-loop observation out of canonical topology without losing evidence", () => {
+    const selfLoop = {
+      fromDeviceId: 21,
+      toDeviceId: 21,
+      fromPort: "Port 24",
+      kind: "ethernet",
+      protocol: "lldp",
+      confidence: "confirmed" as const,
+      evidence: ["LLDP neighbour resolved to the same inventory device"],
+    };
+    const envelope = buildHandoffEnvelope({
+      rows: V19_INTEGRATION_ROWS,
+      notes: new Map(),
+      networkName: "Site LAN",
+      handoffId: "00000000-0000-4000-8000-000000000024",
+      topology: {
+        capturedAt: V19_INTEGRATION_TOPOLOGY.capturedAt,
+        connections: [selfLoop, ...V19_INTEGRATION_TOPOLOGY.connections],
+      },
+    });
+
+    expect(envelope.schemaVersion).toBe(2);
+    if (envelope.schemaVersion !== 2) throw new Error("expected schema v2");
+    expect(envelope.topology.connections).not.toContainEqual(selfLoop);
+    expect(envelope.topology.connections.every((connection) => connection.fromDeviceId !== connection.toDeviceId)).toBe(
+      true,
+    );
+    expect(envelope.unresolvedTopology?.connections).toContainEqual(selfLoop);
+  });
+
   it("does not suppress known links when physical-device keys are absent or blank", () => {
     const rowsWithoutExplicitPhysicalKeys = V19_INTEGRATION_ROWS.map((row) =>
       row.device_id === 21 || row.device_id === 22
