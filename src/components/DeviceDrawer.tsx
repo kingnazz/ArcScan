@@ -1,9 +1,15 @@
-// The device detail panel.
+// The device inspector.
 //
-// Typography and dividers rather than a card per section, so the panel reads as
-// one document. Actions are always in the same place and in the same order, but
-// only the ones the open services support are enabled, and the one the operator
-// most likely wants is emphasised.
+// Read top to bottom, it answers the questions in the order a technician asks
+// them: what is this, where is it, what is it running, what have I said about
+// it, how does ArcScan know, and what has changed. Facts are a two-column grid
+// rather than a form, the actions sit under the name where the eye already is,
+// and the evidence behind the answers is one click away instead of a second
+// screen of rows at the same weight as the device's address.
+//
+// Actions are always in the same place and in the same order, but only the ones
+// the open services support are enabled, and the one the operator most likely
+// wants is emphasised.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -18,8 +24,9 @@ import {
   Star,
   TerminalSquare,
 } from "lucide-react";
-import { Badge, Button, DetailRow, SectionHeading, Select } from "../ui/primitives";
+import { Badge, Button, IconButton, Select } from "../ui/primitives";
 import { Drawer } from "../ui/Drawer";
+import { Disclosure, Fact, Section } from "../ui/patterns";
 import {
   formatDateTime,
   formatLatency,
@@ -157,6 +164,89 @@ export function DeviceDrawer({
   // backend's answer; without one the honest value is Unknown.
   const presence = rowDetail?.presence ?? "unknown";
   const storedNotes = notesFromDetail(row, detail);
+  const discovery = rowDetail?.discovery ?? null;
+
+  const meta = (
+    <>
+      {context === "scan" ? (
+        // In a scan the device demonstrably answered, which is a different and
+        // stronger claim than a presence verdict.
+        <Badge tone="online">Answered this scan</Badge>
+      ) : (
+        <Badge
+          tone={presence === "present" ? "online" : presence === "missing" ? "missing" : "neutral"}
+          title={PRESENCE_HINT[presence]}
+        >
+          {presence === "present"
+            ? "Present in latest scan"
+            : presence === "missing"
+              ? "Missing from latest scan"
+              : "Presence unknown"}
+        </Badge>
+      )}
+      {row.change === "new" ? <Badge tone="new">New device</Badge> : null}
+      {row.change === "returned" ? <Badge tone="accent">Returned</Badge> : null}
+      {row.change === "changed" ? <Badge tone="changed">Changed</Badge> : null}
+      {status !== "unclassified" ? (
+        <Badge icon={STATUS_ICON[status]} title={STATUS_HINT[status]}>
+          {STATUS_LABEL[status]}
+        </Badge>
+      ) : null}
+    </>
+  );
+
+  // Available actions keep their labels; unavailable ones gather at the end as
+  // icons with the reason on hover. Each group keeps the same order on every
+  // device, so muscle memory holds, and nothing that does nothing competes with
+  // what does.
+  const others = actions.filter((action) => action.id !== primary?.id);
+  const unavailable = others.filter((action) => !action.available);
+  const toolbar = (
+    <>
+      {primary ? (
+        <Button
+          variant="primary"
+          size="sm"
+          icon={ACTION_ICON[primary.id]}
+          onClick={() => onAction(primary.id, row, primary.port)}
+          title={primary.hint}
+        >
+          {primary.label}
+        </Button>
+      ) : null}
+      {others
+        .filter((action) => action.available)
+        .map((action) => (
+          <Button
+            key={action.id}
+            size="sm"
+            variant="ghost"
+            icon={ACTION_ICON[action.id]}
+            title={action.hint}
+            onClick={() => onAction(action.id, row, action.port)}
+          >
+            {SHORT_LABEL[action.id]}
+          </Button>
+        ))}
+      {unavailable.length > 0 ? (
+        <span className="ml-auto flex items-center" aria-label="Unavailable for this device" role="group">
+          {unavailable.map((action) => (
+            <IconButton
+              key={action.id}
+              size="sm"
+              label={`${SHORT_LABEL[action.id]}: ${action.hint}`}
+              disabled
+            >
+              {ACTION_ICON[action.id]}
+            </IconButton>
+          ))}
+        </span>
+      ) : null}
+    </>
+  );
+
+  const events = rowDetail?.events ?? [];
+  const recentChanges = rowDetail?.recent_changes ?? [];
 
   return (
     <Drawer
@@ -172,338 +262,281 @@ export function DeviceDrawer({
           {row.host.mac ? ` · ${row.host.mac}` : ""}
         </span>
       }
-      footer={
-        <div className="flex flex-wrap items-center gap-1.5">
-          {primary ? (
-            <Button
-              variant="primary"
-              size="sm"
-              icon={ACTION_ICON[primary.id]}
-              onClick={() => onAction(primary.id, row, primary.port)}
-              title={primary.hint}
-            >
-              {primary.label}
-            </Button>
-          ) : null}
-          {actions
-            .filter((action) => action.id !== primary?.id)
-            .map((action) => (
-              <Button
-                key={action.id}
-                size="sm"
-                variant={action.emphasised ? "secondary" : "ghost"}
-                disabled={!action.available}
-                icon={ACTION_ICON[action.id]}
-                title={action.hint}
-                onClick={() => onAction(action.id, row, action.port)}
-              >
-                {SHORT_LABEL[action.id]}
-              </Button>
-            ))}
-        </div>
-      }
+      meta={meta}
+      toolbar={toolbar}
+      flush
     >
-      <div className="space-y-4">
-        <section>
-          <SectionHeading>Identity</SectionHeading>
-          <label className="field-label" htmlFor="device-name">
-            Name
-          </label>
-          <input
-            id="device-name"
-            className="field"
-            value={draft.name}
-            placeholder={row.host.hostname ?? "Give this device a name"}
-            disabled={deviceId == null}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, name: event.target.value, nameDirty: true }))
-            }
-            onBlur={() => {
-              if (deviceId == null) return;
-              const next = draft.name.trim();
-              if (next !== (row.custom_name ?? "")) onRename(deviceId, next || null);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-            }}
-          />
-          <p className="mt-1 text-xs text-text-muted">
-            {deviceId == null
-              ? "Naming becomes available once the scan has been saved."
-              : "Your name is used everywhere instead of the hostname."}
-          </p>
-        </section>
+      {/* Opened from Changes: what changed comes first, because it is why the
+          operator is here. */}
+      {highlightEventId != null && events.length > 0 ? (
+        <Section title="Recorded changes">
+          <EventList events={events} highlightId={highlightEventId} />
+        </Section>
+      ) : null}
 
-        <div className="divider" />
+      <IdentitySection
+        row={row}
+        discovery={discovery}
+        detailLoaded={rowDetail != null}
+        deviceId={deviceId}
+        userType={rowDetail?.device.user_device_type ?? null}
+        onTypeChange={onTypeChange}
+      />
 
-        <section>
-          <SectionHeading>Status</SectionHeading>
-          <Select
-            aria-label="Device status"
-            value={status}
-            disabled={deviceId == null}
-            onChange={(event) => {
-              if (deviceId != null) onStatusChange(deviceId, event.target.value as DeviceStatus);
-            }}
-          >
-            {(Object.keys(STATUS_LABEL) as DeviceStatus[]).map((value) => (
-              <option key={value} value={value}>
-                {STATUS_LABEL[value]}
-              </option>
-            ))}
-          </Select>
-          <p className="mt-1 text-xs leading-relaxed text-text-muted">{STATUS_HINT[status]}</p>
-        </section>
-
-        <div className="divider" />
-
-        <section>
-          <SectionHeading>Details</SectionHeading>
-          <dl>
-            <DetailRow label="State">
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                {context === "scan" ? (
-                  // In a scan the device demonstrably answered, which is a
-                  // different and stronger claim than a presence verdict.
-                  <Badge tone="online">Answered this scan</Badge>
-                ) : (
-                  <Badge
-                    tone={
-                      presence === "present"
-                        ? "online"
-                        : presence === "missing"
-                          ? "missing"
-                          : "neutral"
-                    }
-                    title={PRESENCE_HINT[presence]}
-                  >
-                    {presence === "present"
-                      ? "Present in latest scan"
-                      : presence === "missing"
-                        ? "Missing from latest scan"
-                        : "Presence unknown"}
-                  </Badge>
-                )}
-                {row.change === "new" ? <Badge tone="new">New device</Badge> : null}
-                {row.change === "returned" ? <Badge tone="accent">Returned</Badge> : null}
-                {row.change === "changed" ? <Badge tone="changed">Changed</Badge> : null}
+      <Section title="Network">
+        <dl className="facts">
+          {rowDetail?.network_name ? <Fact label="Network">{rowDetail.network_name}</Fact> : null}
+          <Fact label="IP address" mono>
+            {row.host.ip}
+          </Fact>
+          <Fact label="MAC address" mono={row.host.mac != null}>
+            {row.host.mac ?? (
+              <span className="text-text-muted">Only visible on this computer's own network</span>
+            )}
+          </Fact>
+          <Fact label="Hostname">
+            {row.host.hostname ?? <span className="text-text-muted">No reverse DNS record</span>}
+          </Fact>
+          {discovery && discovery.ipv6_addresses.length > 0 ? (
+            <Fact label="IPv6" mono>
+              <span className="break-words">{discovery.ipv6_addresses.join(", ")}</span>
+              {/* Said plainly, because showing a v6 address next to a scanner
+                  that only speaks v4 would otherwise imply it was scanned. */}
+              <span className="block font-sans text-xs text-text-muted">
+                Learned from mDNS. ArcScan scans IPv4 only.
               </span>
-            </DetailRow>
-            {rowDetail?.network_name ? (
-              <DetailRow label="Network">{rowDetail.network_name}</DetailRow>
-            ) : null}
-            <DetailRow label="IP address" mono>
-              {row.host.ip}
-            </DetailRow>
-            <DetailRow label="MAC address" mono>
-              {row.host.mac ?? (
-                <span className="text-text-muted">
-                  Not available. MAC addresses are only visible on your local segment.
-                </span>
-              )}
-            </DetailRow>
-            <DetailRow label="Manufacturer">
-              {row.host.vendor ?? <span className="text-text-muted">Unknown</span>}
-            </DetailRow>
-            <DetailRow label="Hostname">
-              {row.host.hostname ?? <span className="text-text-muted">No reverse DNS record</span>}
-            </DetailRow>
-            <DetailRow label="OS guess">
-              {row.host.os_guess ?? <span className="text-text-muted">Unknown</span>}
-            </DetailRow>
-            <DetailRow label="TTL" mono>
-              {/* An inventory row carries no TTL of its own, so the value comes
-                  from the most recent stored observation rather than reading as
-                  "no reply" for a device that answered perfectly well. */}
-              {row.host.ttl ?? rowDetail?.observations[0]?.ttl ?? (
-                <span className="font-sans text-text-muted">No ICMP reply</span>
-              )}
-            </DetailRow>
-            <DetailRow label="ICMP" mono>
-              {formatLatency(row.host.icmp_ms) ?? (
-                <span className="font-sans text-text-muted">No reply</span>
-              )}
-            </DetailRow>
-            <DetailRow label="TCP connect" mono>
-              {formatLatency(row.host.tcp_ms) ?? (
-                <span className="font-sans text-text-muted">No reply</span>
-              )}
-            </DetailRow>
-            {rowDetail ? (
-              <>
-                <DetailRow label="First seen">
-                  <span title={rowDetail.device.first_seen}>
-                    {formatDateTime(rowDetail.device.first_seen)}
-                  </span>
-                </DetailRow>
-                <DetailRow label="Last seen">
-                  <span title={rowDetail.device.last_seen}>
-                    {formatDateTime(rowDetail.device.last_seen)}
-                  </span>
-                </DetailRow>
-                <DetailRow label="Observations">
-                  {rowDetail.device.observation_count === 1
-                    ? "1 scan"
-                    : `${rowDetail.device.observation_count} scans`}
-                </DetailRow>
-              </>
-            ) : null}
-          </dl>
-        </section>
+            </Fact>
+          ) : null}
+          <Fact label="Response">
+            <span className="mono">
+              {formatLatency(row.host.icmp_ms) ?? "—"}
+              <span className="font-sans text-text-muted"> ICMP</span>
+              <span className="text-text-muted"> · </span>
+              {formatLatency(row.host.tcp_ms) ?? "—"}
+              <span className="font-sans text-text-muted"> TCP</span>
+            </span>
+          </Fact>
+          <Fact label="TTL" mono>
+            {/* An inventory row carries no TTL of its own, so the value comes
+                from the most recent stored observation rather than reading as
+                "no reply" for a device that answered perfectly well. */}
+            {row.host.ttl ?? rowDetail?.observations[0]?.ttl ?? (
+              <span className="font-sans text-text-muted">No ICMP reply</span>
+            )}
+          </Fact>
+          {rowDetail ? (
+            <>
+              <Fact label="First seen" title={rowDetail.device.first_seen}>
+                {formatDateTime(rowDetail.device.first_seen)}
+              </Fact>
+              <Fact label="Last seen" title={rowDetail.device.last_seen}>
+                {formatDateTime(rowDetail.device.last_seen)}
+              </Fact>
+              <Fact label="Seen in">
+                {rowDetail.device.observation_count === 1
+                  ? "1 scan"
+                  : `${rowDetail.device.observation_count} scans`}
+              </Fact>
+            </>
+          ) : null}
+        </dl>
+      </Section>
 
-        <div className="divider" />
-
-        <section>
-          <SectionHeading>Open services</SectionHeading>
-          {row.host.open_ports.length === 0 ? (
-            <p className="text-[13px] text-text-secondary">
-              No probed port accepted a connection. The device answered ICMP or ARP, so it is on the
-              network with nothing listening on the ports this profile checked.
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {row.host.open_ports.map((port) => (
-                <li key={port} className="flex items-center justify-between gap-3">
-                  <span className="mono text-[13px] text-text">{serviceWithPort(port)}</span>
-                  {isSensitivePort(port) ? (
-                    <Badge tone="warning">Remote access</Badge>
-                  ) : null}
+      <Section title="Services">
+        {row.host.open_ports.length === 0 ? (
+          <p className="text-[13px] leading-relaxed text-text-secondary">
+            No probed port accepted a connection. The device answered ICMP or ARP, so it is on the
+            network with nothing listening on the ports this profile checked.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {row.host.open_ports.map((port) => (
+              <li key={port} className="flex items-center justify-between gap-3">
+                <span className="mono text-[13px] text-text">{serviceWithPort(port)}</span>
+                {isSensitivePort(port) ? <Badge tone="warning">Remote access</Badge> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+        {discovery && discovery.services.length > 0 ? (
+          <div className="mt-3">
+            <p className="text-xs text-text-muted">Advertised on the local network</p>
+            <ul className="mt-1 space-y-0.5">
+              {discovery.services.map((service) => (
+                <li key={service} className="text-[13px] text-text-secondary">
+                  <span className="break-words">{serviceName(service)}</span>
+                  <span className="mono ml-1.5 text-xs text-text-muted">{service}</span>
                 </li>
               ))}
             </ul>
-          )}
-        </section>
+          </div>
+        ) : null}
+      </Section>
 
-        {rowDetail?.discovery || deviceId != null ? (
-          <>
-            <div className="divider" />
-            <DiscoverySection
-              discovery={rowDetail?.discovery ?? null}
-              hasUserName={Boolean(row.custom_name?.trim())}
-              deviceId={deviceId}
-              userType={rowDetail?.device.user_device_type ?? null}
-              onTypeChange={onTypeChange}
-              onCopyDiscovery={onCopyDiscovery}
+      <Section title="Your labels">
+        <div className="space-y-3">
+          <div>
+            <label className="field-label" htmlFor="device-name">
+              Name
+            </label>
+            <input
+              id="device-name"
+              className="field"
+              value={draft.name}
+              placeholder={row.host.hostname ?? "Give this device a name"}
+              disabled={deviceId == null}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, name: event.target.value, nameDirty: true }))
+              }
+              onBlur={() => {
+                if (deviceId == null) return;
+                const next = draft.name.trim();
+                if (next !== (row.custom_name ?? "")) onRename(deviceId, next || null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
             />
-          </>
-        ) : null}
+            <p className="mt-1 text-xs text-text-muted">
+              {deviceId == null
+                ? "Naming becomes available once the scan has been saved."
+                : "Your name is used everywhere instead of the hostname."}
+            </p>
+          </div>
 
-        {rowDetail && rowDetail.previous_ips.length > 1 ? (
-          <>
-            <div className="divider" />
-            <section>
-              <SectionHeading>Previous addresses</SectionHeading>
-              <ul className="mono space-y-0.5 text-[13px] text-text-secondary">
-                {rowDetail.previous_ips.slice(1).map((ip) => (
-                  <li key={ip}>{ip}</li>
-                ))}
-              </ul>
-            </section>
-          </>
-        ) : null}
+          <div>
+            <label className="field-label" htmlFor="device-status">
+              Status
+            </label>
+            <Select
+              id="device-status"
+              aria-label="Device status"
+              value={status}
+              disabled={deviceId == null}
+              onChange={(event) => {
+                if (deviceId != null) onStatusChange(deviceId, event.target.value as DeviceStatus);
+              }}
+            >
+              {(Object.keys(STATUS_LABEL) as DeviceStatus[]).map((value) => (
+                <option key={value} value={value}>
+                  {STATUS_LABEL[value]}
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1 text-xs leading-relaxed text-text-muted">{STATUS_HINT[status]}</p>
+          </div>
 
-        {rowDetail && rowDetail.events.length > 0 ? (
-          <>
-            <div className="divider" />
-            <section>
-              <SectionHeading>Recorded changes</SectionHeading>
-              <EventList events={rowDetail.events} highlightId={highlightEventId} />
-            </section>
-          </>
-        ) : rowDetail && rowDetail.recent_changes.length > 0 ? (
-          <>
-            <div className="divider" />
-            <section>
-              <SectionHeading>Since the previous sighting</SectionHeading>
-              <ChangeList changes={rowDetail.recent_changes} />
-            </section>
-          </>
-        ) : null}
+          <div>
+            <label className="field-label" htmlFor="device-notes">
+              Notes
+            </label>
+            <textarea
+              id="device-notes"
+              className="field field-textarea min-h-[4.5rem]"
+              value={draft.notes}
+              placeholder="Anything worth remembering about this device"
+              disabled={deviceId == null}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, notes: event.target.value, notesDirty: true }))
+              }
+              onBlur={() => {
+                if (deviceId == null) return;
+                const next = draft.notes.trim();
+                if (next !== (storedNotes ?? "")) onNotesChange(deviceId, next || null);
+              }}
+            />
+          </div>
+        </div>
+      </Section>
 
-        <div className="divider" />
+      {discovery || deviceId != null ? (
+        <EvidenceSection
+          discovery={discovery}
+          deviceId={deviceId}
+          onCopyDiscovery={onCopyDiscovery}
+        />
+      ) : null}
 
-        <section>
-          <SectionHeading>Notes</SectionHeading>
-          <textarea
-            className="field field-textarea min-h-[4.5rem]"
-            value={draft.notes}
-            placeholder="Anything worth remembering about this device"
-            disabled={deviceId == null}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, notes: event.target.value, notesDirty: true }))
-            }
-            onBlur={() => {
-              if (deviceId == null) return;
-              const next = draft.notes.trim();
-              if (next !== (storedNotes ?? "")) onNotesChange(deviceId, next || null);
-            }}
-          />
-        </section>
+      {highlightEventId == null && events.length > 0 ? (
+        <Section title="Recorded changes">
+          <EventList events={events} highlightId={null} />
+        </Section>
+      ) : events.length === 0 && recentChanges.length > 0 ? (
+        <Section title="Since the previous sighting">
+          <ChangeList changes={recentChanges} />
+        </Section>
+      ) : null}
 
-        {rowDetail && rowDetail.observations.length > 0 ? (
-          <>
-            <div className="divider" />
-            <section>
-              <SectionHeading>Scan history</SectionHeading>
-              <ul className="space-y-1.5">
-                {rowDetail.observations.slice(0, 12).map((observation) => (
-                  <li
-                    key={`${observation.scan_id}-${observation.ip}`}
-                    className="flex items-baseline justify-between gap-3 text-[13px]"
-                  >
-                    <span className="mono text-text-secondary">{observation.ip}</span>
-                    <span className="text-xs text-text-muted" title={observation.observed_at}>
-                      {formatRelative(observation.observed_at)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              {rowDetail.observations.length > 12 ? (
-                <p className="mt-1.5 text-xs text-text-muted">
-                  Showing the 12 most recent of {rowDetail.observations.length} sightings.
-                </p>
-              ) : null}
-            </section>
-          </>
-        ) : loading ? (
-          <p className="text-xs text-text-muted">Loading this device's history…</p>
-        ) : null}
-      </div>
+      {rowDetail && (rowDetail.observations.length > 0 || rowDetail.previous_ips.length > 1) ? (
+        <Section title="History">
+          <div className="space-y-2">
+            {rowDetail.previous_ips.length > 1 ? (
+              <div>
+                <p className="text-xs text-text-muted">Previous addresses</p>
+                <ul className="mono mt-1 space-y-0.5 text-[13px] text-text-secondary">
+                  {rowDetail.previous_ips.slice(1).map((ip) => (
+                    <li key={ip}>{ip}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {rowDetail.observations.length > 0 ? (
+              <Disclosure summary="Sightings" count={rowDetail.observations.length}>
+                <ul className="space-y-1">
+                  {rowDetail.observations.slice(0, 12).map((observation) => (
+                    <li
+                      key={`${observation.scan_id}-${observation.ip}`}
+                      className="flex items-baseline justify-between gap-3 text-[13px]"
+                    >
+                      <span className="mono text-text-secondary">{observation.ip}</span>
+                      <span className="text-xs text-text-muted" title={observation.observed_at}>
+                        {formatRelative(observation.observed_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {rowDetail.observations.length > 12 ? (
+                  <p className="mt-1.5 text-xs text-text-muted">
+                    Showing the 12 most recent of {rowDetail.observations.length} sightings.
+                  </p>
+                ) : null}
+              </Disclosure>
+            ) : null}
+          </div>
+        </Section>
+      ) : loading ? (
+        <p className="px-4 py-3 text-xs text-text-muted">Loading this device's history…</p>
+      ) : null}
     </Drawer>
   );
 }
 
 /**
- * What local discovery established about a device, what the operator made of
- * it, and what all of it rests on.
+ * What the device is: its type, the name and model it gave, what it runs.
  *
- * The section answers seven questions, in this order, because that is the order
- * a person asks them: what does ArcScan call this, what type is it, who decided
- * that, what did ArcScan itself think, why, what else did it see, and what has
- * it stopped hearing.
+ * Every value here came off the network from an unauthenticated device, so it
+ * is rendered as text — React escapes it, the Rust parsers already bounded its
+ * length and stripped its control characters, and `break-words` keeps a device
+ * that advertises a 128-character model number from breaking the layout.
  *
- * Two things it is careful about. It never competes with the name at the top of
- * the drawer: when the operator has named the device, the detected name is
- * shown as something ArcScan found, not as a correction. And every value here
- * came off the network from an unauthenticated device, so it is rendered as
- * text — React escapes it, the Rust parsers already bounded its length and
- * stripped its control characters, and `break-words` keeps a device that
- * advertises a 128-character model number from breaking the layout.
+ * It never competes with the name at the top of the inspector: when the
+ * operator has named the device, the detected name is shown as something
+ * ArcScan found, not as a correction.
  */
-function DiscoverySection({
+function IdentitySection({
+  row,
   discovery,
-  hasUserName,
+  detailLoaded,
   deviceId,
   userType,
   onTypeChange,
-  onCopyDiscovery,
 }: {
+  row: DeviceRow;
   discovery: DeviceDiscovery | null;
-  hasUserName: boolean;
+  detailLoaded: boolean;
   deviceId: number | null;
   userType: string | null;
   onTypeChange?: (deviceId: number, deviceType: string | null) => Promise<boolean>;
-  onCopyDiscovery?: (deviceId: number) => void;
 }) {
   const resolved = resolveType({
     userOverride: userType,
@@ -518,26 +551,15 @@ function DiscoverySection({
     discovery != null &&
     discovery.raw_type_confidence === "high" &&
     discovery.type_confidence !== "high";
-
-  const evidence = discovery?.evidence ?? [];
-  const staleEvidence = evidence.filter((row) => row.freshness === "stale");
-  const agingEvidence = evidence.filter((row) => row.freshness === "aging");
   // One line, or null when nothing established a product. Null renders nothing
   // rather than an empty row: a column of dashes reads as "asked and found
   // nothing", which is not what a Quick Scan did.
   const osLine = osSummary(discovery);
+  const hasUserName = Boolean(row.custom_name?.trim());
 
   return (
-    <section>
-      <SectionHeading>Discovery</SectionHeading>
-
-      <TypeEditor
-        deviceId={deviceId}
-        userType={userType}
-        resolved={resolved}
-        onTypeChange={onTypeChange}
-      />
-
+    <Section title="Identity">
+      <TypeEditor deviceId={deviceId} userType={userType} resolved={resolved} onTypeChange={onTypeChange} />
       {detectedLine ? (
         <p className="mt-1 text-xs text-text-muted">
           {/* Kept underneath rather than replaced, so clearing the correction
@@ -547,244 +569,239 @@ function DiscoverySection({
       ) : null}
       {reduced ? (
         <p className="mt-1 text-xs text-text-muted">
-          Reduced from high confidence: nothing has confirmed this in the last few scans that
-          could have.
+          Reduced from high confidence: nothing has confirmed this in the last few scans that could
+          have.
+        </p>
+      ) : null}
+      {/* A device that looks like two things is shown as such rather than
+          having the disagreement resolved silently. */}
+      {discovery && discovery.type_conflicts.length > 0 ? (
+        <p className="mt-1 text-xs text-text-muted">
+          Also consistent with:{" "}
+          <span className="text-text-secondary">{discovery.type_conflicts.join(" · ")}</span>
         </p>
       ) : null}
 
-      {discovery ? (
-        <>
-          <dl className="mt-2">
-            {discovery.detected_name ? (
-              <DetailRow label="Detected as">
-                <span className="break-words">{discovery.detected_name}</span>
-                {hasUserName ? (
-                  <p className="mt-0.5 text-xs text-text-muted">
-                    Your name is used everywhere instead.
-                  </p>
-                ) : null}
-              </DetailRow>
-            ) : null}
-
-            {discovery.manufacturer ? (
-              <DetailRow label="Manufacturer">
-                <span className="break-words">{discovery.manufacturer}</span>
-              </DetailRow>
-            ) : null}
-            {discovery.model_name ? (
-              <DetailRow label="Model">
-                <span className="break-words">
-                  {discovery.model_name}
-                  {discovery.model_number && discovery.model_number !== discovery.model_name
-                    ? ` (${discovery.model_number})`
-                    : ""}
-                </span>
-              </DetailRow>
-            ) : null}
-            {/* ---- v1.9 ------------------------------------------------
-                The operating system and hardware a deep or credentialed scan
-                established. Shown between the model and the protocol-level
-                names because that is the order a technician reads them in:
-                what it is, then what it runs, then how ArcScan knows.
-
-                Every row is conditional. A device no deep scan reached shows
-                none of them, rather than showing a column of dashes that
-                would read as "asked and found nothing". */}
-            {osLine ? (
-              <DetailRow label="Operating system">
-                <span className="break-words">{osLine}</span>
-                {discovery.windows_product_type ? (
-                  <p className="mt-0.5 text-xs text-text-muted">
-                    {WINDOWS_PRODUCT_TYPE_HINT[discovery.windows_product_type] ??
-                      `Windows ProductType ${discovery.windows_product_type}.`}
-                  </p>
-                ) : null}
-              </DetailRow>
-            ) : null}
-            {discovery.hardware_model ? (
-              <DetailRow label="Hardware">
-                <span className="break-words">
-                  {[discovery.hardware_manufacturer, discovery.hardware_model]
-                    .filter(Boolean)
-                    .join(" ")}
-                </span>
-              </DetailRow>
-            ) : null}
-            {discovery.hardware_serial ? (
-              <DetailRow label="Serial / service tag" mono>
-                <span className="break-words">{discovery.hardware_serial}</span>
-              </DetailRow>
-            ) : null}
-            {discovery.system_uuid ? (
-              <DetailRow label="System UUID" mono>
-                <span className="break-words">{discovery.system_uuid}</span>
-              </DetailRow>
-            ) : null}
-            {discovery.domain ? (
-              <DetailRow label="Domain">
-                <span className="break-words">{discovery.domain}</span>
-              </DetailRow>
-            ) : null}
-            {discovery.mdns_hostname ? (
-              <DetailRow label="mDNS host name" mono>
-                <span className="break-words">{discovery.mdns_hostname}</span>
-              </DetailRow>
-            ) : null}
-            {discovery.ssdp_friendly_name &&
-            discovery.ssdp_friendly_name !== discovery.detected_name ? (
-              <DetailRow label="SSDP name">
-                <span className="break-words">{discovery.ssdp_friendly_name}</span>
-              </DetailRow>
-            ) : null}
-            <DetailRow label="Discovered by">{sourcesLabel(discovery.sources)}</DetailRow>
-            <DetailRow label="Evidence">
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                <Badge
-                  tone={stale ? "warning" : discovery.evidence_freshness === "aging" ? "accent" : "online"}
-                  title={FRESHNESS_HINT[discovery.evidence_freshness] ?? FRESHNESS_HINT.current}
-                >
-                  {freshnessLabel(discovery.evidence_freshness)}
-                </Badge>
+      <dl className="facts mt-3">
+        <Fact label="Manufacturer">
+          {discovery?.manufacturer ?? row.host.vendor ?? <span className="text-text-muted">Unknown</span>}
+        </Fact>
+        {discovery?.detected_name ? (
+          <Fact label="Detected as">
+            <span className="break-words">{discovery.detected_name}</span>
+            {hasUserName ? (
+              <span className="mt-0.5 block text-xs text-text-muted">
+                Your name is used everywhere instead.
               </span>
-            </DetailRow>
-            {discovery.last_discovered_at ? (
-              <DetailRow label="Last discovered">
-                <span title={discovery.last_discovered_at}>
-                  {formatRelative(discovery.last_discovered_at)}
-                </span>
-              </DetailRow>
             ) : null}
-            {discovery.ipv6_addresses.length > 0 ? (
-              <DetailRow label="IPv6 addresses" mono>
-                <span className="break-words">{discovery.ipv6_addresses.join(", ")}</span>
-                {/* Said plainly, because showing a v6 address next to a scanner
-                    that only speaks v4 would otherwise imply it was scanned. */}
-                <p className="font-sans text-xs text-text-muted">
-                  Learned from mDNS. ArcScan scans IPv4 only.
-                </p>
-              </DetailRow>
-            ) : null}
-          </dl>
-
-          {discovery.identity_evidence && discovery.identity_evidence.length > 0 ? (
-            <div className="mt-2">
-              <p className="field-label">Identity</p>
-              {/* What ArcScan would use to recognise this device again, and to
-                  tell it apart from a second machine with the same name.
-                  Strongest first. */}
-              <ul className="mt-0.5 space-y-0.5">
-                {discovery.identity_evidence.map((line) => (
-                  <li
-                    key={line}
-                    className="break-words font-mono text-[12.5px] text-text-secondary"
-                  >
-                    {line}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {discovery.type_evidence.length > 0 ? (
-            <div className="mt-2">
-              <p className="field-label">Why</p>
-              <ul className="mt-0.5 space-y-0.5">
-                {discovery.type_evidence.map((line) => (
-                  <li key={line} className="break-words text-[13px] text-text-secondary">
-                    {line}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {discovery.services.length > 0 ? (
-            <div className="mt-2">
-              <p className="field-label">Advertised now</p>
-              <ul className="mt-0.5 space-y-0.5">
-                {discovery.services.map((service) => (
-                  <li key={service} className="text-[13px] text-text-secondary">
-                    <span className="break-words">{serviceName(service)}</span>
-                    <span className="mono ml-1.5 text-xs text-text-muted">{service}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {/* Evidence ArcScan has stopped hearing, kept and dated rather than
-              deleted. Counted in scans, never in days: ArcScan only learns when
-              it runs, and "four months ago" would say more about the operator's
-              calendar than about the device. */}
-          {agingEvidence.length > 0 ? (
-            <EvidenceGroup heading="Not heard recently" rows={agingEvidence} />
-          ) : null}
-          {staleEvidence.length > 0 ? (
-            <EvidenceGroup heading="Stale evidence" rows={staleEvidence} />
-          ) : null}
-
-          {/* A device that looks like two things is shown as such rather than
-              having the disagreement resolved silently. */}
-          {discovery.type_conflicts.length > 0 ? (
-            <div className="mt-2">
-              <p className="field-label">Also consistent with</p>
-              <p className="mt-0.5 text-[13px] text-text-secondary">
-                {discovery.type_conflicts.join(" · ")}
-              </p>
-            </div>
-          ) : null}
-
-          {discovery.alternate_names.length > 0 ? (
-            <div className="mt-2">
-              <p className="field-label">Other names it advertised</p>
-              <ul className="mt-0.5 space-y-0.5">
-                {discovery.alternate_names.map((name) => (
-                  <li key={name} className="break-words text-[13px] text-text-secondary">
-                    {name}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {discovery.presentation_url ? (
-            <p className="mt-2 text-xs text-text-muted">
-              {/* Recorded, never opened: the Web action below validates the
-                  address itself, and a device-supplied URL is not a link to
-                  hand a person. */}
-              This device advertises its own page at{" "}
-              <span className="mono break-all text-text-secondary">
-                {discovery.presentation_url}
+          </Fact>
+        ) : null}
+        {discovery?.model_name ? (
+          <Fact label="Model">
+            <span className="break-words">
+              {discovery.model_name}
+              {discovery.model_number && discovery.model_number !== discovery.model_name
+                ? ` (${discovery.model_number})`
+                : ""}
+            </span>
+          </Fact>
+        ) : null}
+        {/* The operating system and hardware a deep or credentialed scan
+            established, else the TTL-based guess a Quick scan makes. */}
+        {osLine ? (
+          <Fact label="Operating system">
+            <span className="break-words">{osLine}</span>
+            {discovery?.windows_product_type ? (
+              <span className="mt-0.5 block text-xs text-text-muted">
+                {WINDOWS_PRODUCT_TYPE_HINT[discovery.windows_product_type] ??
+                  `Windows ProductType ${discovery.windows_product_type}.`}
               </span>
-              .
-            </p>
-          ) : null}
-        </>
-      ) : (
-        <p className="mt-2 text-[13px] text-text-secondary">
-          No discovery-capable scan has reached this device, so ArcScan has nothing of its own to
-          go on. You can still set the type yourself.
+            ) : null}
+          </Fact>
+        ) : (
+          <Fact label="OS guess" title={row.host.ttl != null ? `Guessed from TTL ${row.host.ttl}` : undefined}>
+            {row.host.os_guess ?? <span className="text-text-muted">Unknown</span>}
+          </Fact>
+        )}
+        {discovery?.hardware_model ? (
+          <Fact label="Hardware">
+            <span className="break-words">
+              {[discovery.hardware_manufacturer, discovery.hardware_model].filter(Boolean).join(" ")}
+            </span>
+          </Fact>
+        ) : null}
+        {discovery?.hardware_serial ? (
+          <Fact label="Serial / service tag" mono>
+            <span className="break-words">{discovery.hardware_serial}</span>
+          </Fact>
+        ) : null}
+        {discovery?.system_uuid ? (
+          <Fact label="System UUID" mono>
+            <span className="break-words">{discovery.system_uuid}</span>
+          </Fact>
+        ) : null}
+        {discovery?.domain ? (
+          <Fact label="Domain">
+            <span className="break-words">{discovery.domain}</span>
+          </Fact>
+        ) : null}
+        {discovery?.mdns_hostname ? (
+          <Fact label="mDNS host name" mono>
+            <span className="break-words">{discovery.mdns_hostname}</span>
+          </Fact>
+        ) : null}
+        {discovery?.ssdp_friendly_name && discovery.ssdp_friendly_name !== discovery.detected_name ? (
+          <Fact label="SSDP name">
+            <span className="break-words">{discovery.ssdp_friendly_name}</span>
+          </Fact>
+        ) : null}
+      </dl>
+
+      {discovery == null && detailLoaded ? (
+        <p className="mt-3 text-xs leading-relaxed text-text-muted">
+          No discovery-capable scan has reached this device, so ArcScan has nothing of its own to go
+          on. You can still set the type yourself.
         </p>
-      )}
+      ) : null}
+    </Section>
+  );
+}
 
-      {deviceId != null && onCopyDiscovery ? (
-        <div className="mt-3">
+/**
+ * How ArcScan knows: which protocols heard the device, how fresh that is, and
+ * the evidence itself.
+ *
+ * The summary stays visible; the evidence rows are behind a disclosure because
+ * they matter when a technician doubts an answer, not on every glance. Evidence
+ * ArcScan has stopped hearing is kept and dated rather than deleted, counted in
+ * scans and never in days: ArcScan only learns when it runs.
+ */
+function EvidenceSection({
+  discovery,
+  deviceId,
+  onCopyDiscovery,
+}: {
+  discovery: DeviceDiscovery | null;
+  deviceId: number | null;
+  onCopyDiscovery?: (deviceId: number) => void;
+}) {
+  const evidence = discovery?.evidence ?? [];
+  const staleEvidence = evidence.filter((row) => row.freshness === "stale");
+  const agingEvidence = evidence.filter((row) => row.freshness === "aging");
+  const stale = discovery?.evidence_freshness === "stale";
+  const detailCount =
+    (discovery?.type_evidence.length ?? 0) +
+    (discovery?.identity_evidence?.length ?? 0) +
+    agingEvidence.length +
+    staleEvidence.length +
+    (discovery?.alternate_names.length ?? 0);
+
+  return (
+    <Section
+      title="Discovery"
+      action={
+        deviceId != null && onCopyDiscovery ? (
           <Button
             size="sm"
             variant="ghost"
             icon={<Copy className="h-3.5 w-3.5" />}
             onClick={() => onCopyDiscovery(deviceId)}
-            title="A short, redacted summary for a bug report. Built here and sent nowhere."
+            title="A redacted summary for reporting bad detection. It leaves out your notes, the MAC address, the serial number and the full IP address, and nothing is sent anywhere."
           >
             Copy discovery details
           </Button>
-          <p className="mt-1 text-xs text-text-muted">
-            A redacted summary for reporting bad detection. It leaves out your notes, the MAC
-            address, the serial number and the full IP address, and nothing is sent anywhere.
-          </p>
-        </div>
-      ) : null}
-    </section>
+        ) : undefined
+      }
+    >
+      {discovery ? (
+        <>
+          <dl className="facts">
+            <Fact label="Discovered by">{sourcesLabel(discovery.sources)}</Fact>
+            <Fact label="Evidence">
+              <Badge
+                tone={stale ? "warning" : discovery.evidence_freshness === "aging" ? "accent" : "online"}
+                title={FRESHNESS_HINT[discovery.evidence_freshness] ?? FRESHNESS_HINT.current}
+              >
+                {freshnessLabel(discovery.evidence_freshness)}
+              </Badge>
+            </Fact>
+            {discovery.last_discovered_at ? (
+              <Fact label="Last discovered" title={discovery.last_discovered_at}>
+                {formatRelative(discovery.last_discovered_at)}
+              </Fact>
+            ) : null}
+          </dl>
+
+          {detailCount > 0 ? (
+            <div className="mt-2.5">
+              <Disclosure summary="Evidence" count={detailCount}>
+                <div className="space-y-2.5">
+                  {discovery.type_evidence.length > 0 ? (
+                    <EvidenceList heading="Why this type">
+                      {discovery.type_evidence.map((line) => (
+                        <li key={line} className="break-words text-[13px] text-text-secondary">
+                          {line}
+                        </li>
+                      ))}
+                    </EvidenceList>
+                  ) : null}
+                  {discovery.identity_evidence && discovery.identity_evidence.length > 0 ? (
+                    // What ArcScan would use to recognise this device again, and
+                    // to tell it apart from a second machine with the same name.
+                    // Strongest first.
+                    <EvidenceList heading="How it is recognised">
+                      {discovery.identity_evidence.map((line) => (
+                        <li key={line} className="break-words font-mono text-[12.5px] text-text-secondary">
+                          {line}
+                        </li>
+                      ))}
+                    </EvidenceList>
+                  ) : null}
+                  {agingEvidence.length > 0 ? (
+                    <EvidenceGroup heading="Not heard recently" rows={agingEvidence} />
+                  ) : null}
+                  {staleEvidence.length > 0 ? (
+                    <EvidenceGroup heading="Stale evidence" rows={staleEvidence} />
+                  ) : null}
+                  {discovery.alternate_names.length > 0 ? (
+                    <EvidenceList heading="Other names it advertised">
+                      {discovery.alternate_names.map((name) => (
+                        <li key={name} className="break-words text-[13px] text-text-secondary">
+                          {name}
+                        </li>
+                      ))}
+                    </EvidenceList>
+                  ) : null}
+                </div>
+              </Disclosure>
+            </div>
+          ) : null}
+
+          {discovery.presentation_url ? (
+            <p className="mt-2 text-xs text-text-muted">
+              {/* Recorded, never opened: the Web action validates the address
+                  itself, and a device-supplied URL is not a link to hand a
+                  person. */}
+              Advertises its own page at{" "}
+              <span className="mono break-all text-text-secondary">{discovery.presentation_url}</span>.
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p className="text-xs leading-relaxed text-text-muted">
+          Nothing discovered yet. Local discovery runs with scans of this computer's own network.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function EvidenceList({ heading, children }: { heading: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs text-text-muted">{heading}</p>
+      <ul className="mt-0.5 space-y-0.5">{children}</ul>
+    </div>
   );
 }
 
@@ -895,8 +912,8 @@ function EvidenceGroup({
   rows: DiscoveryEvidenceRow[];
 }) {
   return (
-    <div className="mt-2">
-      <p className="field-label">{heading}</p>
+    <div>
+      <p className="text-xs text-text-muted">{heading}</p>
       <ul className="mt-0.5 space-y-0.5">
         {rows.slice(0, 8).map((row) => (
           <li

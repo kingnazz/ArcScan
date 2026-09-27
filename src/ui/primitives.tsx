@@ -141,6 +141,22 @@ export function Select({
 
 export type BadgeTone = "neutral" | "accent" | "online" | "new" | "changed" | "missing" | "warning";
 
+/**
+ * Written out in full rather than built as `badge-${tone}`: Tailwind only keeps
+ * the component classes it can find in the source, and a class assembled at
+ * runtime is invisible to it — which, before 1.10, silently rendered every
+ * tone as neutral.
+ */
+const BADGE_CLASS: Record<BadgeTone, string> = {
+  neutral: "badge-neutral",
+  accent: "badge-accent",
+  online: "badge-online",
+  new: "badge-new",
+  changed: "badge-changed",
+  missing: "badge-missing",
+  warning: "badge-warning",
+};
+
 export function Badge({
   tone = "neutral",
   icon,
@@ -153,7 +169,7 @@ export function Badge({
   title?: string;
 }) {
   return (
-    <span className={`badge badge-${tone}`} title={title}>
+    <span className={`badge ${BADGE_CLASS[tone]}`} title={title}>
       {icon}
       {children}
     </span>
@@ -188,13 +204,15 @@ export function StatusDot({ tone, label }: { tone: BadgeTone; label: string }) {
 export function SectionHeading({
   children,
   action,
+  id,
 }: {
   children: ReactNode;
   action?: ReactNode;
+  id?: string;
 }) {
   return (
-    <div className="mb-2 flex items-center justify-between gap-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+    <div className="mb-2 flex min-h-[20px] items-center justify-between gap-3">
+      <h3 id={id} className="section-label">
         {children}
       </h3>
       {action}
@@ -218,33 +236,13 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-14 text-center">
-      {icon ? <div className="text-text-muted">{icon}</div> : null}
-      <p className="text-sm font-medium text-text">{title}</p>
+    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+      {icon ? <div className="mb-1 text-text-muted">{icon}</div> : null}
+      <p className="text-sm font-semibold text-text">{title}</p>
       {description ? (
-        <p className="max-w-sm text-[13px] leading-relaxed text-text-secondary">{description}</p>
+        <p className="max-w-md text-[13px] leading-relaxed text-text-secondary">{description}</p>
       ) : null}
-      {action ? <div className="mt-2">{action}</div> : null}
-    </div>
-  );
-}
-
-/** A labelled key/value pair, the unit the device drawer is built from. */
-export function DetailRow({
-  label,
-  children,
-  mono = false,
-}: {
-  label: string;
-  children: ReactNode;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline gap-3 py-1">
-      <dt className="w-28 shrink-0 text-xs text-text-muted">{label}</dt>
-      <dd className={`min-w-0 flex-1 break-words text-[13px] text-text ${mono ? "mono" : ""}`}>
-        {children}
-      </dd>
+      {action ? <div className="mt-2 flex flex-wrap justify-center gap-2">{action}</div> : null}
     </div>
   );
 }

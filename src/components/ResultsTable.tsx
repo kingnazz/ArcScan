@@ -4,11 +4,17 @@
 // header, dense rows, one visual anchor per row (name, address, state), quieter
 // treatment for supporting detail, and full keyboard navigation that does not
 // close the device panel between steps.
+//
+// The state column carries information rather than a constant: every row in a
+// scan answered, so a green dot on every row said nothing. The mark now shows
+// whether the device is still being identified, and whether it is new, back or
+// changed since the previous scan.
 
 import { useEffect, useMemo, useRef } from "react";
-import { ArrowDown, ArrowUp, CircleDot, Eye, ShieldCheck, Sparkles, Star } from "lucide-react";
-import { Badge, StatusDot } from "../ui/primitives";
+import { CircleDot, Eye, ShieldCheck, Star } from "lucide-react";
+import { Badge, StatusDot, type BadgeTone } from "../ui/primitives";
 import { Tooltip } from "../ui/Popover";
+import { SortHeader } from "../ui/patterns";
 import {
   formatLatency,
   formatRelative,
@@ -17,7 +23,7 @@ import {
   serviceLabel,
   serviceWithPort,
 } from "../lib/format";
-import { isUnnamed, rowName, type DeviceRow } from "../lib/live";
+import { rowName, tableName, type DeviceRow } from "../lib/live";
 import { COLUMNS, type SortDir, type SortKey } from "../lib/table";
 import type { Density } from "../lib/prefs";
 
@@ -94,36 +100,17 @@ export function ResultsTable({
       >
         <thead>
           <tr>
-            {columns.map((column) => {
-              const active = sortKey === column.key;
-              return (
-                <th
-                  key={column.key}
-                  scope="col"
-                  aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-                  className={column.align === "right" ? "text-right" : undefined}
-                  style={column.key === "state" ? { width: "3.25rem" } : undefined}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSort(column.key)}
-                    className={`inline-flex items-center gap-1 rounded transition-colors duration-fast hover:text-text ${
-                      column.align === "right" ? "flex-row-reverse" : ""
-                    } ${active ? "text-text" : ""}`}
-                    title={`Sort by ${column.label.toLowerCase()}`}
-                  >
-                    {column.label}
-                    {active ? (
-                      sortDir === "asc" ? (
-                        <ArrowUp className="h-3 w-3 text-accent-text" aria-hidden />
-                      ) : (
-                        <ArrowDown className="h-3 w-3 text-accent-text" aria-hidden />
-                      )
-                    ) : null}
-                  </button>
-                </th>
-              );
-            })}
+            {columns.map((column) => (
+              <SortHeader
+                key={column.key}
+                label={column.label}
+                active={sortKey === column.key}
+                direction={sortDir}
+                align={column.align}
+                onSort={() => onSort(column.key)}
+                width={column.key === "state" ? "3rem" : undefined}
+              />
+            ))}
           </tr>
         </thead>
         <tbody
@@ -171,6 +158,10 @@ function Row({
   return (
     <tr
       data-ip={host.ip}
+      // A double click opens the device; it should not also select a word.
+      onMouseDown={(event) => {
+        if (event.detail > 1) event.preventDefault();
+      }}
       aria-selected={selected}
       onClick={() => onSelect(host.ip)}
       onDoubleClick={() => onOpen(host.ip)}
@@ -187,26 +178,8 @@ function Row({
       ) : null}
 
       {show("name") ? (
-        <td className="max-w-[15rem]">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span
-              className={`truncate font-medium ${isUnnamed(row) ? "text-text-secondary" : "text-text"}`}
-              title={rowName(row)}
-            >
-              {rowName(row)}
-            </span>
-            {row.change === "new" ? (
-              <Badge tone="new" icon={<Sparkles className="h-2.5 w-2.5" aria-hidden />}>
-                New
-              </Badge>
-            ) : null}
-            {row.change === "returned" ? <Badge tone="accent">Back</Badge> : null}
-            {row.change === "changed" ? (
-              <Tooltip content={<ChangeSummary row={row} />}>
-                <Badge tone="changed">Changed</Badge>
-              </Tooltip>
-            ) : null}
-          </div>
+        <td className="max-w-[16rem]">
+          <NameCell row={row} />
         </td>
       ) : null}
 
@@ -257,29 +230,79 @@ function Row({
 }
 
 /**
- * The state column: online, plus how the operator has classified the device.
- * Every indicator carries a label, so nothing here is communicated by colour
- * alone.
+ * The state column: one mark per row, always with a label.
+ *
+ * Still identifying (the MAC, vendor and name have not arrived), new, back,
+ * changed, or simply answered. The change states are the ones worth a glance,
+ * so they are the only ones in colour other than the plain "answered" green.
  */
 function StateCell({ row }: { row: DeviceRow }) {
-  const statusIcon = () => {
-    switch (row.status) {
-      case "trusted":
-        return <ShieldCheck className="h-3.5 w-3.5 text-online" aria-label="Trusted" />;
-      case "watched":
-        return <Eye className="h-3.5 w-3.5 text-changed" aria-label="Watched" />;
-      case "known":
-        return <Star className="h-3.5 w-3.5 fill-current text-accent-text" aria-label="Known" />;
-      default:
-        return null;
-    }
-  };
-
+  if (row.pending) {
+    return (
+      <span className="flex items-center" title="Answered; still identifying">
+        <CircleDot className="h-3 w-3 animate-pulse text-accent-text" aria-label="Answered; still identifying" />
+      </span>
+    );
+  }
+  const [tone, label]: [BadgeTone, string] =
+    row.change === "new"
+      ? ["new", "New since the previous scan"]
+      : row.change === "returned"
+        ? ["accent", "Returned since the previous scan"]
+        : row.change === "changed"
+          ? ["changed", "Changed since the previous scan"]
+          : ["online", "Answered this scan"];
   return (
-    <span className="flex items-center gap-1.5">
-      <StatusDot tone="online" label="Responded to this scan" />
-      {statusIcon()}
+    <span className="flex items-center">
+      <StatusDot tone={tone} label={label} />
     </span>
+  );
+}
+
+/** How the operator has classified the device, as an icon with a name. */
+function ClassificationIcon({ row }: { row: DeviceRow }) {
+  switch (row.status) {
+    case "trusted":
+      return <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-online" aria-label="Trusted" />;
+    case "watched":
+      return <Eye className="h-3.5 w-3.5 shrink-0 text-changed" aria-label="Watched" />;
+    case "known":
+      return <Star className="h-3.5 w-3.5 shrink-0 fill-current text-accent-text" aria-label="Known" />;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The device's name, its classification, and what changed. A device with no
+ * name of its own shows its manufacturer in a quieter tone, never its address
+ * again: the address has its own column beside this one.
+ */
+function NameCell({ row }: { row: DeviceRow }) {
+  const name = tableName(row);
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <ClassificationIcon row={row} />
+      <span
+        className={`truncate ${
+          name.kind === "named"
+            ? "font-medium text-text"
+            : name.kind === "vendor"
+              ? "text-text-secondary"
+              : "italic text-text-muted"
+        }`}
+        title={rowName(row)}
+      >
+        {name.text}
+      </span>
+      {row.change === "new" ? <Badge tone="new">New</Badge> : null}
+      {row.change === "returned" ? <Badge tone="accent">Returned</Badge> : null}
+      {row.change === "changed" ? (
+        <Tooltip content={<ChangeSummary row={row} />}>
+          <Badge tone="changed">Changed</Badge>
+        </Tooltip>
+      ) : null}
+    </div>
   );
 }
 

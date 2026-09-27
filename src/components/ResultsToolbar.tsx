@@ -1,214 +1,153 @@
-// The toolbar above the results table: filtering, the change summary, and export.
+// The toolbar above the scan results.
+//
+// Left: how the scan is being looked at — its device list, its comparison with
+// the previous scan, or topology — and, for the device list, the filters.
+// Right: what to do with a finished scan — export it, or hand it to ArcAtlas.
+// The comparison used to be reachable only through an uppercase badge that did
+// not look like a button; it is a named view of the scan now.
 
-import { forwardRef, useRef, useState } from "react";
-import { Download, Filter, Network, Search, Sparkles, X } from "lucide-react";
-import { Badge, Button, Field, IconButton } from "../ui/primitives";
-import { Popover, Tooltip } from "../ui/Popover";
+import { forwardRef } from "react";
+import { Filter, Send, Sparkles } from "lucide-react";
+import { Button } from "../ui/primitives";
+import { ExportMenu, SearchField } from "../ui/patterns";
 import { TOPOLOGY_HINT } from "../lib/topology";
 import { formatCount } from "../lib/format";
 import type { ExportFormat, ScanComparison } from "../types";
 import type { TableFilter } from "../lib/table";
 
+export type ScanTab = "devices" | "comparison" | "topology";
+
 export interface ResultsToolbarProps {
+  tab: ScanTab;
+  onTabChange: (tab: ScanTab) => void;
   filter: TableFilter;
   onFilterChange: (patch: Partial<TableFilter>) => void;
   shown: number;
   total: number;
   comparison: ScanComparison | null;
   onExport: (format: ExportFormat) => void;
-  onViewChanges: () => void;
-  /** True while the comparison is showing instead of the table. */
-  comparisonOpen: boolean;
-  /** Topology is an optional post-scan step and never part of Quick discovery. */
-  onViewTopology: () => void;
-  topologyOpen: boolean;
   canExport: boolean;
+  /**
+   * The ArcAtlas handoff, offered only once a completed scan has been saved:
+   * it is the end of the workflow, not a feature to advertise before it.
+   */
+  handoff?: { onSend: () => void; enabled: boolean; title: string } | null;
+}
+
+/** New, returned, changed and missing, counted once. */
+export function comparisonCount(comparison: ScanComparison | null): number {
+  if (!comparison || comparison.baseline_scan_id == null) return 0;
+  return comparison.added.length + comparison.changed.length + comparison.removed.length;
 }
 
 export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
   function ResultsToolbar(
-    { filter, onFilterChange, shown, total, comparison, onExport, onViewChanges, comparisonOpen, onViewTopology, topologyOpen, canExport },
+    { tab, onTabChange, filter, onFilterChange, shown, total, comparison, onExport, canExport, handoff },
     filterRef,
   ) {
-    const exportButton = useRef<HTMLButtonElement>(null);
-    const [exportOpen, setExportOpen] = useState(false);
-
-    const newCount = comparison?.added.filter((d) => d.kind === "new").length ?? 0;
-    const returnedCount = comparison?.added.filter((d) => d.kind === "returned").length ?? 0;
-    const changedCount = comparison?.changed.length ?? 0;
-    const missingCount = comparison?.removed.length ?? 0;
-    const anyChanges = newCount + returnedCount + changedCount + missingCount > 0;
+    const changes = comparisonCount(comparison);
     const anyFilter = filter.query.length > 0 || filter.savedOnly || filter.changesOnly;
 
     return (
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
-        <div className="relative w-56 shrink-0">
-          <Search
-            className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted"
-            aria-hidden
-          />
-          <Field
-            ref={filterRef}
-            className="pl-7 pr-7"
-            placeholder="Filter devices"
-            aria-label="Filter devices by name, address, vendor or service"
-            value={filter.query}
-            onChange={(event) => onFilterChange({ query: event.target.value })}
-          />
-          {filter.query ? (
-            <button
-              type="button"
-              aria-label="Clear the search"
-              onClick={() => onFilterChange({ query: "" })}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-text-muted hover:text-text"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
+      <div className="toolbar">
+        <div className="segmented" role="group" aria-label="Show">
+          <button
+            type="button"
+            className="segmented-item"
+            aria-pressed={tab === "devices"}
+            onClick={() => onTabChange("devices")}
+          >
+            Devices
+            <span className="text-text-muted">{formatCount(total)}</span>
+          </button>
+          <button
+            type="button"
+            className="segmented-item"
+            aria-pressed={tab === "comparison"}
+            onClick={() => onTabChange("comparison")}
+            title="This scan compared with the previous completed scan of the same target"
+          >
+            Comparison
+            {changes > 0 ? <span className="nav-badge nav-badge-attention">{changes}</span> : null}
+          </button>
+          <button
+            type="button"
+            className="segmented-item"
+            aria-pressed={tab === "topology"}
+            onClick={() => onTabChange("topology")}
+            title={TOPOLOGY_HINT}
+          >
+            Topology
+          </button>
         </div>
 
-        <span className="shrink-0 text-xs text-text-muted">
-          {shown === total ? (
-            <>
-              <span className="font-medium text-text-secondary">{formatCount(total)}</span>{" "}
-              {total === 1 ? "device" : "devices"}
-            </>
-          ) : (
-            <>
-              <span className="font-medium text-text-secondary">{formatCount(shown)}</span> of{" "}
-              {formatCount(total)}
-            </>
-          )}
-        </span>
-
-        <Button
-          size="sm"
-          variant={filter.savedOnly ? "primary" : "ghost"}
-          icon={<Filter className="h-3.5 w-3.5" />}
-          aria-pressed={filter.savedOnly}
-          onClick={() => onFilterChange({ savedOnly: !filter.savedOnly })}
-          title="Show only devices you have marked known, trusted or watched"
-        >
-          Labelled
-        </Button>
-
-        {anyChanges ? (
-          <Button
-            size="sm"
-            variant={filter.changesOnly ? "primary" : "ghost"}
-            icon={<Sparkles className="h-3.5 w-3.5" />}
-            aria-pressed={filter.changesOnly}
-            onClick={() => onFilterChange({ changesOnly: !filter.changesOnly })}
-            title="Show only devices that arrived or changed since the previous scan"
-          >
-            Changes only
-          </Button>
+        {tab === "devices" ? (
+          <>
+            <SearchField
+              ref={filterRef}
+              value={filter.query}
+              onChange={(query) => onFilterChange({ query })}
+              placeholder="Filter devices"
+              label="Filter devices by name, address, vendor or service"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Filter className="h-3.5 w-3.5" />}
+              aria-pressed={filter.savedOnly}
+              onClick={() => onFilterChange({ savedOnly: !filter.savedOnly })}
+              title="Show only devices you have marked Known, Trusted or Watched"
+            >
+              Classified
+            </Button>
+            {changes > 0 ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Sparkles className="h-3.5 w-3.5" />}
+                aria-pressed={filter.changesOnly}
+                onClick={() => onFilterChange({ changesOnly: !filter.changesOnly })}
+                title="Show only devices that arrived or changed since the previous scan"
+              >
+                New or changed
+              </Button>
+            ) : null}
+            {anyFilter ? (
+              <span className="flex shrink-0 items-center gap-2 text-xs text-text-muted">
+                <span>
+                  <span className="font-medium text-text-secondary">{formatCount(shown)}</span> of{" "}
+                  {formatCount(total)}
+                </span>
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => onFilterChange({ query: "", savedOnly: false, changesOnly: false })}
+                >
+                  Clear filters
+                </button>
+              </span>
+            ) : null}
+          </>
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Tooltip content={TOPOLOGY_HINT}>
+          <ExportMenu
+            onExport={onExport}
+            disabled={!canExport}
+            title="Export the filtered devices (Ctrl or Cmd + E)"
+            scope={`Exports the ${formatCount(shown)} ${shown === 1 ? "device" : "devices"} currently shown.`}
+          />
+          {handoff ? (
             <Button
               size="sm"
-              variant={topologyOpen ? "primary" : "ghost"}
-              icon={<Network className="h-3.5 w-3.5" />}
-              aria-pressed={topologyOpen}
-              onClick={onViewTopology}
+              icon={<Send className="h-3.5 w-3.5" />}
+              disabled={!handoff.enabled}
+              onClick={handoff.onSend}
+              title={handoff.title}
             >
-              Topology
+              Send to ArcAtlas
             </Button>
-          </Tooltip>
-          {/*
-           * One button in every case, so the comparison is always reachable.
-           * A scan with no comparison has a *reason* — it was stopped early, or
-           * nothing earlier covered the same ports — and that explanation is the
-           * most useful thing on the screen for the person wondering why.
-           */}
-          {comparison ? (
-            <button
-              type="button"
-              onClick={onViewChanges}
-              aria-pressed={comparisonOpen}
-              className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-text-secondary transition-colors duration-fast hover:bg-surface-hover ${
-                comparisonOpen ? "bg-surface-active" : ""
-              }`}
-              title={
-                comparisonOpen
-                  ? "Back to the device table"
-                  : "Compare this scan with the previous one"
-              }
-            >
-              {anyChanges ? (
-                <>
-                  {newCount > 0 ? <Badge tone="new">{newCount} new</Badge> : null}
-                  {returnedCount > 0 ? <Badge tone="accent">{returnedCount} back</Badge> : null}
-                  {changedCount > 0 ? <Badge tone="changed">{changedCount} changed</Badge> : null}
-                  {missingCount > 0 ? <Badge tone="missing">{missingCount} missing</Badge> : null}
-                </>
-              ) : comparison.baseline_scan_id != null ? (
-                <Badge>No changes</Badge>
-              ) : (
-                <Badge tone="warning">Why no comparison?</Badge>
-              )}
-            </button>
           ) : null}
-
-          <div className="relative">
-            <Button
-              ref={exportButton}
-              size="sm"
-              icon={<Download className="h-3.5 w-3.5" />}
-              disabled={!canExport}
-              aria-expanded={exportOpen}
-              aria-haspopup="dialog"
-              onClick={() => setExportOpen((v) => !v)}
-              title="Export the filtered devices (Ctrl or Cmd + E)"
-            >
-              Export
-            </Button>
-            <Popover
-              open={exportOpen}
-              onClose={() => setExportOpen(false)}
-              anchor={exportButton}
-              label="Export format"
-              className="w-44 p-1"
-            >
-              {(
-                [
-                  ["csv", "CSV spreadsheet"],
-                  ["json", "JSON"],
-                  ["xml", "XML"],
-                ] as Array<[ExportFormat, string]>
-              ).map(([format, label]) => (
-                <button
-                  key={format}
-                  type="button"
-                  className="w-full rounded px-2.5 py-1.5 text-left text-[13px] text-text transition-colors duration-fast hover:bg-surface-hover"
-                  onClick={() => {
-                    setExportOpen(false);
-                    onExport(format);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-              <p className="px-2.5 pb-1 pt-1.5 text-xs leading-relaxed text-text-muted">
-                Exports the {formatCount(shown)} {shown === 1 ? "device" : "devices"} currently
-                shown.
-              </p>
-            </Popover>
-          </div>
-
-          {/* Distinct from the field's own clear, which only empties the query,
-              and inert rather than absent when there is nothing to clear: a
-              control that disappears moves everything beside it. */}
-          <IconButton
-            label="Clear all filters"
-            size="sm"
-            disabled={!anyFilter}
-            onClick={() => onFilterChange({ query: "", savedOnly: false, changesOnly: false })}
-          >
-            <X className="h-3.5 w-3.5" />
-          </IconButton>
         </div>
       </div>
     );

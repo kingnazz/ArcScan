@@ -120,8 +120,9 @@ offer operator-triggered network actions:
   looked up at startup, after a scan, on a view change or on a timer, and it can
   be switched off entirely in Settings.
 - **ArcAtlas direct handoff**, which runs only after you configure an ArcAtlas
-  server, choose one network in Inventory, review the destination and device
-  count, and confirm **Send to ArcAtlas**. Installed stores the token in the OS
+  server, choose one network — in Inventory, or the network a scan you just
+  completed covered — review the destination and device count, and confirm
+  **Send to ArcAtlas**. Installed stores the token in the OS
   credential store; Portable keeps it in process memory only.
 
 There is no telemetry, no analytics and no account. The

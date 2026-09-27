@@ -191,10 +191,11 @@ await page.getByRole("complementary").waitFor({ timeout: 5_000 });
 await page.waitForTimeout(300);
 await shot("device-dark");
 
-// The same drawer, scrolled to the Discovery section: the detected name, the
-// device type with its confidence, and the evidence behind it.
+// The same drawer, scrolled to the Discovery section with its evidence open:
+// which protocols heard the device, how fresh that is, and why it is a printer.
 {
   const drawer = page.getByRole("complementary").last();
+  await drawer.locator("details", { hasText: "Evidence" }).locator("summary").click();
   await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await shot("device-discovery-dark");
@@ -211,7 +212,7 @@ await page.waitForTimeout(200);
   await page.locator('tbody tr:has-text("192.168.1.44")').first().dblclick();
   await page.getByRole("complementary").waitFor({ timeout: 5_000 });
   const drawer = page.getByRole("complementary").last();
-  await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
+  await drawer.getByText("Identity", { exact: true }).first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await shot("device-type-override-dark");
   await page.keyboard.press("Escape");
@@ -228,6 +229,7 @@ await page.waitForTimeout(200);
   await page.locator('tbody tr:has-text("192.168.1.81")').first().dblclick();
   await page.getByRole("complementary").waitFor({ timeout: 5_000 });
   const drawer = page.getByRole("complementary").last();
+  await drawer.locator("details", { hasText: "Evidence" }).locator("summary").click();
   await drawer.getByText("Discovery", { exact: true }).first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await shot("device-stale-evidence-dark");
@@ -270,7 +272,7 @@ await shot("history-partial-dark");
 // The comparison for that partial scan, which explains why it has none.
 await page.locator("main ul > li").first().locator("button").first().click();
 await page.waitForTimeout(600);
-await page.getByRole("button", { name: "Why no comparison?" }).click();
+await page.getByRole("button", { name: "Comparison" }).click();
 await page.waitForTimeout(500);
 await shot("changes-partial-dark");
 

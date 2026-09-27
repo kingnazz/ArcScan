@@ -8,11 +8,18 @@
 // tauri.conf.json), so a second mark here rendered the name and the icon twice
 // on every launch. Removing it also gives the view switcher the start of the
 // row, which is where a switcher belongs.
+//
+// The views are tabs with an underline on the header's bottom edge rather than
+// a segmented control: a raised segment on a sunken track all but disappeared
+// in the dark theme, and the current location must be unmistakable. The Scan
+// tab carries a live mark while a scan runs, so a scan started from the Scan
+// view stays visible from Inventory, Changes and History.
+//
+// The version is not repeated here; it lives in the status bar.
 
 import { DownloadCloud, Moon, Settings, Sun } from "lucide-react";
 import { IconButton } from "../ui/primitives";
 import type { ResolvedTheme } from "../hooks/useTheme";
-import { APP_BUILD_LABEL } from "../version";
 
 export type View = "results" | "inventory" | "changes" | "history";
 
@@ -30,6 +37,8 @@ export interface AppHeaderProps {
   onCheckUpdates: () => void;
   updateActionLabel: string;
   updateBusy: boolean;
+  /** A scan is running. Marks the Scan tab so it is visible from every view. */
+  scanning?: boolean;
 }
 
 export function AppHeader({
@@ -44,6 +53,7 @@ export function AppHeader({
   onCheckUpdates,
   updateActionLabel,
   updateBusy,
+  scanning = false,
 }: AppHeaderProps) {
   // Four views, none of them ever disabled: Inventory and Changes explain their
   // own empty states, which is more useful than a tab that cannot be clicked.
@@ -62,25 +72,34 @@ export function AppHeader({
       // Tauri turns this into the native drag region, so the window moves from the
       // header's empty space exactly as an operator expects on Windows and macOS.
       data-tauri-drag-region
-      className="flex h-[38px] shrink-0 items-center gap-2 border-b border-border bg-surface-raised px-2.5"
+      className="flex h-10 shrink-0 items-stretch gap-2 border-b border-border bg-surface-raised pl-1.5 pr-2.5"
     >
-      <nav className="segmented" aria-label="View">
+      <nav className="flex items-stretch" aria-label="View">
         {tabs.map((tab) => {
           const showBadge = tab.badge != null && tab.badge > 0;
           return (
             <button
               key={tab.id}
               type="button"
-              className="segmented-item"
+              className="nav-tab"
               // aria-current is the right signal inside a nav, and aria-selected
               // is not a valid attribute on a plain button.
               aria-current={view === tab.id ? "page" : undefined}
               onClick={() => onViewChange(tab.id)}
             >
               {tab.label}
+              {tab.id === "results" && scanning ? (
+                <>
+                  <span className="live-dot" aria-hidden />
+                  <span className="sr-only">, scan running</span>
+                </>
+              ) : null}
               {showBadge ? (
                 <>
-                  <span className="nav-badge" aria-hidden>
+                  <span
+                    className={`nav-badge ${tab.id === "changes" ? "nav-badge-attention" : ""}`}
+                    aria-hidden
+                  >
                     {tab.badge! > 999 ? "999+" : tab.badge}
                   </span>
                   <span className="sr-only">
@@ -96,15 +115,7 @@ export function AppHeader({
       {/* The flexible gap is the drag handle. */}
       <div className="min-w-0 flex-1" data-tauri-drag-region />
 
-      <span
-        className="mr-1 shrink-0 font-mono text-[11px] font-medium tabular-nums text-text-muted"
-        title="ArcScan version and build"
-        aria-label={`ArcScan ${APP_BUILD_LABEL}`}
-      >
-        {APP_BUILD_LABEL}
-      </span>
-
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="flex shrink-0 items-center gap-0.5 self-center">
         <IconButton label={updateActionLabel} onClick={onCheckUpdates} size="sm">
           <DownloadCloud className={`h-4 w-4 ${updateBusy ? "animate-pulse" : ""}`} />
         </IconButton>

@@ -7,6 +7,7 @@ import {
   rowName,
   rowsFromScanDetail,
   settleRows,
+  tableName,
   upsertHost,
   type DeviceRow,
 } from "./live";
@@ -293,5 +294,22 @@ describe("row naming", () => {
 
   it("treats a whitespace-only name as absent", () => {
     expect(rowName(named({ custom_name: "   " }))).toBe("10.0.0.5");
+  });
+});
+
+describe("table names", () => {
+  it("never repeats the address the next column already shows", () => {
+    const [bare] = upsertHost([], host("10.0.0.5"), false);
+    expect(tableName(bare)).toEqual({ text: "Unnamed", kind: "unnamed" });
+    const [vendorOnly] = upsertHost([], host("10.0.0.6", { vendor: "Samsung Electronics" }), false);
+    expect(tableName(vendorOnly)).toEqual({ text: "Samsung Electronics", kind: "vendor" });
+    // The full name, address included, is still what the drawer and the filter use.
+    expect(rowName(vendorOnly)).toBe("Samsung Electronics (10.0.0.6)");
+  });
+
+  it("prefers the operator's name, then the hostname", () => {
+    const [named] = upsertHost([], host("10.0.0.7", { hostname: "nas.local", vendor: "Synology" }), false);
+    expect(tableName(named)).toEqual({ text: "nas.local", kind: "named" });
+    expect(tableName({ ...named, custom_name: " Office NAS " })).toEqual({ text: "Office NAS", kind: "named" });
   });
 });

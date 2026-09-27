@@ -41,7 +41,7 @@ export function ComparisonPanel({ comparison, currentLabel, partial, onBack }: C
   return (
     <div className="min-h-0 flex-1 overflow-auto">
       <header className="border-b border-border bg-surface-raised px-4 py-3">
-        <h2 className="text-sm font-semibold text-text">
+        <h2 className="text-[15px] font-semibold text-text">
           {total === 0
             ? "No changes since the previous scan"
             : `${total} ${total === 1 ? "change" : "changes"} since the previous scan`}
@@ -65,7 +65,7 @@ export function ComparisonPanel({ comparison, currentLabel, partial, onBack }: C
           description="The same devices answered, at the same addresses, with the same open services."
         />
       ) : (
-        <div className="space-y-5 px-4 py-4">
+        <div className="max-w-4xl space-y-6 px-4 py-4">
           <Group
             title="Added devices"
             icon={<PlusCircle className="h-3.5 w-3.5 text-new" aria-hidden />}
@@ -113,11 +113,11 @@ function Group({
       {entries.length === 0 ? (
         <p className="text-[13px] text-text-muted">{emptyLabel}</p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="divide-y divide-border rounded-md border border-border bg-surface">
           {entries.map((entry) => (
             <li
               key={`${entry.kind}-${entry.ip}-${entry.device_id ?? "unknown"}`}
-              className="surface-panel px-3 py-2.5"
+              className="px-3 py-2.5"
             >
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <span className="text-[13px] font-medium text-text">{entry.name}</span>
@@ -134,7 +134,7 @@ function Group({
               </p>
 
               {entry.fields.length > 0 ? (
-                <div className="mt-2 border-t border-border pt-2">
+                <div className="mt-2">
                   <ChangeList changes={entry.fields} />
                 </div>
               ) : null}

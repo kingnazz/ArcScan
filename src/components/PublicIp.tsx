@@ -1,85 +1,54 @@
-// The network and utility context row, directly under the view switcher.
+// The Public IP utility.
 //
-// It answers two questions that belong together and that nothing else on the
-// Scan screen answers: which network this machine is on, and — only if asked —
-// which address the internet sees it from. Both are context for the scan below,
-// so the row is deliberately quieter than the target field and the Scan button
-// under it.
+// Lives on the right of the scan status line: it answers "which address does
+// the internet see this computer from", which is context for a scan and never
+// part of one. It is deliberately quieter than the target field and the Scan
+// action beside it.
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Globe, Network, RotateCw } from "lucide-react";
+import { AlertTriangle, Check, Copy, Globe, RotateCw } from "lucide-react";
 import { Button, IconButton, Spinner } from "../ui/primitives";
 import { formatRelative } from "../lib/format";
 import type { PublicIpState } from "../hooks/usePublicIp";
-import type { LocalNetwork } from "../types";
 
-export interface ContextBarProps {
-  localNetworks: LocalNetwork[];
-  publicIp: PublicIpState;
-  /** Settings' "Offer the public IP lookup". Off hides the utility entirely. */
-  publicIpEnabled: boolean;
-  onCheckPublicIp: () => void;
-  onCopyPublicIp: (ip: string) => void;
+export interface PublicIpUtilityProps {
+  state: PublicIpState;
+  onCheck: () => void;
+  onCopy: (ip: string) => void;
 }
 
-export function ContextBar({
-  localNetworks,
-  publicIp,
-  publicIpEnabled,
-  onCheckPublicIp,
-  onCopyPublicIp,
-}: ContextBarProps) {
+/**
+ * The utility and its technical-details panel, as two pieces: the control sits
+ * on the status line and the details open on a line of their own beneath it.
+ * (A hook rather than a component because the two pieces render apart.)
+ */
+export function usePublicIpUtility({ state, onCheck, onCopy }: PublicIpUtilityProps) {
   const [showTechnical, setShowTechnical] = useState(false);
-  const technical = publicIp.status === "error" ? publicIp.technical : undefined;
+  const technical = state.status === "error" ? state.technical : undefined;
 
   // A failed lookup that is retried should not keep the previous failure's
   // details open underneath the new state.
   useEffect(() => {
-    if (publicIp.status !== "error") setShowTechnical(false);
-  }, [publicIp.status]);
+    if (state.status !== "error") setShowTechnical(false);
+  }, [state.status]);
 
-  const primary = localNetworks[0];
-
-  // With no network detected and the lookup turned off there is nothing to say,
-  // and an empty strip is worse than no strip.
-  if (!primary && !publicIpEnabled) return null;
-
-  return (
-    <div className="shrink-0 border-b border-border bg-surface">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-xs">
-        {primary ? (
-          <p className="flex min-w-0 items-center gap-1.5">
-            <Network className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden />
-            <span className="shrink-0 text-text-muted">Local network</span>
-            <span className="mono truncate text-text-secondary">{primary.cidr}</span>
-            {localNetworks.length > 1 ? (
-              <span className="shrink-0 text-text-muted">
-                +{localNetworks.length - 1} more
-              </span>
-            ) : null}
-          </p>
-        ) : null}
-
-        <div className="min-w-0 flex-1" />
-
-        {publicIpEnabled ? (
-          <PublicIp
-            state={publicIp}
-            onCheck={onCheckPublicIp}
-            onCopy={onCopyPublicIp}
-            technicalOpen={showTechnical}
-            onToggleTechnical={technical ? () => setShowTechnical((v) => !v) : undefined}
-          />
-        ) : null}
-      </div>
-
-      {publicIpEnabled && showTechnical && technical ? (
+  return {
+    control: (
+      <PublicIp
+        state={state}
+        onCheck={onCheck}
+        onCopy={onCopy}
+        technicalOpen={showTechnical}
+        onToggleTechnical={technical ? () => setShowTechnical((v) => !v) : undefined}
+      />
+    ),
+    details:
+      showTechnical && technical ? (
         <pre className="mono mx-3 mb-2 max-h-24 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface-sunken p-2 text-[11px] leading-relaxed text-text-secondary">
           {technical}
         </pre>
-      ) : null}
-    </div>
-  );
+      ) : null,
+  };
 }
 
 /**

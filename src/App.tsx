@@ -8,9 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, DownloadCloud, X } from "lucide-react";
 import { AppHeader, type View } from "./components/AppHeader";
-import { CommandBar } from "./components/CommandBar";
-import { ContextBar } from "./components/ContextBar";
-import { ResultsToolbar } from "./components/ResultsToolbar";
+import { ScanBar } from "./components/ScanBar";
+import { ResultsToolbar, type ScanTab } from "./components/ResultsToolbar";
 import { ResultsTable } from "./components/ResultsTable";
 import { DeviceDrawer } from "./components/DeviceDrawer";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -21,8 +20,8 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ScanStart } from "./components/ScanStart";
 import { TopologyPanel } from "./components/TopologyPanel";
-import { ProgressStrip, StatusBar } from "./components/StatusBar";
-import { Button, EmptyState } from "./ui/primitives";
+import { StatusBar } from "./components/StatusBar";
+import { Button, EmptyState, Spinner } from "./ui/primitives";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { describeError, useToast } from "./ui/Toast";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -109,7 +108,7 @@ export default function App() {
    * describes one scan against one baseline, while Changes is the persistent
    * inbox across every scan. Collapsing the two would lose the detail.
    */
-  const [scanTab, setScanTab] = useState<"devices" | "comparison" | "topology">("devices");
+  const [scanTab, setScanTab] = useState<ScanTab>("devices");
   const [target, setTarget] = useState("");
   const [profileId, setProfileId] = useState<ProfileId>("quick-lan");
   const [recents, setRecents] = useState<string[]>([]);
@@ -158,6 +157,14 @@ export default function App() {
   const [arcAtlasError, setArcAtlasError] = useState<ArcAtlasError | null>(null);
   const [arcAtlasResult, setArcAtlasResult] = useState<ArcAtlasSendResult | null>(null);
   const handoffAttempt = useRef(new HandoffAttempt());
+  /**
+   * Which network the ArcAtlas dialog is sending: the one the Inventory is
+   * filtered to, or the network a just-completed scan covered. Kept apart from
+   * the Inventory filter so sending from the Scan view never changes it.
+   */
+  const [handoffScope, setHandoffScope] = useState<
+    { kind: "inventory" } | { kind: "scan"; networkId: number | null }
+  >({ kind: "inventory" });
 
   const [topologyCredentials, setTopologyCredentials] = useState<CredentialStatus>(EMPTY_CREDENTIAL_STATUS);
   const [topologyResult, setTopologyResult] = useState<TopologyResult | null>(null);
@@ -365,24 +372,38 @@ export default function App() {
     [inventory, invFilter, invSortKey, invSortDir],
   );
   const inventoryNetworks = inventory?.networks ?? [];
+  const handoffNetworkId = handoffScope.kind === "scan" ? handoffScope.networkId : invFilter.networkId;
   const arcAtlasRows = useMemo(
     () =>
       handoffRowsForNetwork({
         rows: inventory?.rows ?? [],
-        networkId: invFilter.networkId,
+        networkId: handoffNetworkId,
         networkCount: inventoryNetworks.length,
       }),
-    [inventory, invFilter.networkId, inventoryNetworks.length],
+    [inventory, handoffNetworkId, inventoryNetworks.length],
   );
   const arcAtlasPresenceCounts = useMemo(
     () =>
       handoffPresenceCounts({
         rows: inventory?.rows ?? [],
-        networkId: invFilter.networkId,
+        networkId: handoffNetworkId,
         networkCount: inventoryNetworks.length,
       }),
-    [inventory, invFilter.networkId, inventoryNetworks.length],
+    [inventory, handoffNetworkId, inventoryNetworks.length],
   );
+  /**
+   * The network a completed scan covered, found through the devices it saved.
+   * `undefined` when the scan is not saved yet or its devices span more than one
+   * network, which is when a one-network handoff cannot be offered from it.
+   */
+  const scanNetworkId = useMemo(() => {
+    const ids = new Set(scan.rows.map((row) => row.device_id).filter((id) => id != null));
+    if (ids.size === 0) return undefined;
+    const networks = new Set(
+      (inventory?.rows ?? []).filter((row) => ids.has(row.device_id)).map((row) => row.network_scope_id),
+    );
+    return networks.size === 1 ? [...networks][0] : undefined;
+  }, [scan.rows, inventory]);
   // Computed from the unfiltered set, so choosing a type never removes the
   // other options from the menu that got you there.
   const inventoryDeviceTypes = useMemo(() => presentDeviceTypes(inventory?.rows ?? []), [inventory]);
@@ -667,19 +688,25 @@ export default function App() {
     [inventoryRows, invSelection, invFilter.networkId, inventoryNetworks, toast, reportError],
   );
 
-  const canSendArcAtlas = canSendSingleNetwork({
-    networkId: invFilter.networkId,
-    networkCount: inventoryNetworks.length,
-    rows: inventory?.rows ?? [],
-  });
+  const canSendFor = useCallback(
+    (networkId: number | null) =>
+      canSendSingleNetwork({
+        networkId,
+        networkCount: inventoryNetworks.length,
+        rows: inventory?.rows ?? [],
+      }),
+    [inventoryNetworks.length, inventory],
+  );
+  const canSendArcAtlas = canSendFor(handoffNetworkId);
   const sendNetworkName =
-    selectedNetworkName(arcAtlasRows, invFilter.networkId, inventoryNetworks) ??
+    selectedNetworkName(arcAtlasRows, handoffNetworkId, inventoryNetworks) ??
     arcAtlasRows[0]?.network_name ??
     "Current network";
-  const sendToArcAtlasEnabled = !arcAtlas.configured || (arcAtlasRows.length > 0 && canSendArcAtlas);
+  const canSendInventory = canSendFor(invFilter.networkId);
+  const sendToArcAtlasEnabled = !arcAtlas.configured || canSendInventory;
   const sendToArcAtlasTitle = !arcAtlas.configured
     ? "Connect ArcAtlas"
-    : !canSendArcAtlas
+    : !canSendInventory
       ? inventoryNetworks.length > 1 && invFilter.networkId == null
         ? "Choose one network before sending to ArcAtlas."
         : "No present devices to send to ArcAtlas."
@@ -703,23 +730,31 @@ export default function App() {
   }, [runtime?.edition]);
 
   const openArcAtlasManage = useCallback(() => {
+    // Managing the connection is not a send, so a later send from the dialog
+    // uses the Inventory's network rather than one a past scan chose.
+    setHandoffScope({ kind: "inventory" });
     setArcAtlasError(null);
     setArcAtlasResult(null);
     setArcAtlasMode(arcAtlas.configured && !arcAtlas.needsReconfigure ? "status" : "connect");
     setArcAtlasOpen(true);
   }, [arcAtlas]);
 
-  const openArcAtlasSend = useCallback(() => {
-    const next = nextModeOnSend(arcAtlas, canSendArcAtlas && arcAtlasRows.length > 0);
-    if (next === "choose-network") {
-      toast.info("Choose one network before sending to ArcAtlas.");
-      return;
-    }
-    setArcAtlasError(null);
-    setArcAtlasResult(null);
-    setArcAtlasMode(next);
-    setArcAtlasOpen(true);
-  }, [arcAtlas, canSendArcAtlas, arcAtlasRows.length, toast]);
+  const openArcAtlasSend = useCallback(
+    (scope: { kind: "inventory" } | { kind: "scan"; networkId: number | null } = { kind: "inventory" }) => {
+      const networkId = scope.kind === "scan" ? scope.networkId : invFilter.networkId;
+      const next = nextModeOnSend(arcAtlas, canSendFor(networkId));
+      if (next === "choose-network") {
+        toast.info("Choose one network before sending to ArcAtlas.");
+        return;
+      }
+      setHandoffScope(scope);
+      setArcAtlasError(null);
+      setArcAtlasResult(null);
+      setArcAtlasMode(next);
+      setArcAtlasOpen(true);
+    },
+    [arcAtlas, canSendFor, invFilter.networkId, toast],
+  );
 
   const configureArcAtlas = useCallback(
     async (serverUrl: string, token: string) => {
@@ -855,7 +890,7 @@ export default function App() {
         return;
       }
 
-      const label = action === "trusted" ? "Marked trusted" : action === "ignored" ? "Ignored" : "Marked unreviewed";
+      const label = action === "trusted" ? "Marked trusted" : action === "ignored" ? "Ignored" : "Marked not classified";
       // A large action confirms first; a handful of rows does not need a dialog.
       if (ids.length > 25) {
         setPendingBulk({
@@ -1209,8 +1244,12 @@ export default function App() {
     },
     onRescan: rescan,
     onFocusTarget: () => {
-      targetInput.current?.focus();
-      targetInput.current?.select();
+      // The target lives in the scan bar, which only the Scan view shows.
+      setView("results");
+      requestAnimationFrame(() => {
+        targetInput.current?.focus();
+        targetInput.current?.select();
+      });
     },
   });
 
@@ -1226,6 +1265,24 @@ export default function App() {
     [toast],
   );
   const recommendFor = useCallback((candidate: string) => recommendedProfile(candidate, localCidrs), [localCidrs]);
+
+  // ArcAtlas is the end of the workflow: offered from the Scan view only once a
+  // completed scan has been saved and its devices belong to one network.
+  const scanHandoff =
+    scan.mode === "finished" &&
+    scan.meta != null &&
+    !scan.meta.cancelled &&
+    scan.meta.savedScanId != null &&
+    scan.rows.length > 0 &&
+    scanNetworkId !== undefined
+      ? {
+          onSend: () => openArcAtlasSend({ kind: "scan", networkId: scanNetworkId }),
+          enabled: !arcAtlas.configured || canSendFor(scanNetworkId),
+          title: arcAtlas.configured
+            ? "Send this network's present devices to ArcAtlas"
+            : "Connect ArcAtlas, then send this network's present devices",
+        }
+      : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1245,48 +1302,49 @@ export default function App() {
         }}
         updateActionLabel={runtime?.updater_mode === "manual" ? "Portable downloads" : "Check for updates"}
         updateBusy={updater.status === "checking"}
+        scanning={scan.scanning}
       />
 
-      {/* Scan-screen context only: which network this machine is on, and the
-          optional public-IP lookup. Inventory, Changes and History describe
-          stored data rather than the current connection, so they do not pay the
-          vertical space for it. */}
+      {/* The scan bar belongs to the Scan view only. Inventory, Changes and
+          History describe stored data rather than the next scan, so they do not
+          pay the vertical space for it; the Scan tab's live mark keeps a running
+          scan visible from them. */}
       {view === "results" ? (
-        <ContextBar
+        <ScanBar
+          ref={targetInput}
+          scanning={scan.scanning}
+          stopping={scan.stopping}
+          target={target}
+          onTargetChange={setTarget}
+          profileId={profileId}
+          onProfileChange={(id) => {
+            profileTouched.current = true;
+            setProfileId(id);
+          }}
+          settings={settings}
+          onSettingsChange={updateSettings}
+          recents={recents}
           localNetworks={localNetworks}
-          publicIp={publicIp.state}
+          canRescan={lastOptions != null}
+          onScan={runScan}
+          onStop={() => {
+            void scan.cancel();
+            void api.cancelTopology();
+          }}
+          onRescan={rescan}
+          onError={(message) => toast.error(message)}
+          mode={scan.mode}
+          progress={scan.progress}
+          meta={scan.meta}
+          comparison={scan.comparison}
+          deviceCount={scan.rows.length}
+          onShowComparison={() => setScanTab("comparison")}
           publicIpEnabled={settings.publicIpLookup}
+          publicIp={publicIp.state}
           onCheckPublicIp={() => void publicIp.check()}
           onCopyPublicIp={copyPublicIp}
         />
       ) : null}
-
-      <CommandBar
-        ref={targetInput}
-        scanning={scan.scanning}
-        stopping={scan.stopping}
-        target={target}
-        onTargetChange={setTarget}
-        profileId={profileId}
-        onProfileChange={(id) => {
-          profileTouched.current = true;
-          setProfileId(id);
-        }}
-        settings={settings}
-        onSettingsChange={updateSettings}
-        recents={recents}
-        localNetworks={localNetworks}
-        canRescan={lastOptions != null}
-        onScan={runScan}
-        onStop={() => {
-          void scan.cancel();
-          void api.cancelTopology();
-        }}
-        onRescan={rescan}
-        onError={(message) => toast.error(message)}
-      />
-
-      <ProgressStrip scanning={scan.scanning} progress={scan.progress} />
 
       {scan.started?.warning ? (
         <Notice
@@ -1317,6 +1375,7 @@ export default function App() {
               onCompare={(id) => void compareSavedScan(id)}
               onDelete={(id) => setPendingDelete(history.find((s) => s.id === id) ?? null)}
               onExport={(id, format) => void exportSavedScan(id, format)}
+              onStartScan={() => setView("results")}
             />
           ) : view === "inventory" ? (
             <InventoryPanel
@@ -1355,11 +1414,9 @@ export default function App() {
               exportScopeLabel={inventoryExportScope}
               onStartScan={() => setView("results")}
               deviceTypes={inventoryDeviceTypes}
-              onSendToArcAtlas={openArcAtlasSend}
+              onSendToArcAtlas={() => openArcAtlasSend({ kind: "inventory" })}
               sendToArcAtlasEnabled={sendToArcAtlasEnabled}
               sendToArcAtlasTitle={sendToArcAtlasTitle}
-              onManageArcAtlas={openArcAtlasManage}
-              arcAtlasConnected={arcAtlas.configured && !arcAtlas.needsReconfigure}
             />
           ) : view === "changes" ? (
             <ChangesPanel
@@ -1387,6 +1444,7 @@ export default function App() {
             <ScanStart
               localNetworks={localNetworks}
               recommendFor={recommendFor}
+              depth={settings.scanDepth}
               recents={recents}
               showGuidance={settings.showFirstRunGuidance}
               onScanNetwork={(cidr, profile) => {
@@ -1408,17 +1466,16 @@ export default function App() {
             <>
               <ResultsToolbar
                 ref={filterInput}
+                tab={scanTab}
+                onTabChange={setScanTab}
                 filter={filter}
                 onFilterChange={(patch) => setFilter((current) => ({ ...current, ...patch }))}
                 shown={rows.length}
                 total={scan.rows.length}
                 comparison={scan.comparison}
                 onExport={(format) => void exportRows(format)}
-                onViewChanges={() => setScanTab((t) => (t === "comparison" ? "devices" : "comparison"))}
-                comparisonOpen={scanTab === "comparison"}
-                onViewTopology={() => setScanTab((t) => (t === "topology" ? "devices" : "topology"))}
-                topologyOpen={scanTab === "topology"}
                 canExport={scan.rows.length > 0}
+                handoff={scanHandoff}
               />
               {scanTab === "topology" ? (
                 <TopologyPanel
@@ -1454,23 +1511,33 @@ export default function App() {
                 )
               ) : rows.length === 0 ? (
                 <EmptyState
+                  icon={scan.scanning && scan.rows.length === 0 ? <Spinner className="h-5 w-5" /> : undefined}
                   title={
                     scan.rows.length === 0
                       ? scan.scanning
-                        ? "Looking for devices"
+                        ? "Waiting for the first device to answer"
                         : "No devices answered"
                       : "No devices match the filter"
                   }
                   description={
                     scan.rows.length === 0
                       ? scan.scanning
-                        ? "Devices appear here as soon as they respond."
-                        : "Nothing on this target replied to ICMP or TCP, and nothing appeared in the ARP table. Try the Reliable LAN profile, which waits longer and probes more ports."
+                        ? "Devices appear here as soon as they respond. Progress is shown under the target."
+                        : "Nothing on this target replied to ICMP or TCP, and nothing appeared in the ARP table. The Reliable LAN profile waits longer and probes more ports."
                       : "Try a shorter search term, or clear the filter."
                   }
                   action={
                     scan.rows.length > 0 ? (
                       <Button onClick={() => setFilter(EMPTY_FILTER)}>Clear the filter</Button>
+                    ) : !scan.scanning && profileId !== "reliable-lan" ? (
+                      <Button
+                        onClick={() => {
+                          profileTouched.current = true;
+                          setProfileId("reliable-lan");
+                        }}
+                      >
+                        Switch to Reliable LAN
+                      </Button>
                     ) : undefined
                   }
                 />
@@ -1543,6 +1610,8 @@ export default function App() {
           onOpenPrivacy={() => void api.openPrivacy()}
           scopes={scopes}
           onRenameScope={(id, name) => void renameScope(id, name)}
+          arcAtlas={arcAtlas}
+          onManageArcAtlas={openArcAtlasManage}
         />
       </div>
 
@@ -1586,7 +1655,6 @@ export default function App() {
         progress={scan.progress}
         meta={scan.meta}
         deviceCount={scan.rows.length}
-        version={APP_VERSION}
         native={api.native}
       />
 

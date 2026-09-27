@@ -98,6 +98,16 @@ await step("empty Inventory asks for a first scan", async () => {
   if ((await page.locator("tbody tr").count()) !== 0) throw new Error("rows in an empty inventory");
 });
 
+await step("a first launch says which network will be scanned before anything runs", async () => {
+  await nav("Scan").click();
+  await page.waitForTimeout(500);
+  const line = ((await page.getByTestId("scan-status").innerText()) ?? "").replace(/\s+/g, " ");
+  if (!/local network/i.test(line)) throw new Error(`no network on the status line: ${line}`);
+  if (!/this computer is/i.test(line)) throw new Error(`no interface context: ${line}`);
+  if (!/\d+ addresses/.test(line)) throw new Error(`no workload before the first scan: ${line}`);
+  return line;
+});
+
 await step("empty Changes explains itself rather than looking broken", async () => {
   await nav("Changes").click();
   await page.waitForTimeout(200);
@@ -230,7 +240,7 @@ await step("selecting rows reveals the bulk actions and a count", async () => {
   await toolbar.waitFor({ timeout: 2000 });
   const text = await toolbar.innerText();
   if (!/2 devices selected/i.test(text)) throw new Error(`unexpected count: ${text}`);
-  for (const action of ["Mark trusted", "Mark unreviewed", "Ignore", "Copy addresses"]) {
+  for (const action of ["Mark trusted", "Mark not classified", "Ignore", "Copy addresses"]) {
     if (!text.includes(action)) throw new Error(`missing bulk action: ${action}`);
   }
   // Nothing destructive is offered.
@@ -349,11 +359,11 @@ await step("the drawer opens from the Inventory with the persistent facts", asyn
     "network",
     "first seen",
     "last seen",
-    "observations",
+    "seen in",
     "previous addresses",
     "recorded changes",
     "notes",
-    "scan history",
+    "sightings",
   ]) {
     if (!text.includes(needed)) throw new Error(`drawer missing: ${needed}`);
   }
@@ -642,6 +652,40 @@ await step("settings names each network separately and the name propagates", asy
 // 8. Scanning, streaming and partial-scan safety
 // ---------------------------------------------------------------------------
 
+/** The line under the target that narrates the scan from end to end. */
+const scanStatus = async () =>
+  ((await page.getByTestId("scan-status").innerText()) ?? "").replace(/\s+/g, " ").toLowerCase();
+
+await step("before a scan, the status line says what will be scanned", async () => {
+  await nav("Scan").click();
+  await page.locator("#scan-target").fill("10.9.9.0/24");
+  await page.waitForTimeout(500);
+  const routed = await scanStatus();
+  if (!routed.includes("routed or custom target")) throw new Error(`routed target: ${routed}`);
+  if (!routed.includes("254 addresses")) throw new Error(`no workload before the scan: ${routed}`);
+
+  // Back to the target of the scan on screen, the line describes that scan
+  // again rather than a scan that has not been asked for.
+  await page.locator("#scan-target").fill("192.168.1.0/24");
+  await page.waitForTimeout(500);
+  const back = await scanStatus();
+  if (back.includes("routed or custom target")) throw new Error(`stuck on the pre-flight: ${back}`);
+  return routed;
+});
+
+await step("the scan bar belongs to the Scan view only", async () => {
+  for (const view of ["Inventory", "Changes", "History"]) {
+    await nav(view).click();
+    await page.waitForTimeout(150);
+    if ((await page.locator("#scan-target").count()) !== 0) {
+      throw new Error(`${view} still carries the scan command`);
+    }
+  }
+  await nav("Scan").click();
+  await page.locator("#scan-target").waitFor({ timeout: 2000 });
+  return "absent from Inventory, Changes and History";
+});
+
 await step("scan streams devices while running", async () => {
   await nav("Scan").click();
   await page.locator("#scan-target").fill("192.168.1.0/24");
@@ -652,12 +696,33 @@ await step("scan streams devices while running", async () => {
   const status = await page.locator("footer").first().innerText();
   if (midCount === 0) throw new Error("no rows appeared during the scan");
   if (!/devices found/.test(status)) throw new Error(`status bar did not show progress: ${status}`);
-  return `${midCount} rows mid-scan`;
+
+  // The same line that described the scan now narrates it.
+  const line = await scanStatus();
+  if (!line.includes("scanning")) throw new Error(`the status line did not follow the scan: ${line}`);
+  if (!/step [123] of 3/.test(line)) throw new Error(`no stage in the status line: ${line}`);
+  if (!line.includes("stop keeps")) throw new Error("the line does not say Stop keeps results");
+
+  // A running scan is visible from every other view.
+  await nav("Inventory").click();
+  await page.waitForTimeout(150);
+  const tab = (await nav("Scan").innerText()).toLowerCase();
+  await nav("Scan").click();
+  if (!tab.includes("scan running")) throw new Error(`the Scan tab hides the running scan: ${tab}`);
+  return `${midCount} rows mid-scan, ${line.match(/step [123] of 3[^·]*/)?.[0]?.trim()}`;
 });
 
 await step("a completed scan refreshes the Inventory", async () => {
   await page.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout: 30000 });
   await page.waitForTimeout(1000);
+  const done = await scanStatus();
+  if (!done.includes("scan complete")) throw new Error(`no completion on the status line: ${done}`);
+  if (!/no changes|new|changed|missing|first scan/.test(done)) {
+    throw new Error(`the completion does not summarise the comparison: ${done}`);
+  }
+  if ((await nav("Scan").innerText()).toLowerCase().includes("scan running")) {
+    throw new Error("the Scan tab still says a scan is running");
+  }
   const scanned = await page.locator("tbody tr").count();
   if (scanned === 0) throw new Error("the completed scan showed no devices");
 
@@ -731,6 +796,9 @@ await step("Stop keeps partial results, marks nothing missing and adds no change
 
   const kept = await page.locator("tbody tr").count();
   if (kept === 0) throw new Error("a stopped scan discarded the hosts it had found");
+  const stopped = await scanStatus();
+  if (!stopped.includes("stopped early")) throw new Error(`the stop is not stated: ${stopped}`);
+  if (!stopped.includes("never compared")) throw new Error("the line does not explain partial scans");
 
   await nav("Inventory").click();
   await page.waitForTimeout(500);
@@ -1222,14 +1290,29 @@ await step("axe-core finds no violations across every view, in both themes", asy
 // naming and rendering code rather than a parallel path.
 // ---------------------------------------------------------------------------
 
-/** Open the Inventory drawer for the device whose address is `ip`. */
-const openDeviceByIp = async (ip) => {
+/**
+ * Open the Inventory drawer for the device whose address is `ip`.
+ *
+ * Since 1.10 the evidence behind an answer sits behind a disclosure in the
+ * inspector, so these steps open every disclosure first, exactly as a
+ * technician who doubts an answer would. The step below checks that the
+ * verdict itself is never behind one.
+ */
+const openDeviceByIp = async (ip, { expand = true } = {}) => {
   await nav("Inventory").click();
   await page.waitForTimeout(300);
   const row = page.locator(`tbody tr:has-text("${ip}")`).first();
   await row.dblclick();
   await page.waitForTimeout(400);
-  return page.locator("aside, [role='dialog']").last();
+  const drawer = page.locator("aside, [role='dialog']").last();
+  if (expand) {
+    const closed = drawer.locator("details:not([open]) > summary");
+    while ((await closed.count()) > 0) {
+      await closed.first().click();
+      await page.waitForTimeout(60);
+    }
+  }
+  return drawer;
 };
 
 /** Turn optional Inventory columns on through the Settings panel. */
@@ -1249,6 +1332,26 @@ const enableColumns = async (keys) => {
 };
 
 await page.goto(`${URL}?discovery=normal`, { waitUntil: "networkidle" });
+
+await step("the verdict is visible at once and the evidence is one click away", async () => {
+  const drawer = await openDeviceByIp("192.168.1.31", { expand: false });
+  const text = (await drawer.innerText()).toLowerCase();
+  // The answer, its source and its confidence never hide behind anything.
+  for (const needed of ["printer", "high confidence", "detected automatically", "mdns"]) {
+    if (!text.includes(needed)) throw new Error(`the inspector hides the verdict: ${needed}`);
+  }
+  const evidence = drawer.locator("details", { hasText: "Evidence" }).first();
+  if ((await evidence.count()) === 0) throw new Error("no evidence disclosure");
+  if ((await evidence.getAttribute("open")) !== null) {
+    throw new Error("the evidence is expanded by default and competes with the facts");
+  }
+  await evidence.locator("summary").click();
+  await page.waitForTimeout(100);
+  if ((await evidence.getAttribute("open")) === null) throw new Error("the disclosure did not open");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  return "type, confidence and sources shown; evidence rows one click away";
+});
 
 await step("a device's detected name and type reach the drawer", async () => {
   // The printer is the demo's Auto case: nobody has corrected it, so what the
