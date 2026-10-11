@@ -45,6 +45,24 @@ jobs:
         run: |
           set -euo pipefail
           cp -r site _site
+
+          # Keep the hand-authored page markup unchanged while adding the small
+          # Vlyntro credit only to the Pages artifact.
+          python - <<'PY'
+          from pathlib import Path
+
+          page = Path("_site/index.html")
+          html = page.read_text(encoding="utf-8")
+          script = '<script src="arcscan.vlyntro.js" defer></script>'
+          anchor = '<script src="arcscan.v5.js" defer></script>'
+
+          if script not in html:
+              if anchor not in html:
+                  raise SystemExit("ArcScan site script anchor not found")
+              html = html.replace(anchor, script + "\n    " + anchor, 1)
+              page.write_text(html, encoding="utf-8")
+          PY
+
           shopt -s failglob
           for css in _site/arcscan.*.css; do
             npx --yes esbuild@0.24 "$css" --minify --outfile="$css" --allow-overwrite
