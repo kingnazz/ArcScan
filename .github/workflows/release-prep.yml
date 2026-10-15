@@ -1,0 +1,85 @@
+name: Prepare v1.10.0 release assets
+
+on:
+  push:
+    branches:
+      - release/v1.10.0
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.event.head_commit.message == 'chore: prepare v1.10.0 release assets'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v1.10.0
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bump and synchronize version
+        run: |
+          npm version 1.10.0 --no-git-tag-version
+          npm run sync-version
+
+      - name: Update ArcAtlas privacy wording
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          page = Path('site/privacy.html')
+          html = page.read_text(encoding='utf-8')
+          old = '''          Version 1.8.5 adds an optional direct handoff to ArcAtlas. ArcScan never sends inventory
+          merely because a scan completed. A technician must first configure an ArcAtlas server and
+          connection token, choose one network in Inventory, review the destination and device count,
+          and press <strong>Send to ArcAtlas</strong>.'''
+          new = '''          ArcScan offers an optional direct handoff to ArcAtlas. ArcScan never sends inventory merely
+          because a scan completed. A technician must first configure an ArcAtlas server and connection
+          token, then either use a completed saved Scan that covers one network or choose one network in
+          Inventory, review the destination and device count, and press <strong>Send to ArcAtlas</strong>.'''
+          if old not in html:
+              raise SystemExit('Expected ArcAtlas privacy paragraph was not found')
+          page.write_text(html.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate release metadata
+        run: |
+          npm run check-version
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Install screenshot tooling
+        run: |
+          npm i --no-save --package-lock=false playwright sharp
+          npx playwright install --with-deps chromium
+
+      - name: Start ArcScan preview
+        run: npm run preview > /tmp/arcscan-preview.log 2>&1 &
+
+      - name: Wait for preview
+        run: npx --yes wait-on http://localhost:4173/ --timeout 60000
+
+      - name: Capture fresh v1.10.0 screenshots
+        run: node scripts/capture-screenshots.mjs
+
+      - name: Show generated release changes
+        run: git status --short
+
+      - name: Commit release preparation
+        run: |
+          rm .github/workflows/release-prep.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore: prepare ArcScan v1.10.0 release'
+          git push origin HEAD:release/v1.10.0
