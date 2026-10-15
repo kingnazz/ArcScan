@@ -117,9 +117,19 @@ describe("the status line before a scan", () => {
     expect(showsPreflight({ mode: "scanning", meta: meta(), target: "10.0.0.0/24" })).toBe(false);
   });
 
-  it("matches a local network only on the exact block", () => {
+  it("recognises blocks, single hosts and ranges contained by the detected network", () => {
     expect(localNetworkFor(" 192.168.1.0/24 ", [WIFI])).toBe(WIFI);
-    expect(localNetworkFor("192.168.1.5", [WIFI])).toBeNull();
+    expect(localNetworkFor("192.168.1.50", [WIFI])).toBe(WIFI);
+    expect(localNetworkFor("192.168.1.1-100", [WIFI])).toBe(WIFI);
+    expect(localNetworkFor("192.168.1.1-192.168.1.100", [WIFI])).toBe(WIFI);
+  });
+
+  it("does not confuse routed, public or malformed targets with the local network", () => {
+    expect(localNetworkFor("192.168.2.50", [WIFI])).toBeNull();
+    expect(localNetworkFor("10.20.30.0/24", [WIFI])).toBeNull();
+    expect(localNetworkFor("8.8.8.8", [WIFI])).toBeNull();
+    expect(localNetworkFor("192.168.1.", [WIFI])).toBeNull();
+    expect(localNetworkFor("192.168.1.250-300", [WIFI])).toBeNull();
   });
 });
 
