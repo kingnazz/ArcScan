@@ -131,12 +131,14 @@ export const ResultsToolbar = forwardRef<HTMLInputElement, ResultsToolbarProps>(
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <ExportMenu
-            onExport={onExport}
-            disabled={!canExport}
-            title="Export the filtered devices (Ctrl or Cmd + E)"
-            scope={`Exports the ${formatCount(shown)} ${shown === 1 ? "device" : "devices"} currently shown.`}
-          />
+          {tab === "devices" ? (
+            <ExportMenu
+              onExport={onExport}
+              disabled={!canExport}
+              title="Export the filtered devices (Ctrl or Cmd + E)"
+              scope={`Exports the ${formatCount(shown)} ${shown === 1 ? "device" : "devices"} currently shown.`}
+            />
+          ) : null}
           {handoff ? (
             <Button
               size="sm"
