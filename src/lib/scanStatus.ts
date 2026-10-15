@@ -83,10 +83,76 @@ function plural(count: number, one: string, many = `${one}s`): string {
   return `${formatCount(count)} ${count === 1 ? one : many}`;
 }
 
-/** The local network a target names exactly, if any. */
+type Ipv4Range = { start: number; end: number };
+
+function ipv4ToNumber(value: string): number | null {
+  const parts = value.trim().split(".");
+  if (parts.length !== 4) return null;
+  let total = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+    total = total * 256 + octet;
+  }
+  return total;
+}
+
+function cidrRange(value: string): Ipv4Range | null {
+  const match = value.trim().match(/^([^/]+)\/(\d{1,2})$/);
+  if (!match) return null;
+  const address = ipv4ToNumber(match[1]);
+  const prefix = Number(match[2]);
+  if (address == null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+  const size = 2 ** (32 - prefix);
+  const start = Math.floor(address / size) * size;
+  return { start, end: start + size - 1 };
+}
+
+/**
+ * The IPv4 span a scan target describes, when it can be determined safely.
+ * Supports a CIDR, one address, a full dashed range, and ArcScan's shorthand
+ * range form (`192.168.1.1-100`). Anything incomplete or malformed is unknown.
+ */
+function targetRange(value: string): Ipv4Range | null {
+  const target = value.trim();
+  if (!target) return null;
+  if (target.includes("/")) return cidrRange(target);
+
+  const dashed = target.match(/^(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3}|\d{1,3})$/);
+  if (dashed) {
+    const start = ipv4ToNumber(dashed[1]);
+    if (start == null) return null;
+    let endText = dashed[2];
+    if (!endText.includes(".")) {
+      const octet = Number(endText);
+      if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+      endText = `${dashed[1].split(".").slice(0, 3).join(".")}.${octet}`;
+    }
+    const end = ipv4ToNumber(endText);
+    if (end == null || end < start) return null;
+    return { start, end };
+  }
+
+  const single = ipv4ToNumber(target);
+  return single == null ? null : { start: single, end: single };
+}
+
+/**
+ * The detected local network that fully contains this target, if one exists.
+ *
+ * This deliberately uses the detected CIDRs rather than "private IP" as a
+ * proxy for local. A private subnet across a router or VPN is still routed.
+ */
 export function localNetworkFor(target: string, networks: LocalNetwork[]): LocalNetwork | null {
-  const value = target.trim();
-  return networks.find((network) => network.cidr === value) ?? null;
+  const wanted = targetRange(target);
+  if (!wanted) return null;
+  return (
+    networks.find((network) => {
+      const local = cidrRange(network.cidr);
+      return local != null && wanted.start >= local.start && wanted.end <= local.end;
+    }) ?? null
+  );
 }
 
 /**
