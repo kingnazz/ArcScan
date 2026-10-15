@@ -54,7 +54,17 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
 }
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, size = "md", active = false, children, className = "", type = "button", ...rest },
+  {
+    label,
+    size = "md",
+    active = false,
+    children,
+    className = "",
+    type = "button",
+    disabled = false,
+    onClick,
+    ...rest
+  },
   ref,
 ) {
   return (
@@ -62,10 +72,22 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       ref={ref}
       type={type}
       aria-label={label}
+      aria-disabled={disabled || undefined}
       title={label}
+      onClick={(event) => {
+        // Keep an unavailable icon button focusable so its label/title can
+        // explain why the action is unavailable. `aria-disabled` communicates
+        // the state while this guard prevents mouse and keyboard activation.
+        if (disabled) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        onClick?.(event);
+      }}
       className={`icon-btn ${size === "sm" ? "icon-btn-sm" : ""} ${
         active ? "bg-surface-active text-text" : ""
-      } ${className}`}
+      } ${disabled ? "cursor-not-allowed opacity-40" : ""} ${className}`}
       {...rest}
     >
       {children}
