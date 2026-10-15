@@ -114,7 +114,7 @@ export type InventoryView =
   | "ignored";
 
 export const INVENTORY_VIEWS: Array<{ id: InventoryView; label: string; hint: string }> = [
-  { id: "all", label: "All", hint: "Every device ArcScan has recorded" },
+  { id: "all", label: "All devices", hint: "Every device ArcScan has recorded" },
   {
     id: "present",
     label: "Present",
@@ -131,7 +131,7 @@ export const INVENTORY_VIEWS: Array<{ id: InventoryView; label: string; hint: st
     hint: "No completed scan can say whether these answered",
   },
   { id: "trusted", label: "Trusted", hint: "Devices you marked trusted" },
-  { id: "unreviewed", label: "Unreviewed", hint: "Devices you have not classified" },
+  { id: "unreviewed", label: "Not classified", hint: "Devices you have not classified" },
   { id: "ignored", label: "Ignored", hint: "Devices whose changes you chose to hide" },
 ];
 

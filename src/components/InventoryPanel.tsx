@@ -5,25 +5,14 @@
 // behaviour and width-aware columns on purpose: the two tables answer different
 // questions but should feel like the same tool.
 //
-// The header is a single line of controls and a compact count, not a row of
-// dashboard cards. This is a utility, and a device that went missing is more
-// interesting than a large number.
+// It opens with one line saying what it is for — what ArcScan believes exists
+// — and a compact count, not a row of dashboard cards. This is a utility, and a
+// device that went missing is more interesting than a large number.
 
 import { forwardRef, useEffect, useMemo, useRef } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  Download,
-  MinusCircle,
-  Search,
-  ShieldCheck,
-  StickyNote,
-  X,
-} from "lucide-react";
-import { Badge, Button, EmptyState, Field, Select } from "../ui/primitives";
-import { Popover } from "../ui/Popover";
+import { CheckCircle2, CircleHelp, MinusCircle, Send, ShieldCheck, StickyNote } from "lucide-react";
+import { Badge, Button, EmptyState, Select } from "../ui/primitives";
+import { ExportMenu, SearchField, SortHeader, ViewHeader } from "../ui/patterns";
 import { formatCount, formatDateTime, formatLatency, formatRelative, serviceWithPort } from "../lib/format";
 import {
   INVENTORY_COLUMNS,
@@ -79,8 +68,6 @@ export interface InventoryPanelProps {
   onSendToArcAtlas: () => void;
   sendToArcAtlasEnabled: boolean;
   sendToArcAtlasTitle: string;
-  onManageArcAtlas: () => void;
-  arcAtlasConnected: boolean;
 }
 
 export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
@@ -99,7 +86,6 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
     } = props;
 
     const bodyRef = useRef<HTMLTableSectionElement>(null);
-    const exportButton = useRef<HTMLButtonElement>(null);
     const columns = useMemo(
       () => INVENTORY_COLUMNS.filter((c) => props.visibleColumns.includes(c.key)),
       [props.visibleColumns],
@@ -158,47 +144,81 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
 
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
-          <div className="relative w-56 shrink-0">
-            <Search
-              className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted"
-              aria-hidden
-            />
-            <Field
-              ref={searchRef}
-              className="pl-7 pr-7"
-              placeholder="Search inventory"
-              aria-label="Search the inventory by name, address, MAC, manufacturer, service or note"
-              value={filter.query}
-              onChange={(event) => onFilterChange({ query: event.target.value })}
-            />
-            {filter.query ? (
-              <button
-                type="button"
-                aria-label="Clear the search"
-                onClick={() => onFilterChange({ query: "" })}
-                // A full 24px target: the field sits next to the filter menus,
-                // so a smaller hit area has nowhere to borrow space from.
-                className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-text-muted hover:text-text"
+        <ViewHeader
+          title="Inventory"
+          summary={
+            loading && totalRows === 0
+              ? undefined
+              : rows.length === totalRows
+                ? inventoryHeadline({ total: totalRows, ...counts })
+                : `${formatCount(rows.length)} of ${formatCount(totalRows)} devices`
+          }
+          purpose="What ArcScan believes exists: every device it has recorded, across every scan and network."
+          actions={
+            <>
+              <Button
+                size="sm"
+                icon={<Send className="h-3.5 w-3.5" />}
+                disabled={!props.sendToArcAtlasEnabled || totalRows === 0}
+                onClick={props.onSendToArcAtlas}
+                title={props.sendToArcAtlasTitle}
               >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
+                Send to ArcAtlas
+              </Button>
+              <ExportMenu
+                onExport={props.onExport}
+                disabled={totalRows === 0}
+                open={props.exportOpen}
+                onOpenChange={(next) => (next ? props.onToggleExport() : props.onCloseExport())}
+                title="Export the inventory (Ctrl or Cmd + E)"
+                scope={props.exportScopeLabel}
+              />
+            </>
+          }
+        />
+
+        <div className="toolbar">
+          <SearchField
+            ref={searchRef}
+            value={filter.query}
+            onChange={(query) => onFilterChange({ query })}
+            placeholder="Search inventory"
+            label="Search the inventory by name, address, MAC, manufacturer, service or note"
+          />
 
           <Select
             aria-label="Filter the inventory"
-            className="w-40 shrink-0"
+            className="w-44 shrink-0"
             value={filter.view}
             onChange={(event) =>
               onFilterChange({ view: event.target.value as InventoryFilter["view"] })
             }
           >
-            {INVENTORY_VIEWS.map((view) => (
+            {/* Presence and classification are different questions, so the
+                menu says which one each option answers. */}
+            {INVENTORY_VIEWS.filter((view) => view.id === "all").map((view) => (
               <option key={view.id} value={view.id} title={view.hint}>
                 {view.label}
               </option>
             ))}
+            <optgroup label="In the latest scan">
+              {INVENTORY_VIEWS.filter((view) => ["present", "missing", "unknown"].includes(view.id)).map(
+                (view) => (
+                  <option key={view.id} value={view.id} title={view.hint}>
+                    {view.label}
+                  </option>
+                ),
+              )}
+            </optgroup>
+            <optgroup label="Your classification">
+              {INVENTORY_VIEWS.filter((view) => ["trusted", "unreviewed", "ignored"].includes(view.id)).map(
+                (view) => (
+                  <option key={view.id} value={view.id} title={view.hint}>
+                    {view.label}
+                  </option>
+                ),
+              )}
+            </optgroup>
           </Select>
 
           {/* A network filter is noise for someone with one network. */}
@@ -244,79 +264,15 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
               ))}
             </Select>
           ) : null}
-
-          <p className="shrink-0 text-xs text-text-muted" aria-live="polite">
-            {rows.length === totalRows
-              ? inventoryHeadline({ total: totalRows, ...counts })
-              : `${formatCount(rows.length)} of ${formatCount(totalRows)} devices`}
-          </p>
-
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
-            {selection.size > 0 ? (
-              <span className="text-xs font-medium text-text-secondary">
-                {formatCount(selection.size)} selected
-              </span>
-            ) : null}
-            <div className="relative">
-              <Button
-                size="sm"
-                disabled={!props.sendToArcAtlasEnabled}
-                onClick={props.onSendToArcAtlas}
-                title={props.sendToArcAtlasTitle}
-              >
-                Send to ArcAtlas
-              </Button>
-              <Button
-                ref={exportButton}
-                size="sm"
-                icon={<Download className="h-3.5 w-3.5" />}
-                disabled={totalRows === 0}
-                aria-haspopup="dialog"
-                aria-expanded={props.exportOpen}
-                onClick={props.onToggleExport}
-                title="Export the inventory (Ctrl or Cmd + E)"
-              >
-                Export
-              </Button>
-              <Popover
-                open={props.exportOpen}
-                onClose={props.onCloseExport}
-                anchor={exportButton}
-                align="end"
-                label="Export format"
-                className="w-52 p-1"
-              >
-                {(
-                  [
-                    ["csv", "CSV spreadsheet"],
-                    ["json", "JSON"],
-                    ["xml", "XML"],
-                  ] as Array<[ExportFormat, string]>
-                ).map(([format, label]) => (
-                  <button
-                    key={format}
-                    type="button"
-                    className="w-full rounded px-2.5 py-1.5 text-left text-[13px] text-text transition-colors duration-fast hover:bg-surface-hover"
-                    onClick={() => props.onExport(format)}
-                  >
-                    {label}
-                  </button>
-                ))}
-                <p className="px-2.5 pb-1 pt-1.5 text-xs leading-relaxed text-text-muted">
-                  {props.exportScopeLabel}
-                </p>
-              </Popover>
-            </div>
-          </div>
         </div>
 
         {selection.size > 0 ? (
           <div
             role="toolbar"
             aria-label="Actions for the selected devices"
-            className="flex flex-wrap items-center gap-1.5 border-b border-border bg-surface-raised px-3 py-1.5"
+            className="flex flex-wrap items-center gap-1.5 border-b border-border bg-accent-subtle px-3 py-1.5"
           >
-            <span className="text-xs text-text-secondary">
+            <span className="mr-1 text-xs font-medium text-text">
               {formatCount(selection.size)}{" "}
               {selection.size === 1 ? "device selected" : "devices selected"}
             </span>
@@ -324,7 +280,7 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
               Mark trusted
             </Button>
             <Button size="sm" variant="ghost" onClick={() => props.onBulkAction("unclassified")}>
-              Mark unreviewed
+              Mark not classified
             </Button>
             <Button size="sm" variant="ghost" onClick={() => props.onBulkAction("ignored")}>
               Ignore
@@ -337,7 +293,7 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
             </Button>
             <button
               type="button"
-              className="ml-auto rounded px-1.5 py-1 text-xs text-text-muted hover:text-text"
+              className="link-btn ml-auto"
               onClick={() => onSelectionChange(new Set())}
             >
               Clear selection
@@ -411,37 +367,16 @@ export const InventoryPanel = forwardRef<HTMLInputElement, InventoryPanelProps>(
                       }
                     />
                   </th>
-                  {columns.map((column) => {
-                    const active = props.sortKey === column.key;
-                    return (
-                      <th
-                        key={column.key}
-                        scope="col"
-                        aria-sort={
-                          active ? (props.sortDir === "asc" ? "ascending" : "descending") : "none"
-                        }
-                        className={column.align === "right" ? "text-right" : undefined}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => props.onSort(column.key)}
-                          className={`inline-flex items-center gap-1 rounded transition-colors duration-fast hover:text-text ${
-                            column.align === "right" ? "flex-row-reverse" : ""
-                          } ${active ? "text-text" : ""}`}
-                          title={`Sort by ${column.label.toLowerCase()}`}
-                        >
-                          {column.label}
-                          {active ? (
-                            props.sortDir === "asc" ? (
-                              <ArrowUp className="h-3 w-3 text-accent-text" aria-hidden />
-                            ) : (
-                              <ArrowDown className="h-3 w-3 text-accent-text" aria-hidden />
-                            )
-                          ) : null}
-                        </button>
-                      </th>
-                    );
-                  })}
+                  {columns.map((column) => (
+                    <SortHeader
+                      key={column.key}
+                      label={column.label}
+                      active={props.sortKey === column.key}
+                      direction={props.sortDir}
+                      align={column.align}
+                      onSort={() => props.onSort(column.key)}
+                    />
+                  ))}
                 </tr>
               </thead>
               <tbody
@@ -496,6 +431,10 @@ function InventoryRowView({
   return (
     <tr
       data-device={row.device_id}
+      // A double click opens the device; it should not also select a word.
+      onMouseDown={(event) => {
+        if (event.detail > 1) event.preventDefault();
+      }}
       aria-selected={selected}
       onClick={() => onSelect(row.device_id)}
       onDoubleClick={() => onOpen(row.device_id)}

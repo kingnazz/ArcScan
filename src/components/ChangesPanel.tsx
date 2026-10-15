@@ -1,24 +1,18 @@
 // The Changes inbox.
 //
+// It answers "what changed, and what still needs my attention?" — which is what
+// sets it apart from the Inventory (what exists) and History (what ran).
+//
 // A calm list of things that happened, not a queue with a backlog counter. Each
 // entry says what changed, to which device, on which network and when, and
 // offers only the actions that would do something. Related changes to one device
 // in one scan are shown together, because a device that moved address and opened
 // a port is one thing that happened.
 
-import { forwardRef, useRef } from "react";
-import {
-  ArrowRightLeft,
-  Check,
-  Download,
-  MinusCircle,
-  PlusCircle,
-  RotateCcw,
-  Search,
-  X,
-} from "lucide-react";
-import { Badge, Button, EmptyState, Field, Select } from "../ui/primitives";
-import { Popover } from "../ui/Popover";
+import { forwardRef } from "react";
+import { ArrowRightLeft, Check, MinusCircle, PlusCircle, RotateCcw } from "lucide-react";
+import { Badge, Button, EmptyState, Select } from "../ui/primitives";
+import { ExportMenu, SearchField, ViewHeader } from "../ui/patterns";
 import { formatCount, formatDateTime, formatRelative, serviceWithPort } from "../lib/format";
 import {
   CHANGE_VIEWS,
@@ -66,43 +60,56 @@ export const ChangesPanel = forwardRef<HTMLInputElement, ChangesPanelProps>(func
   searchRef,
 ) {
   const { events, totalEvents, filter, onFilterChange, networks } = props;
-  const exportButton = useRef<HTMLButtonElement>(null);
   const groups = groupChanges(events);
   const multipleNetworks = networks.length > 1;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
-        <div className="relative w-52 shrink-0">
-          <Search
-            className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted"
-            aria-hidden
-          />
-          <Field
-            ref={searchRef}
-            className="pl-7 pr-7"
-            placeholder="Search changes"
-            aria-label="Search changes by device, address, network or service"
-            value={filter.query}
-            onChange={(event) => onFilterChange({ query: event.target.value })}
-          />
-          {filter.query ? (
-            <button
-              type="button"
-              aria-label="Clear the search"
-              onClick={() => onFilterChange({ query: "" })}
-              // A full 24px target: the field sits next to the filter menus,
-              // so a smaller hit area has nowhere to borrow space from.
-              className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-text-muted hover:text-text"
+      <ViewHeader
+        title="Changes"
+        summary={
+          props.loading
+            ? undefined
+            : `${props.unreviewed > 0 ? `${formatCount(props.unreviewed)} unreviewed` : "Nothing to review"}${
+                events.length !== totalEvents ? ` · ${formatCount(events.length)} shown` : ""
+              }`
+        }
+        purpose="What changed between scans of the same network, and what still needs a look. Review a change, then acknowledge it."
+        actions={
+          <>
+            <Button
+              size="sm"
+              icon={<Check className="h-3.5 w-3.5" />}
+              disabled={events.every((e) => e.state !== "unreviewed")}
+              onClick={props.onAcknowledgeVisible}
+              title="Acknowledge every unreviewed change currently shown"
             >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-        </div>
+              Acknowledge visible
+            </Button>
+            <ExportMenu
+              onExport={props.onExport}
+              disabled={events.length === 0}
+              open={props.exportOpen}
+              onOpenChange={(next) => (next ? props.onToggleExport() : props.onCloseExport())}
+              title="Export the changes shown (Ctrl or Cmd + E)"
+              scope={props.exportScopeLabel}
+            />
+          </>
+        }
+      />
+
+      <div className="toolbar">
+        <SearchField
+          ref={searchRef}
+          value={filter.query}
+          onChange={(query) => onFilterChange({ query })}
+          placeholder="Search changes"
+          label="Search changes by device, address, network or service"
+        />
 
         <Select
           aria-label="Filter changes"
-          className="w-40 shrink-0"
+          className="w-44 shrink-0"
           value={filter.view}
           onChange={(event) => onFilterChange({ view: event.target.value as ChangeFilter["view"] })}
         >
@@ -131,7 +138,7 @@ export const ChangesPanel = forwardRef<HTMLInputElement, ChangesPanelProps>(func
         {multipleNetworks ? (
           <Select
             aria-label="Filter changes by network"
-            className="w-40 shrink-0"
+            className="w-44 shrink-0"
             value={filter.networkId ?? ""}
             onChange={(event) =>
               onFilterChange({
@@ -147,68 +154,6 @@ export const ChangesPanel = forwardRef<HTMLInputElement, ChangesPanelProps>(func
             ))}
           </Select>
         ) : null}
-
-        <p className="shrink-0 text-xs text-text-muted" aria-live="polite">
-          {props.unreviewed > 0
-            ? `${formatCount(props.unreviewed)} unreviewed`
-            : "Nothing to review"}
-          {events.length !== totalEvents ? ` · ${formatCount(events.length)} shown` : ""}
-        </p>
-
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={<Check className="h-3.5 w-3.5" />}
-            disabled={events.every((e) => e.state !== "unreviewed")}
-            onClick={props.onAcknowledgeVisible}
-            title="Acknowledge every unreviewed change currently shown"
-          >
-            Acknowledge visible
-          </Button>
-          <div className="relative">
-            <Button
-              ref={exportButton}
-              size="sm"
-              icon={<Download className="h-3.5 w-3.5" />}
-              disabled={events.length === 0}
-              aria-haspopup="dialog"
-              aria-expanded={props.exportOpen}
-              onClick={props.onToggleExport}
-              title="Export the changes shown (Ctrl or Cmd + E)"
-            >
-              Export
-            </Button>
-            <Popover
-              open={props.exportOpen}
-              onClose={props.onCloseExport}
-              anchor={exportButton}
-              align="end"
-              label="Export format"
-              className="w-52 p-1"
-            >
-              {(
-                [
-                  ["csv", "CSV spreadsheet"],
-                  ["json", "JSON"],
-                  ["xml", "XML"],
-                ] as Array<[ExportFormat, string]>
-              ).map(([format, label]) => (
-                <button
-                  key={format}
-                  type="button"
-                  className="w-full rounded px-2.5 py-1.5 text-left text-[13px] text-text transition-colors duration-fast hover:bg-surface-hover"
-                  onClick={() => props.onExport(format)}
-                >
-                  {label}
-                </button>
-              ))}
-              <p className="px-2.5 pb-1 pt-1.5 text-xs leading-relaxed text-text-muted">
-                {props.exportScopeLabel}
-              </p>
-            </Popover>
-          </div>
-        </div>
       </div>
 
       {groups.length === 0 ? (
@@ -295,57 +240,62 @@ function ChangeGroupRow({
   const actions = actionsFor(lead);
 
   return (
-    <li className="group px-3 py-2.5 transition-colors duration-fast hover:bg-surface-hover">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <KindBadge event={lead} />
-        <span className="text-[13px] font-medium text-text">{group.deviceLabel}</span>
-        {group.ip ? <span className="mono text-xs text-text-secondary">{group.ip}</span> : null}
-        {showNetwork && group.networkName ? <Badge>{group.networkName}</Badge> : null}
-        {lead.state === "acknowledged" ? <Badge>Acknowledged</Badge> : null}
-        {lead.state === "ignored" ? <Badge>Ignored</Badge> : null}
-        <span className="ml-auto text-xs text-text-muted" title={formatDateTime(group.at)}>
-          {formatRelative(group.at)}
-        </span>
-      </div>
-
-      <ul className="mt-1 space-y-0.5">
-        {group.events.map((event) => (
-          <li key={event.id} className="text-[13px] leading-relaxed text-text-secondary">
-            <span className="text-text-muted">{CHANGE_TYPE_LABEL[event.change_type]}: </span>
-            {event.change_type === "ports_changed" ? (
-              <PortChange event={event} />
-            ) : (
-              <span className="mono">{describeChange(event)}</span>
-            )}
-          </li>
-        ))}
-      </ul>
-
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        {actions.map((action) => (
-          <Button
-            key={action}
-            size="sm"
-            variant={action === "review" ? "secondary" : "ghost"}
-            onClick={() => onAction(action, lead)}
-          >
-            {ACTION_LABEL[action]}
-          </Button>
-        ))}
-        {group.scanId != null ? (
-          <button
-            type="button"
-            className="rounded px-1.5 py-1 text-xs text-text-muted underline-offset-2 hover:text-text hover:underline"
-            onClick={() => onOpenScan(group.scanId as number)}
-            title="Open the scan that found this change, with its full comparison"
-          >
-            Open the scan
-          </button>
-        ) : (
-          <span className="px-1.5 text-xs text-text-muted">
-            The scan that found this has since been removed
+    <li className="flex gap-3 px-4 py-3 transition-colors duration-fast hover:bg-surface-hover">
+      <KindMark event={lead} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <KindLabel event={lead} />
+          <span className="text-[13px] font-semibold text-text">{group.deviceLabel}</span>
+          {group.ip ? <span className="mono text-xs text-text-secondary">{group.ip}</span> : null}
+          {showNetwork && group.networkName ? (
+            <span className="text-xs text-text-muted">on {group.networkName}</span>
+          ) : null}
+          {lead.state === "acknowledged" ? <Badge>Acknowledged</Badge> : null}
+          {lead.state === "ignored" ? <Badge>Ignored</Badge> : null}
+          <span className="ml-auto shrink-0 text-xs text-text-muted" title={formatDateTime(group.at)}>
+            {formatRelative(group.at)}
           </span>
-        )}
+        </div>
+
+        <ul className="mt-1 space-y-0.5">
+          {group.events.map((event) => (
+            <li key={event.id} className="text-[13px] leading-relaxed text-text-secondary">
+              <span className="text-text-muted">{CHANGE_TYPE_LABEL[event.change_type]}: </span>
+              {event.change_type === "ports_changed" ? (
+                <PortChange event={event} />
+              ) : (
+                <span className="mono">{describeChange(event)}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          {actions.map((action) => (
+            <Button
+              key={action}
+              size="sm"
+              variant={action === "review" ? "secondary" : "ghost"}
+              onClick={() => onAction(action, lead)}
+            >
+              {ACTION_LABEL[action]}
+            </Button>
+          ))}
+          {group.scanId != null ? (
+            <button
+              type="button"
+              className="link-btn ml-1.5 !text-text-secondary"
+              onClick={() => onOpenScan(group.scanId as number)}
+              title="Open the scan that found this change, with its full comparison"
+            >
+              Open the scan
+            </button>
+          ) : (
+            <span className="px-1.5 text-xs text-text-muted">
+              The scan that found this has since been removed
+            </span>
+          )}
+        </div>
       </div>
     </li>
   );
@@ -372,31 +322,64 @@ function PortChange({ event }: { event: ChangeEvent }) {
   );
 }
 
-function KindBadge({ event }: { event: ChangeEvent }) {
+const KIND: Record<
+  "added" | "returned" | "missing" | "changed",
+  { label: string; icon: React.ReactNode; tone: string; bg: string }
+> = {
+  added: {
+    label: "New device",
+    icon: <PlusCircle className="h-3.5 w-3.5" aria-hidden />,
+    tone: "text-new",
+    bg: "bg-[var(--new-subtle)]",
+  },
+  returned: {
+    label: "Returned",
+    icon: <RotateCcw className="h-3.5 w-3.5" aria-hidden />,
+    tone: "text-accent-text",
+    bg: "bg-accent-subtle",
+  },
+  missing: {
+    label: "Missing",
+    icon: <MinusCircle className="h-3.5 w-3.5" aria-hidden />,
+    tone: "text-missing",
+    bg: "bg-[var(--missing-subtle)]",
+  },
+  changed: {
+    label: "Changed",
+    icon: <ArrowRightLeft className="h-3.5 w-3.5" aria-hidden />,
+    tone: "text-changed",
+    bg: "bg-[var(--changed-subtle)]",
+  },
+};
+
+function kindOf(event: ChangeEvent): keyof typeof KIND {
   switch (event.change_type) {
     case "device_added":
-      return (
-        <Badge tone="new" icon={<PlusCircle className="h-2.5 w-2.5" aria-hidden />}>
-          New device
-        </Badge>
-      );
+      return "added";
     case "device_returned":
-      return (
-        <Badge tone="accent" icon={<RotateCcw className="h-2.5 w-2.5" aria-hidden />}>
-          Returned
-        </Badge>
-      );
+      return "returned";
     case "device_missing":
-      return (
-        <Badge tone="missing" icon={<MinusCircle className="h-2.5 w-2.5" aria-hidden />}>
-          Missing
-        </Badge>
-      );
+      return "missing";
     default:
-      return (
-        <Badge tone="changed" icon={<ArrowRightLeft className="h-2.5 w-2.5" aria-hidden />}>
-          Changed
-        </Badge>
-      );
+      return "changed";
   }
+}
+
+/** The kind of change as a tinted icon: the column the eye scans down. */
+function KindMark({ event }: { event: ChangeEvent }) {
+  const kind = KIND[kindOf(event)];
+  return (
+    <span
+      className={`mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${kind.bg} ${kind.tone}`}
+      aria-hidden
+    >
+      {kind.icon}
+    </span>
+  );
+}
+
+/** The kind of change as a word, so it is never colour alone. */
+function KindLabel({ event }: { event: ChangeEvent }) {
+  const kind = KIND[kindOf(event)];
+  return <span className={`text-xs font-semibold ${kind.tone}`}>{kind.label}</span>;
 }

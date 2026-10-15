@@ -225,6 +225,23 @@ export function rowName(row: DeviceRow): string {
   );
 }
 
+/**
+ * The name the results table shows, which differs from `rowName` in one way:
+ * the table already has an address column beside it, so repeating the address
+ * inside the name ("Samsung Electronics (192.168.1.23)", or the bare address
+ * twice) is noise. A device with no name of its own shows its manufacturer as a
+ * hint, and one with neither says so.
+ */
+export function tableName(row: DeviceRow): { text: string; kind: "named" | "vendor" | "unnamed" } {
+  const custom = row.custom_name?.trim();
+  if (custom) return { text: custom, kind: "named" };
+  const hostname = row.host.hostname?.trim();
+  if (hostname) return { text: hostname, kind: "named" };
+  const vendor = row.host.vendor?.trim();
+  if (vendor) return { text: vendor, kind: "vendor" };
+  return { text: "Unnamed", kind: "unnamed" };
+}
+
 /** True when a row carries no name of its own and only the address identifies it. */
 export function isUnnamed(row: DeviceRow): boolean {
   return !row.custom_name?.trim() && !row.host.hostname?.trim();

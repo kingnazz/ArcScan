@@ -49,16 +49,16 @@
 
     /* Semantic status. Each one is always paired with an icon or a word in the
      * UI, never colour alone. */
-    --online: #157f3d;
-    --online-subtle: rgba(21, 127, 61, 0.12);
-    --new: #5b3fd6;
+    --online: #0f6b33;
+    --online-subtle: rgba(15, 107, 51, 0.1);
+    --new: #5236c9;
     --new-subtle: rgba(91, 63, 214, 0.12);
-    --changed: #96590a;
-    --changed-subtle: rgba(150, 89, 10, 0.12);
+    --changed: #7f4a05;
+    --changed-subtle: rgba(127, 74, 5, 0.1);
     --missing: #a82c23;
     --missing-subtle: rgba(168, 44, 35, 0.1);
-    --warning: #96590a;
-    --warning-subtle: rgba(150, 89, 10, 0.12);
+    --warning: #7f4a05;
+    --warning-subtle: rgba(127, 74, 5, 0.1);
     /* Dark enough to stay above 4.5:1 on its own tinted button, including the
      * hover tint — the Stop button, which is under the pointer for as long as a
      * scan is running, is the tightest pairing in the light theme. */
@@ -126,7 +126,7 @@
     --danger-subtle: rgba(242, 139, 128, 0.13);
 
     --row-stripe: #191f26;
-    --row-selected: rgba(26, 164, 196, 0.16);
+    --row-selected: rgba(26, 164, 196, 0.13);
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
@@ -209,12 +209,14 @@
   .btn-primary {
     background: var(--accent);
     color: var(--accent-fg);
+    box-shadow: var(--shadow-sm);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
   }
   .btn-primary:active:not(:disabled) {
     background: var(--accent-active);
+    box-shadow: none;
   }
 
   .btn-secondary {
@@ -229,6 +231,11 @@
   .btn-secondary:active:not(:disabled) {
     background: var(--surface-active);
   }
+  .btn-secondary[aria-expanded="true"],
+  .btn-secondary[aria-pressed="true"] {
+    background: var(--surface-active);
+    border-color: var(--border-strong);
+  }
 
   .btn-ghost {
     color: var(--text-secondary);
@@ -236,6 +243,16 @@
   .btn-ghost:hover:not(:disabled) {
     background: var(--surface-hover);
     color: var(--text);
+  }
+  .btn-ghost:active:not(:disabled),
+  .btn-ghost[aria-expanded="true"] {
+    background: var(--surface-active);
+    color: var(--text);
+  }
+  /* A ghost toggle that is on reads as selected, not as a primary action. */
+  .btn-ghost[aria-pressed="true"] {
+    background: var(--accent-subtle);
+    color: var(--accent-text);
   }
 
   .btn-danger {
@@ -259,9 +276,25 @@
     background: var(--surface-hover);
     color: var(--text);
   }
+  .icon-btn:active:not(:disabled),
+  .icon-btn[aria-expanded="true"] {
+    background: var(--surface-active);
+    color: var(--text);
+  }
   .icon-btn-sm {
     width: var(--control-sm);
     height: var(--control-sm);
+  }
+
+  /* A text link that behaves as a button: secondary navigation inside copy. */
+  .link-btn {
+    @apply inline-flex items-center gap-1 rounded text-xs font-medium underline decoration-dotted
+      underline-offset-2 transition-colors;
+    color: var(--accent-text);
+    transition-duration: var(--duration-fast);
+  }
+  .link-btn:hover {
+    text-decoration-style: solid;
   }
 
   /* --- Fields ------------------------------------------------------------ */
@@ -277,13 +310,18 @@
   .field::placeholder {
     color: var(--text-muted);
   }
-  .field:hover:not(:focus) {
+  .field:hover:not(:focus):not(:disabled) {
     border-color: var(--border-strong);
   }
   .field:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+  .field:disabled {
+    @apply cursor-not-allowed;
+    background: var(--surface-sunken);
+    color: var(--text-secondary);
   }
   .field-lg {
     height: var(--control-lg);
@@ -295,7 +333,14 @@
   }
 
   .field-label {
-    @apply mb-1 block text-[11px] font-semibold uppercase tracking-wide;
+    @apply mb-1 block text-xs font-medium;
+    color: var(--text-secondary);
+  }
+
+  /* The small uppercase label that heads a group. The only place ArcScan
+   * still uses uppercase, so it keeps its meaning: "a section starts here". */
+  .section-label {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.06em];
     color: var(--text-muted);
   }
 
@@ -305,7 +350,6 @@
     background: var(--surface);
     border-color: var(--border);
     @apply rounded-lg border;
-    box-shadow: var(--shadow-sm);
   }
 
   .topo-preview-canvas {
@@ -337,9 +381,28 @@
 
   .popover {
     background: var(--surface-raised);
-    border-color: var(--border);
+    border-color: var(--border-strong);
     box-shadow: var(--shadow-lg);
     @apply z-50 rounded-lg border;
+  }
+
+  /* One row of a popover menu: export formats, profiles, networks. */
+  .menu-item {
+    @apply flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px]
+      transition-colors;
+    color: var(--text);
+    transition-duration: var(--duration-fast);
+  }
+  .menu-item:hover,
+  .menu-item:focus-visible {
+    background: var(--surface-hover);
+  }
+  .menu-item[aria-selected="true"] {
+    background: var(--accent-subtle);
+  }
+  .menu-heading {
+    @apply px-2.5 pb-1 pt-2 text-[10.5px] font-semibold uppercase tracking-[0.06em];
+    color: var(--text-muted);
   }
 
   .divider {
@@ -352,11 +415,36 @@
     @apply w-px shrink-0 self-stretch;
   }
 
-  /* --- Badges and indicators -------------------------------------------- */
+  /* A horizontal band of controls: every toolbar in the app is this. */
+  .toolbar {
+    @apply flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b px-3 py-1.5;
+    min-height: 42px;
+    background: var(--surface);
+    border-color: var(--border);
+  }
 
+  /* The one-line heading that opens Inventory, Changes and History. */
+  .view-header {
+    @apply flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-b px-4 py-2.5;
+    background: var(--surface-raised);
+    border-color: var(--border);
+  }
+
+  kbd,
+  .kbd {
+    @apply inline-flex items-center rounded border px-1 font-sans text-[10.5px] font-medium leading-4;
+    background: var(--surface-sunken);
+    border-color: var(--border);
+    color: var(--text-secondary);
+  }
+
+  /* --- Chips (formerly badges) ------------------------------------------- */
+
+  /* Sentence case and a tint, not shouting capitals. A chip states a fact
+   * about the thing beside it; it is never a button. */
   .badge {
-    @apply inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-px text-[10.5px]
-      font-semibold uppercase tracking-wide leading-[1.5];
+    @apply inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-1.5
+      text-[11px] font-medium leading-[17px];
   }
 
   .badge-neutral {
@@ -366,39 +454,87 @@
   }
   .badge-accent {
     background: var(--accent-subtle);
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    border-color: transparent;
     color: var(--accent-text);
   }
   .badge-online {
     background: var(--online-subtle);
-    border-color: color-mix(in srgb, var(--online) 35%, transparent);
+    border-color: transparent;
     color: var(--online);
   }
   .badge-new {
     background: var(--new-subtle);
-    border-color: color-mix(in srgb, var(--new) 35%, transparent);
+    border-color: transparent;
     color: var(--new);
   }
   .badge-changed {
     background: var(--changed-subtle);
-    border-color: color-mix(in srgb, var(--changed) 35%, transparent);
+    border-color: transparent;
     color: var(--changed);
   }
   .badge-missing {
     background: var(--missing-subtle);
-    border-color: color-mix(in srgb, var(--missing) 35%, transparent);
+    border-color: transparent;
     color: var(--missing);
   }
   .badge-warning {
     background: var(--warning-subtle);
-    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+    border-color: transparent;
     color: var(--warning);
   }
 
-  /* --- Segmented control ------------------------------------------------- */
+  /* --- Navigation -------------------------------------------------------- */
 
+  /* The top-level views. An underline on the header's bottom edge marks the
+   * current one: position, weight and colour all say "you are here". */
+  .nav-tab {
+    @apply relative inline-flex h-full items-center gap-1.5 px-3 text-[13px] font-medium leading-none
+      transition-colors;
+    color: var(--text-secondary);
+    transition-duration: var(--duration-fast);
+  }
+  .nav-tab:hover {
+    color: var(--text);
+  }
+  .nav-tab::after {
+    content: "";
+    @apply absolute inset-x-2 bottom-0 h-[2px] rounded-t-sm;
+    background: transparent;
+    transition: background-color var(--duration-fast);
+  }
+  .nav-tab:hover::after {
+    background: var(--border-strong);
+  }
+  .nav-tab[aria-current="page"] {
+    color: var(--text);
+  }
+  .nav-tab[aria-current="page"]::after {
+    background: var(--accent);
+  }
+  .nav-tab:focus-visible {
+    outline-offset: -3px;
+  }
+
+  /* A count beside a tab label. Fixed minimum width and tabular figures so the
+   * tabs do not shift as counts grow. */
+  .nav-badge {
+    @apply inline-flex items-center justify-center rounded px-1 text-[10.5px] font-semibold
+      leading-none;
+    min-width: 1.15rem;
+    height: 1.05rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--surface-active);
+    color: var(--text-secondary);
+  }
+  .nav-badge-attention {
+    background: var(--accent-subtle);
+    color: var(--accent-text);
+  }
+
+  /* Segmented control: switching how one thing is shown (Devices, Comparison,
+   * Topology), never navigation between places. */
   .segmented {
-    @apply inline-flex items-center gap-0.5 rounded-md border p-0.5;
+    @apply inline-flex shrink-0 items-center gap-0.5 rounded-md border p-0.5;
     background: var(--surface-sunken);
     border-color: var(--border);
   }
@@ -411,64 +547,48 @@
     transition-duration: var(--duration-fast);
   }
   .segmented-item:hover {
-    background: var(--surface-hover);
     color: var(--text);
   }
+  .segmented-item[aria-pressed="true"],
   .segmented-item[aria-current="page"] {
-    background: var(--surface);
+    background: var(--surface-raised);
     color: var(--text);
-    box-shadow: var(--shadow-sm);
-  }
-  /* The active tab keeps its own surface on hover rather than flattening back
-   * into the hover colour, so the selection never appears to move. */
-  .segmented-item[aria-current="page"]:hover {
-    background: var(--surface);
-  }
-
-  /* A count beside a tab label. Fixed minimum width and tabular figures so the
-   * tabs do not shift as counts grow, and so two badges line up with each
-   * other rather than drifting by a digit. */
-  .nav-badge {
-    @apply inline-flex items-center justify-center rounded px-1 text-[10.5px] font-semibold
-      leading-none;
-    min-width: 1.15rem;
-    height: 1.05rem;
-    font-variant-numeric: tabular-nums;
-    background: var(--accent-subtle);
-    color: var(--accent-text);
+    box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--border);
   }
 
   /* --- Data table -------------------------------------------------------- */
 
   .data-table {
-    @apply w-full border-collapse text-[13px];
+    @apply w-full border-separate text-[13px];
+    border-spacing: 0;
   }
 
   .data-table thead th {
-    @apply sticky top-0 z-10 whitespace-nowrap border-b px-3 py-1.5 text-left text-[11px]
-      font-semibold uppercase tracking-wide;
-    background: var(--surface-sunken);
-    border-color: var(--border);
+    @apply sticky top-0 z-10 whitespace-nowrap border-b px-3 py-0 text-left text-xs font-medium;
+    height: 30px;
+    background: var(--surface-raised);
+    border-color: var(--border-strong);
     color: var(--text-muted);
   }
 
   .data-table tbody td {
     @apply whitespace-nowrap border-b px-3;
     border-color: var(--border);
-    padding-top: 5px;
-    padding-bottom: 5px;
-  }
-
-  .data-table tbody tr:nth-child(even) td {
-    background: var(--row-stripe);
+    padding-top: 6px;
+    padding-bottom: 6px;
   }
 
   .data-table tbody tr:hover td {
     background: var(--surface-hover);
   }
 
+  /* The selected row: a tint for the whole row and an accent bar on its
+   * leading edge, so the selection survives a glance from across the room. */
   .data-table tbody tr[aria-selected="true"] td {
     background: var(--row-selected);
+  }
+  .data-table tbody tr[aria-selected="true"] td:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 
   /*
@@ -482,10 +602,33 @@
     color: var(--text-secondary);
   }
 
-  /* Comfortable density adds four pixels of breathing room per row. */
+  /* Comfortable density adds breathing room per row. */
   .data-table.density-comfortable tbody td {
-    padding-top: 8px;
-    padding-bottom: 8px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  /* Sortable column headers: the arrow is always reserved, shown on hover and
+   * on the active column, so a header never shifts when it becomes the sort. */
+  .sort-btn {
+    @apply inline-flex items-center gap-1 rounded transition-colors;
+    transition-duration: var(--duration-fast);
+  }
+  .sort-btn:hover {
+    color: var(--text);
+  }
+  .sort-btn .sort-arrow {
+    opacity: 0;
+  }
+  .sort-btn:hover .sort-arrow {
+    opacity: 0.55;
+  }
+  .sort-btn[data-active="true"] {
+    color: var(--text);
+  }
+  .sort-btn[data-active="true"] .sort-arrow {
+    opacity: 1;
+    color: var(--accent-text);
   }
 
   .mono {
@@ -511,6 +654,61 @@
   .checkbox:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+
+  /* --- Inspector --------------------------------------------------------- */
+
+  /* A two-column fact grid: label, value. The unit the inspector is built of. */
+  .facts {
+    @apply grid gap-x-3 gap-y-1.5;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+  .facts > dt {
+    @apply pt-px text-xs;
+    color: var(--text-muted);
+  }
+  .facts > dd {
+    @apply min-w-0 break-words text-[13px];
+    color: var(--text);
+  }
+
+  .disclosure > summary {
+    @apply flex cursor-pointer list-none items-center gap-1.5 rounded py-1 text-xs font-medium
+      transition-colors;
+    color: var(--text-secondary);
+  }
+  .disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+  .disclosure > summary:hover {
+    color: var(--text);
+  }
+  .disclosure > summary .disclosure-chevron {
+    transition: transform var(--duration-fast);
+  }
+  .disclosure[open] > summary .disclosure-chevron {
+    transform: rotate(90deg);
+  }
+
+  /* --- Motion ------------------------------------------------------------ */
+
+  /* The live mark beside the Scan tab and in the status line. */
+  .live-dot {
+    @apply relative inline-block h-1.5 w-1.5 shrink-0 rounded-full;
+    background: var(--accent);
+  }
+  .live-dot::after {
+    content: "";
+    @apply absolute inset-0 rounded-full;
+    background: var(--accent);
+    animation: live-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+  @keyframes live-ping {
+    75%,
+    100% {
+      transform: scale(2.4);
+      opacity: 0;
+    }
   }
 }
 

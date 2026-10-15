@@ -8,17 +8,17 @@ import { CircleSlash, Wifi } from "lucide-react";
 import { formatCount, formatDuration, phaseLabel } from "../lib/format";
 import type { ScanMeta, ScanMode } from "../hooks/useLiveScan";
 import type { ScanProgress } from "../types";
+import { APP_BUILD_LABEL } from "../version";
 
 export interface StatusBarProps {
   mode: ScanMode;
   progress: ScanProgress | null;
   meta: ScanMeta | null;
   deviceCount: number;
-  version: string;
   native: boolean;
 }
 
-export function StatusBar({ mode, progress, meta, deviceCount, version, native }: StatusBarProps) {
+export function StatusBar({ mode, progress, meta, deviceCount, native }: StatusBarProps) {
   return (
     <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-border bg-surface-raised px-3 text-xs text-text-secondary">
       <span
@@ -83,7 +83,9 @@ export function StatusBar({ mode, progress, meta, deviceCount, version, native }
         </span>
       )}
 
-      <span className="shrink-0 text-text-muted">v{version}</span>
+      <span className="shrink-0 font-mono text-[11px] text-text-muted" title="ArcScan version and build">
+        {APP_BUILD_LABEL}
+      </span>
     </footer>
   );
 }

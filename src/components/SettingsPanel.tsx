@@ -1,12 +1,14 @@
 // Settings.
 //
 // Global preferences live here rather than on the scanning screen, so the scan
-// surface stays about the scan. Grouped by what the operator is trying to change,
-// with the privacy-relevant switches stated plainly rather than buried.
+// surface stays about the scan. Six groups — Scanning, Discovery, Credentials,
+// Networks, Appearance, Application — with a rail that jumps between them, and
+// the privacy-relevant switches stated plainly rather than buried.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, FolderOpen, KeyRound, RotateCcw } from "lucide-react";
-import { Button, Field, FieldRow, SectionHeading, Select } from "../ui/primitives";
+import { Button, Field, FieldRow, Select } from "../ui/primitives";
+import { destinationLabel, type ArcAtlasConnection } from "../lib/arcatlas";
 import { windowsCredentials } from "../lib/windowsCredential";
 import type { WindowsCredentialStatus } from "../types";
 import { Drawer } from "../ui/Drawer";
@@ -41,13 +43,61 @@ export interface SettingsPanelProps {
   /** Known network scopes; empty until a scan has been saved. */
   scopes: NetworkScope[];
   onRenameScope: (id: number, name: string) => void;
+  /** The ArcAtlas connection, managed here rather than from a send button. */
+  arcAtlas?: ArcAtlasConnection;
+  onManageArcAtlas?: () => void;
 }
+
+/**
+ * The six groups, in the order a technician reaches for them. Every group is
+ * rendered — the rail jumps between them rather than hiding the rest — so the
+ * whole panel stays searchable with the browser's find and reachable by Tab.
+ */
+const GROUPS = [
+  { id: "settings-scanning", label: "Scanning" },
+  { id: "settings-discovery", label: "Discovery" },
+  { id: "settings-credentials", label: "Credentials" },
+  { id: "settings-networks", label: "Networks" },
+  { id: "settings-appearance", label: "Appearance" },
+  { id: "settings-application", label: "Application" },
+] as const;
+
+/** Settings is wider than the device inspector: it holds forms, not facts. */
+const SETTINGS_WIDTH = 600;
 
 export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, onChange } = props;
   const [confirmReset, setConfirmReset] = useState(false);
+  const [current, setCurrent] = useState<string>(GROUPS[0].id);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const portCheck = parsePorts(settings.portSpec);
   const portable = props.runtime?.edition === "portable";
+
+  // Mark the group being read in the rail as the panel scrolls.
+  useEffect(() => {
+    if (!props.open) return;
+    const root = bodyRef.current?.closest(".overflow-y-auto") ?? null;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) setCurrent(visible[0].target.id);
+      },
+      { root, rootMargin: "0px 0px -70% 0px" },
+    );
+    for (const group of GROUPS) {
+      const element = document.getElementById(group.id);
+      if (element) observer.observe(element);
+    }
+    return () => observer.disconnect();
+  }, [props.open, props.overlay]);
+
+  const jump = (id: string) => {
+    setCurrent(id);
+    document.getElementById(id)?.scrollIntoView({ block: "start" });
+  };
 
   return (
     <>
@@ -57,6 +107,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
         overlay={props.overlay}
         width={props.width}
         onWidthChange={props.onWidthChange}
+        fixedWidth={SETTINGS_WIDTH}
+        flush
         title="Settings"
         subtitle={`ArcScan ${version(props.version)}${props.native ? "" : " · browser preview"}`}
         footer={
@@ -70,46 +122,37 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </Button>
         }
       >
-        <div className="space-y-5">
-          <section>
-            <SectionHeading>Appearance</SectionHeading>
-            <div className="space-y-3">
-              <FieldRow label="Theme" htmlFor="settings-theme">
-                <Select
-                  id="settings-theme"
-                  value={settings.theme}
-                  onChange={(e) => onChange({ theme: e.target.value as Settings["theme"] })}
-                >
-                  <option value="system">Match the system</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </Select>
-              </FieldRow>
-              <FieldRow label="Row density" htmlFor="settings-density">
-                <Select
-                  id="settings-density"
-                  value={settings.density}
-                  onChange={(e) => onChange({ density: e.target.value as Settings["density"] })}
-                >
-                  <option value="compact">Compact, more rows on screen</option>
-                  <option value="comfortable">Comfortable, more space per row</option>
-                </Select>
-              </FieldRow>
-              <Toggle
-                id="settings-motion"
-                label="Reduced motion"
-                description="Switches off row and panel animations. Applied automatically when your system already asks for reduced motion."
-                checked={settings.reducedMotion}
-                onChange={(reducedMotion) => onChange({ reducedMotion })}
-              />
-            </div>
-          </section>
+        <div ref={bodyRef} className="flex min-h-full">
+          {/* The rail: too wide for the narrow overlay, where the groups'
+              own headings are enough. */}
+          {!props.overlay ? (
+            <nav
+              aria-label="Settings sections"
+              className="sticky top-0 w-36 shrink-0 self-start border-r border-border px-2 py-3"
+            >
+              <ul className="space-y-0.5">
+                {GROUPS.map((group) => (
+                  <li key={group.id}>
+                    <button
+                      type="button"
+                      onClick={() => jump(group.id)}
+                      aria-current={current === group.id ? "location" : undefined}
+                      className={`w-full rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors duration-fast ${
+                        current === group.id
+                          ? "bg-surface-active font-medium text-text"
+                          : "text-text-secondary hover:bg-surface-hover hover:text-text"
+                      }`}
+                    >
+                      {group.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          ) : null}
 
-          <div className="divider" />
-
-          <section>
-            <SectionHeading>Scanning</SectionHeading>
-            <div className="space-y-3">
+          <div className="min-w-0 flex-1 px-5 pb-8">
+            <Group id="settings-scanning" title="Scanning" lead="What a scan checks, and how hard it pushes.">
               <FieldRow
                 label="Default profile"
                 htmlFor="settings-profile"
@@ -193,133 +236,56 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 own so their scans stay comparable. ArcScan enforces its own ceilings on top of
                 whatever you set here.
               </p>
-            </div>
-          </section>
 
-          <div className="divider" />
-
-          <section>
-            <SectionHeading>Results</SectionHeading>
-            <p className="mb-2 text-xs leading-relaxed text-text-muted">
-              Name, IP address and state are always shown. Columns also hide themselves
-              automatically when the window is too narrow for them.
-            </p>
-            <ul className="space-y-1.5">
-              {COLUMNS.filter((c) => !c.required).map((column) => (
-                <li key={column.key}>
-                  <Toggle
-                    id={`settings-column-${column.key}`}
-                    label={column.label}
-                    checked={!settings.hiddenColumns.includes(column.key)}
-                    onChange={(visible) =>
-                      onChange({
-                        hiddenColumns: visible
-                          ? settings.hiddenColumns.filter((k) => k !== column.key)
-                          : ([...settings.hiddenColumns, column.key] as SortKey[]),
-                      })
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <div className="divider" />
-
-          <section>
-            <SectionHeading>Inventory columns</SectionHeading>
-            <p className="mb-2 text-xs leading-relaxed text-text-muted">
-              Device, Address, Status and Last seen are always shown. These extras are off by
-              default and, like the rest, hide themselves when the window is too narrow.
-            </p>
-            <ul className="space-y-1.5">
-              {OPTIONAL_INVENTORY_COLUMNS.map((column) => (
-                <li key={column.key}>
-                  <Toggle
-                    id={`settings-inventory-column-${column.key}`}
-                    label={column.label}
-                    checked={settings.inventoryColumns.includes(column.key)}
-                    onChange={(visible) =>
-                      onChange({
-                        inventoryColumns: visible
-                          ? ([...settings.inventoryColumns, column.key] as InventoryColumn[])
-                          : settings.inventoryColumns.filter((k) => k !== column.key),
-                      })
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <div className="divider" />
-
-          <section>
-            <SectionHeading>History</SectionHeading>
-            <NumberRow
-              id="settings-retention"
-              label="Scans to keep"
-              value={settings.historyRetention}
-              min={5}
-              max={5000}
-              step={5}
-              onChange={(historyRetention) => onChange({ historyRetention })}
-            />
-            <p className="mt-1 text-xs leading-relaxed text-text-muted">
-              Older scans are removed after each new one. Device names, notes and first-seen dates
-              are kept whatever happens to the scans that recorded them
-              {portable ? " during this session." : "."}
-            </p>
-            <Toggle
-              id="settings-notify"
-              className="mt-3"
-              label="Summarise changes after each scan"
-              description="Shows a short notification when devices arrive, go missing or change."
-              checked={settings.notifyOnChanges}
-              onChange={(notifyOnChanges) => onChange({ notifyOnChanges })}
-            />
-          </section>
-
-          {props.scopes.length > 0 ? (
-            <>
               <div className="divider" />
-              <section>
-                <SectionHeading>Networks</SectionHeading>
-                <p className="mb-2 text-xs leading-relaxed text-text-muted">
-                  ArcScan keeps each network's devices, names and notes separate, so two sites that
-                  reuse the same addresses can never mix. Name them here to tell them apart.
+
+              <div>
+                <NumberRow
+                  id="settings-retention"
+                  label="Scans to keep"
+                  value={settings.historyRetention}
+                  min={5}
+                  max={5000}
+                  step={5}
+                  onChange={(historyRetention) => onChange({ historyRetention })}
+                />
+                <p className="mt-1 text-xs leading-relaxed text-text-muted">
+                  Older scans are removed after each new one. Device names, notes and first-seen
+                  dates are kept whatever happens to the scans that recorded them
+                  {portable ? " during this session." : "."}
                 </p>
-                <ul className="space-y-2">
-                  {props.scopes.map((scope) => (
-                    <ScopeRow key={scope.id} scope={scope} onRename={props.onRenameScope} />
-                  ))}
-                </ul>
-              </section>
-            </>
-          ) : null}
+              </div>
+              <Toggle
+                id="settings-notify"
+                label="Summarise changes after each scan"
+                description="Shows a short notification when devices arrive, go missing or change."
+                checked={settings.notifyOnChanges}
+                onChange={(notifyOnChanges) => onChange({ notifyOnChanges })}
+              />
+            </Group>
 
-          <div className="divider" />
+            <Group
+              id="settings-discovery"
+              title="Discovery"
+              lead="How ArcScan works out what each device is."
+            >
+              <p className="text-xs leading-relaxed text-text-secondary">
+                Printers, TVs, routers, cameras and media devices announce themselves on the local
+                network. ArcScan can ask, which is how it recognises more of what it finds. It sends
+                multicast queries on your own network only, uses no credentials, and contacts no
+                cloud service. A scan of a remote or routed target never sends them at all, and
+                results stay on this computer.
+              </p>
 
-          <section>
-            <SectionHeading>Local discovery</SectionHeading>
-            <p className="mb-3 text-xs leading-relaxed text-text-secondary">
-              Printers, TVs, routers, cameras and media devices announce themselves on the local
-              network. ArcScan can ask, which is how it recognises more of what it finds. It sends
-              multicast queries on your own network only, uses no credentials, and contacts no
-              cloud service. A scan of a remote or routed target never sends them at all, and
-              results stay on this computer.
-            </p>
+              <Toggle
+                id="settings-local-discovery"
+                label="Use local device discovery"
+                description="Sends mDNS and SSDP queries on the network being scanned, and uses the replies to work out device names and types. Turning this off makes a scan behave exactly as it did before this feature existed."
+                checked={settings.localDiscovery}
+                onChange={(localDiscovery) => onChange({ localDiscovery })}
+              />
 
-            <Toggle
-              id="settings-local-discovery"
-              label="Use local device discovery"
-              description="Sends mDNS and SSDP queries on the network being scanned, and uses the replies to work out device names and types. Turning this off makes a scan behave exactly as it did before this feature existed."
-              checked={settings.localDiscovery}
-              onChange={(localDiscovery) => onChange({ localDiscovery })}
-            />
-
-            {settings.localDiscovery ? (
-              <div className="mt-3">
+              {settings.localDiscovery ? (
                 <Toggle
                   id="settings-device-descriptions"
                   label="Read local device descriptions"
@@ -327,105 +293,245 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   checked={settings.readDeviceDescriptions}
                   onChange={(readDeviceDescriptions) => onChange({ readDeviceDescriptions })}
                 />
-              </div>
-            ) : null}
+              ) : null}
 
-            {/* No threshold, no weights, no classifier controls. The number
-                only means anything alongside the definition of a qualifying
-                miss, and exposing one without the other invites a person to
-                turn it down to one and then disbelieve the result. */}
-            <p className="mt-3 text-xs leading-relaxed text-text-muted">
-              ArcScan keeps older discovery evidence for history, but stops relying on it after
-              repeated completed scans no longer confirm it. Nothing is deleted: the device drawer
-              still shows it, dated by how many discovery scans have missed it.
-            </p>
-          </section>
+              {/* No threshold, no weights, no classifier controls. The number
+                  only means anything alongside the definition of a qualifying
+                  miss, and exposing one without the other invites a person to
+                  turn it down to one and then disbelieve the result. */}
+              <p className="text-xs leading-relaxed text-text-muted">
+                ArcScan keeps older discovery evidence for history, but stops relying on it after
+                repeated completed scans no longer confirm it. Nothing is deleted: the device
+                inspector still shows it, dated by how many discovery scans have missed it.
+              </p>
+            </Group>
 
-          <div className="divider" />
-
-          <WindowsCredentialSection />
-
-          <div className="divider" />
-
-          <section>
-            <SectionHeading>Network requests</SectionHeading>
-            <p className="mb-3 text-xs leading-relaxed text-text-secondary">
-              Scanning is entirely local. ArcScan never sends your targets, results, device names,
-              MAC addresses or notes anywhere. These controls cover the only requests it makes
-              beyond your own network.
-            </p>
-
-            <Toggle
-              id="settings-public-ip"
-              label="Offer the public IP lookup"
-              description="Shows the Public IP utility on the Scan screen. It never looks anything up on its own: each check happens only when you press Check, and asks a third-party provider (api64.ipify.org, then icanhazip.com) for the address your internet connection appears from. Your targets, results and device details are never sent to them, and the answer is kept in memory for this session only."
-              checked={settings.publicIpLookup}
-              onChange={(publicIpLookup) => {
-                onChange({ publicIpLookup });
-                if (!publicIpLookup) props.onClearPublicIp();
-              }}
-            />
-
-            {/* The checking, copying and refreshing all live on the Scan screen,
-                so this is the session value and one way to forget it, not a
-                second set of controls competing with the first. */}
-            {settings.publicIpLookup && props.publicIp.status === "ready" ? (
-              <div className="mt-2.5 flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-2.5 py-2">
-                <div className="min-w-0">
-                  <p className="text-[11px] uppercase tracking-wide text-text-muted">
-                    This session
-                  </p>
-                  <p className="mono truncate text-[13px] text-text">{props.publicIp.ip}</p>
-                </div>
-                <Button size="sm" variant="ghost" onClick={props.onClearPublicIp}>
-                  Forget
-                </Button>
-              </div>
-            ) : null}
-
-            {props.runtime?.updater_mode === "installer" ? (
-              <Toggle
-                id="settings-updates"
-                className="mt-3"
-                label="Check for updates on launch"
-                description="Asks GitHub whether a newer signed release exists. Only the version being checked is sent."
-                checked={settings.checkForUpdates}
-                onChange={(checkForUpdates) => onChange({ checkForUpdates })}
-              />
-            ) : null}
-
-            <Button
-              size="sm"
-              variant="ghost"
-              className="mt-3"
-              icon={<ExternalLink className="h-3.5 w-3.5" />}
-              onClick={props.onOpenPrivacy}
+            <Group
+              id="settings-credentials"
+              title="Credentials"
+              lead="Held in memory for this session only, never written anywhere."
             >
-              Read the full privacy notes
-            </Button>
-          </section>
+              <WindowsCredentialSection />
+              <p className="text-xs leading-relaxed text-text-muted">
+                SNMP credentials for topology discovery are entered in the Scan view's Topology tab,
+                and are kept for the session in the same way.
+              </p>
+            </Group>
 
-          <div className="divider" />
+            <Group
+              id="settings-networks"
+              title="Networks"
+              lead="Each network keeps its own devices, names and notes."
+            >
+              {props.scopes.length > 0 ? (
+                <>
+                  <p className="text-xs leading-relaxed text-text-muted">
+                    ArcScan keeps each network separate, so two sites that reuse the same addresses
+                    can never mix. Name them here to tell them apart.
+                  </p>
+                  <ul className="space-y-2">
+                    {props.scopes.map((scope) => (
+                      <ScopeRow key={scope.id} scope={scope} onRename={props.onRenameScope} />
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="text-xs leading-relaxed text-text-muted">
+                  A network appears here after its first saved scan, ready to be named.
+                </p>
+              )}
+            </Group>
 
-          {props.runtime ? (
-            <AboutSection
-              runtime={props.runtime}
-              onOpenDataFolder={props.onOpenDataFolder}
-              onOpenPortableDownloads={props.onOpenPortableDownloads}
-              native={props.native}
-            />
-          ) : null}
+            <Group id="settings-appearance" title="Appearance" lead="How ArcScan looks, and what its tables show.">
+              <div className="grid grid-cols-2 gap-3">
+                <FieldRow label="Theme" htmlFor="settings-theme">
+                  <Select
+                    id="settings-theme"
+                    value={settings.theme}
+                    onChange={(e) => onChange({ theme: e.target.value as Settings["theme"] })}
+                  >
+                    <option value="system">Match the system</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </Select>
+                </FieldRow>
+                <FieldRow label="Row density" htmlFor="settings-density">
+                  <Select
+                    id="settings-density"
+                    value={settings.density}
+                    onChange={(e) => onChange({ density: e.target.value as Settings["density"] })}
+                  >
+                    <option value="compact">Compact</option>
+                    <option value="comfortable">Comfortable</option>
+                  </Select>
+                </FieldRow>
+              </div>
+              <Toggle
+                id="settings-motion"
+                label="Reduced motion"
+                description="Switches off row and panel animations. Applied automatically when your system already asks for reduced motion."
+                checked={settings.reducedMotion}
+                onChange={(reducedMotion) => onChange({ reducedMotion })}
+              />
 
-          <section>
-            <SectionHeading>Getting started</SectionHeading>
-            <Toggle
-              id="settings-guidance"
-              label="Show first-run guidance"
-              description="Brings back the explanation shown on the empty scan screen."
-              checked={settings.showFirstRunGuidance}
-              onChange={(showFirstRunGuidance) => onChange({ showFirstRunGuidance })}
-            />
-          </section>
+              <div>
+                <h4 className="text-[13px] font-medium text-text">Scan results columns</h4>
+                <p className="mt-0.5 text-xs leading-relaxed text-text-muted">
+                  State, Name and IP address are always shown. Columns also hide themselves when the
+                  window is too narrow for them.
+                </p>
+                <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {COLUMNS.filter((c) => !c.required).map((column) => (
+                    <li key={column.key}>
+                      <Toggle
+                        id={`settings-column-${column.key}`}
+                        label={column.label}
+                        checked={!settings.hiddenColumns.includes(column.key)}
+                        onChange={(visible) =>
+                          onChange({
+                            hiddenColumns: visible
+                              ? settings.hiddenColumns.filter((k) => k !== column.key)
+                              : ([...settings.hiddenColumns, column.key] as SortKey[]),
+                          })
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div>
+                <h4 className="text-[13px] font-medium text-text">Inventory columns</h4>
+                <p className="mt-0.5 text-xs leading-relaxed text-text-muted">
+                  Device, Address, Status and Last seen are always shown. These extras are off by
+                  default and, like the rest, hide themselves when the window is too narrow.
+                </p>
+                <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {OPTIONAL_INVENTORY_COLUMNS.map((column) => (
+                    <li key={column.key}>
+                      <Toggle
+                        id={`settings-inventory-column-${column.key}`}
+                        label={column.label}
+                        checked={settings.inventoryColumns.includes(column.key)}
+                        onChange={(visible) =>
+                          onChange({
+                            inventoryColumns: visible
+                              ? ([...settings.inventoryColumns, column.key] as InventoryColumn[])
+                              : settings.inventoryColumns.filter((k) => k !== column.key),
+                          })
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <Toggle
+                id="settings-guidance"
+                label="Show first-run guidance"
+                description="Brings back the explanation shown on the empty scan screen."
+                checked={settings.showFirstRunGuidance}
+                onChange={(showFirstRunGuidance) => onChange({ showFirstRunGuidance })}
+              />
+            </Group>
+
+            <Group
+              id="settings-application"
+              title="Application"
+              lead="This copy of ArcScan, its updates, and everything it may send beyond your network."
+            >
+              {props.runtime ? (
+                <AboutSection
+                  runtime={props.runtime}
+                  onOpenDataFolder={props.onOpenDataFolder}
+                  onOpenPortableDownloads={props.onOpenPortableDownloads}
+                  native={props.native}
+                />
+              ) : null}
+
+              <section className="space-y-3">
+                <h4 className="text-[13px] font-medium text-text">Network requests</h4>
+                <p className="text-xs leading-relaxed text-text-secondary">
+                  Scanning is entirely local. ArcScan never sends your targets, results, device
+                  names, MAC addresses or notes anywhere. These controls cover the only requests it
+                  makes beyond your own network.
+                </p>
+
+                <Toggle
+                  id="settings-public-ip"
+                  label="Offer the public IP lookup"
+                  description="Shows the Public IP utility on the Scan screen. It never looks anything up on its own: each check happens only when you press Check, and asks a third-party provider (api64.ipify.org, then icanhazip.com) for the address your internet connection appears from. Your targets, results and device details are never sent to them, and the answer is kept in memory for this session only."
+                  checked={settings.publicIpLookup}
+                  onChange={(publicIpLookup) => {
+                    onChange({ publicIpLookup });
+                    if (!publicIpLookup) props.onClearPublicIp();
+                  }}
+                />
+
+                {/* The checking, copying and refreshing all live on the Scan
+                    screen, so this is the session value and one way to forget
+                    it, not a second set of controls competing with the first. */}
+                {settings.publicIpLookup && props.publicIp.status === "ready" ? (
+                  <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-2.5 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs text-text-muted">This session</p>
+                      <p className="mono truncate text-[13px] text-text">{props.publicIp.ip}</p>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={props.onClearPublicIp}>
+                      Forget
+                    </Button>
+                  </div>
+                ) : null}
+
+                {props.runtime?.updater_mode === "installer" ? (
+                  <Toggle
+                    id="settings-updates"
+                    label="Check for updates on launch"
+                    description="Asks GitHub whether a newer signed release exists. Only the version being checked is sent."
+                    checked={settings.checkForUpdates}
+                    onChange={(checkForUpdates) => onChange({ checkForUpdates })}
+                  />
+                ) : null}
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<ExternalLink className="h-3.5 w-3.5" />}
+                  onClick={props.onOpenPrivacy}
+                >
+                  Read the full privacy notes
+                </Button>
+              </section>
+
+              {props.arcAtlas && props.onManageArcAtlas ? (
+                <section className="space-y-2">
+                  <h4 className="text-[13px] font-medium text-text">ArcAtlas</h4>
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-sunken px-3 py-2">
+                    <p className="min-w-0 text-xs leading-relaxed text-text-secondary">
+                      {props.arcAtlas.configured && !props.arcAtlas.needsReconfigure ? (
+                        <>
+                          Connected to{" "}
+                          <span className="font-medium text-text">
+                            {destinationLabel(props.arcAtlas)}
+                          </span>
+                          . A completed scan can be sent from the Scan view or the Inventory.
+                        </>
+                      ) : props.arcAtlas.needsReconfigure ? (
+                        "The ArcAtlas connection needs to be set up again."
+                      ) : (
+                        "Not connected. Connect once to send a network's inventory to ArcAtlas after a scan."
+                      )}
+                    </p>
+                    <Button size="sm" onClick={props.onManageArcAtlas}>
+                      {props.arcAtlas.configured && !props.arcAtlas.needsReconfigure
+                        ? "Manage connection"
+                        : "Connect"}
+                    </Button>
+                  </div>
+                </section>
+              ) : null}
+            </Group>
+          </div>
         </div>
       </Drawer>
 
@@ -445,6 +551,29 @@ export function SettingsPanel(props: SettingsPanelProps) {
         }}
       />
     </>
+  );
+}
+
+/** One settings group: a heading, one line on what it covers, its controls. */
+function Group({
+  id,
+  title,
+  lead,
+  children,
+}: {
+  id: string;
+  title: string;
+  lead: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-2 border-b border-border py-5 last:border-b-0">
+      <h3 id={`${id}-title`} className="text-sm font-semibold text-text">
+        {title}
+      </h3>
+      <p className="mt-0.5 text-xs text-text-muted">{lead}</p>
+      <div className="mt-4 space-y-4">{children}</div>
+    </section>
   );
 }
 
@@ -485,7 +614,7 @@ function AboutSection({
   return (
     <>
       <section>
-        <SectionHeading>About</SectionHeading>
+        <h4 className="text-[13px] font-medium text-text">About this copy</h4>
         <p className="text-[13px] text-text">ArcScan {version(runtime.version)}</p>
         <p className="mt-0.5 text-[12px] text-text-secondary" data-testid="edition-label">
           {editionLabel(runtime)}
@@ -493,7 +622,7 @@ function AboutSection({
 
         {portable ? (
           <div className="mt-3" data-testid="portable-session-storage">
-            <p className="text-[11px] uppercase tracking-wide text-text-muted">Session storage</p>
+            <p className="text-xs text-text-muted">Session storage</p>
             <p className="mt-1 text-[13px] font-medium text-text">Temporary</p>
             <p className="mt-1 text-[12px] leading-relaxed text-text-secondary">
               This launch starts fresh. Inventory, History, Changes, names, notes, discovery
@@ -503,7 +632,7 @@ function AboutSection({
           </div>
         ) : runtime.data_root ? (
           <div className="mt-3">
-            <p className="text-[11px] uppercase tracking-wide text-text-muted">Data location</p>
+            <p className="text-xs text-text-muted">Data location</p>
             <p
               className="mono mt-1 break-all rounded-md border border-border bg-surface-sunken px-2.5 py-2 text-[12px] text-text"
               data-testid="data-root"
@@ -554,8 +683,6 @@ function AboutSection({
           </div>
         ) : null}
       </section>
-
-      <div className="divider" />
     </>
   );
 }
@@ -762,7 +889,7 @@ function WindowsCredentialSection() {
 
   return (
     <section>
-      <SectionHeading>Windows credential</SectionHeading>
+      <h4 className="mb-2 text-[13px] font-medium text-text">Windows credential</h4>
       <p className="mb-3 text-xs leading-relaxed text-text-secondary">
         A credentialed deep scan asks Windows machines about themselves, which is the only way to
         establish an exact edition, version and build — and the only way to tell a workstation from

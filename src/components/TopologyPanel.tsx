@@ -87,10 +87,10 @@ export function TopologyPanel({
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto max-w-5xl space-y-4 px-4 py-4">
+      <div className="max-w-5xl space-y-4 px-4 py-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 className="text-base font-semibold text-text">
+            <h2 className="text-[15px] font-semibold text-text">
               <Tooltip content={TOPOLOGY_HINT}>
                 <span tabIndex={0}>Topology discovery</span>
               </Tooltip>

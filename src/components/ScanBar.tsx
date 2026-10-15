@@ -1,21 +1,32 @@
-// The scan command bar.
+// The scan bar: ArcScan's most important interaction.
 //
-// One row, with a clear hierarchy: the target field and the Scan action dominate,
-// the profile picker sits directly beside them because it changes what Scan does,
-// and everything else is secondary. The advanced controls live in a popover so
-// they are one click away without competing for attention.
+// Two lines. The first is the command, in the order a technician confirms it:
+// which network, which profile, how deep, then Scan. The second is the status
+// line, which narrates the scan from end to end — what will happen before it
+// starts, what is happening while it runs, what happened after — so the
+// transition from an empty window to a populated table happens in one place
+// instead of across three screens. Public IP sits at the right of that line as
+// context, never as part of the command.
+//
+// Advanced tuning is one quiet button away: present for the technician who
+// wants it, never louder than Scan.
 
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  CheckCircle2,
   ChevronDown,
-  Crosshair,
+  CircleSlash,
+  History,
   KeyRound,
+  Network,
   Play,
   RotateCw,
+  Route,
   Settings2,
   Square,
+  SquareSlash,
 } from "lucide-react";
-import { Button, Field, FieldRow, IconButton } from "../ui/primitives";
+import { Button, Field, FieldRow, IconButton, Spinner } from "../ui/primitives";
 import { Popover } from "../ui/Popover";
 import { api } from "../lib/api";
 import { formatCount, parsePorts } from "../lib/format";
@@ -28,16 +39,23 @@ import {
   buildScanOptions,
   type ProfileId,
 } from "../lib/profiles";
+import { statusLine, type StatusIcon, type StatusLine } from "../lib/scanStatus";
+import { usePublicIpUtility } from "./PublicIp";
+import { ProgressStrip } from "./StatusBar";
+import type { PublicIpState } from "../hooks/usePublicIp";
+import type { ScanMeta, ScanMode } from "../hooks/useLiveScan";
 import type {
   LocalNetwork,
+  ScanComparison,
   ScanDepth,
   ScanOptions,
   ScanPreview,
+  ScanProgress,
   WindowsCredentialStatus,
 } from "../types";
 import type { Settings } from "../lib/prefs";
 
-export interface CommandBarProps {
+export interface ScanBarProps {
   scanning: boolean;
   stopping: boolean;
   target: string;
@@ -53,10 +71,25 @@ export interface CommandBarProps {
   onStop: () => void;
   onRescan: () => void;
   onError: (message: string) => void;
+
+  /** The scan on screen, for the status line. */
+  mode: ScanMode;
+  progress: ScanProgress | null;
+  meta: ScanMeta | null;
+  comparison: ScanComparison | null;
+  deviceCount: number;
+  /** Open this scan's comparison. */
+  onShowComparison: () => void;
+
+  /** Settings' "Offer the public IP lookup". Off hides the utility entirely. */
+  publicIpEnabled: boolean;
+  publicIp: PublicIpState;
+  onCheckPublicIp: () => void;
+  onCopyPublicIp: (ip: string) => void;
 }
 
-export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function CommandBar(
-  {
+export const ScanBar = forwardRef<HTMLInputElement, ScanBarProps>(function ScanBar(props, targetRef) {
+  const {
     scanning,
     stopping,
     target,
@@ -72,9 +105,7 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
     onStop,
     onRescan,
     onError,
-  },
-  targetRef,
-) {
+  } = props;
   const advancedButton = useRef<HTMLButtonElement>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [preview, setPreview] = useState<ScanPreview | null>(null);
@@ -115,7 +146,7 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
     ],
   );
 
-  // The credential status, for the depth picker.
+  // The credential status, for the depth picker and the status line.
   //
   // Subscribed rather than read once on mount: Settings sets and clears the
   // credential while this component stays mounted, and v1.9.0 read it a single
@@ -175,137 +206,322 @@ export const CommandBar = forwardRef<HTMLInputElement, CommandBarProps>(function
     onScan(options);
   }
 
-  const profile = PROFILES[profileId];
+  const credentialMissing =
+    DEPTHS[settings.scanDepth].needsCredential === true &&
+    credential?.configured !== true &&
+    credential?.supported !== false;
+
+  const line = statusLine({
+    mode: props.mode,
+    stopping,
+    progress: props.progress,
+    meta: props.meta,
+    comparison: props.comparison,
+    deviceCount: props.deviceCount,
+    target,
+    preview,
+    localNetworks,
+    credentialMissing,
+  });
+
+  const publicIp = usePublicIpUtility({
+    state: props.publicIp,
+    onCheck: props.onCheckPublicIp,
+    onCopy: props.onCopyPublicIp,
+  });
 
   return (
-    <form
-      onSubmit={submit}
-      className="flex items-center gap-2 border-b border-border bg-surface px-3 py-2"
-    >
-      <ProfilePicker value={profileId} onChange={onProfileChange} disabled={scanning} />
-
-      <DepthPicker
-        value={settings.scanDepth}
-        onChange={(scanDepth) => onSettingsChange({ scanDepth })}
-        disabled={scanning}
-        credential={credential}
-      />
-
-      <div className="min-w-0 flex-1">
-        <Field
+    // A div rather than the form itself, so the status line and Public IP sit
+    // outside the form's submit scope.
+    <div className="relative shrink-0 border-b border-border bg-surface">
+      <form onSubmit={submit} className="flex flex-wrap items-center gap-2 px-3 pb-1.5 pt-2.5">
+        <TargetField
           ref={targetRef}
-          id="scan-target"
-          scale="lg"
-          mono
-          value={target}
-          onChange={(event) => onTargetChange(event.target.value)}
-          placeholder="192.168.1.0/24    10.0.0.1-50    192.168.1.20"
-          aria-label="Target: a single IP address, a dashed range, or a CIDR block"
-          autoComplete="off"
-          list="arcscan-recent-targets"
+          target={target}
+          onTargetChange={onTargetChange}
+          disabled={scanning}
+          recents={recents}
+          localNetworks={localNetworks}
         />
-        {recents.length > 0 ? (
-          <datalist id="arcscan-recent-targets">
-            {recents.map((r) => (
-              <option key={r} value={r} />
-            ))}
-          </datalist>
-        ) : null}
-      </div>
 
-      {scanning ? (
-        <Button
-          size="lg"
-          variant="danger"
-          className="min-w-[104px]"
-          busy={stopping}
-          icon={<Square className="h-3.5 w-3.5 fill-current" />}
-          onClick={onStop}
-          title="Stop the scan and keep what was found (Escape)"
-        >
-          {stopping ? "Stopping" : "Stop"}
-        </Button>
-      ) : (
-        <Button
-          type="submit"
-          size="lg"
-          variant="primary"
-          className="min-w-[104px]"
-          disabled={!canScan}
-          icon={<Play className="h-3.5 w-3.5" />}
-          title="Start the scan (Enter)"
-        >
-          Scan
-        </Button>
-      )}
+        <ProfilePicker value={profileId} onChange={onProfileChange} disabled={scanning} />
 
-      <IconButton
-        label="Rescan the last target"
-        onClick={onRescan}
-        disabled={!canRescan || scanning}
-      >
-        <RotateCw className="h-4 w-4" />
-      </IconButton>
+        <DepthPicker
+          value={settings.scanDepth}
+          onChange={(scanDepth) => onSettingsChange({ scanDepth })}
+          disabled={scanning}
+          credential={credential}
+        />
 
-      <IconButton
-        label="Use this computer's network"
-        onClick={() => {
-          const first = localNetworks[0];
-          if (first) onTargetChange(first.cidr);
-          else onError("ArcScan could not detect a local network on this computer.");
-        }}
-        disabled={scanning || localNetworks.length === 0}
-      >
-        <Crosshair className="h-4 w-4" />
-      </IconButton>
-
-      <div className="divider-v mx-0.5 my-1" aria-hidden />
-
-      <div className="relative">
-        <Button
-          ref={advancedButton}
-          icon={<Settings2 className="h-3.5 w-3.5" />}
-          aria-expanded={advancedOpen}
-          aria-haspopup="dialog"
-          onClick={() => setAdvancedOpen((v) => !v)}
-          title="Ports, timeout and concurrency for this scan"
-        >
-          Advanced
-        </Button>
-        <Popover
-          open={advancedOpen}
-          onClose={() => setAdvancedOpen(false)}
-          anchor={advancedButton}
-          label="Advanced scan settings"
-          className="w-[22rem] p-3"
-        >
-          <AdvancedPanel
-            profileId={profileId}
-            tunable={tunable}
-            settings={settings}
-            onSettingsChange={onSettingsChange}
-            portError={parsed.error}
-            portCount={parsed.ports.length}
-            preview={preview}
-          />
-        </Popover>
-      </div>
-
-      <p className="ml-1 hidden max-w-[16rem] shrink-0 truncate text-xs text-text-muted xl:block">
-        {preview ? (
-          <>
-            <span className="font-medium text-text-secondary">{formatCount(preview.total)}</span>{" "}
-            {preview.total === 1 ? "address" : "addresses"} ·{" "}
-            <span className="font-medium text-text-secondary">{preview.port_count}</span> ports ·{" "}
-            {profile.name}
-          </>
+        {scanning ? (
+          <Button
+            size="lg"
+            variant="danger"
+            className="min-w-[6.5rem]"
+            busy={stopping}
+            icon={<Square className="h-3.5 w-3.5 fill-current" />}
+            onClick={onStop}
+            title="Stop the scan and keep what was found (Escape)"
+          >
+            {stopping ? "Stopping" : "Stop"}
+          </Button>
         ) : (
-          profile.summary
+          <Button
+            type="submit"
+            size="lg"
+            variant="primary"
+            className="min-w-[6.5rem]"
+            disabled={!canScan}
+            icon={<Play className="h-3.5 w-3.5 fill-current" />}
+            title="Start the scan (Enter)"
+          >
+            Scan
+          </Button>
         )}
-      </p>
-    </form>
+
+        <IconButton
+          label="Rescan the last target (Ctrl or Cmd + R)"
+          onClick={onRescan}
+          disabled={!canRescan || scanning}
+        >
+          <RotateCw className="h-4 w-4" />
+        </IconButton>
+
+        <div className="relative">
+          <Button
+            ref={advancedButton}
+            variant="ghost"
+            icon={<Settings2 className="h-3.5 w-3.5" />}
+            aria-expanded={advancedOpen}
+            aria-haspopup="dialog"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            title="Ports, timeout and concurrency for this scan"
+          >
+            Advanced
+          </Button>
+          <Popover
+            open={advancedOpen}
+            onClose={() => setAdvancedOpen(false)}
+            anchor={advancedButton}
+            label="Advanced scan settings"
+            className="w-[22rem] p-3"
+          >
+            <AdvancedPanel
+              profileId={profileId}
+              tunable={tunable}
+              settings={settings}
+              onSettingsChange={onSettingsChange}
+              portError={parsed.error}
+              portCount={parsed.ports.length}
+              preview={preview}
+            />
+          </Popover>
+        </div>
+      </form>
+
+      <div className="flex min-h-[30px] items-center gap-x-3 gap-y-1 px-3 pb-2 text-xs">
+        <StatusLineView line={line} onShowComparison={props.onShowComparison} />
+        {props.publicIpEnabled ? <div className="ml-auto shrink-0">{publicIp.control}</div> : null}
+      </div>
+      {props.publicIpEnabled ? publicIp.details : null}
+
+      <div className="absolute inset-x-0 -bottom-px">
+        <ProgressStrip scanning={scanning} progress={props.progress} />
+      </div>
+    </div>
   );
 });
+
+/**
+ * The target, with this computer's networks and recent targets one click away.
+ *
+ * Typing stays the fastest path — the field keeps its native suggestions — and
+ * the menu replaces the unlabelled crosshair that used to sit beside Scan.
+ */
+const TargetField = forwardRef<
+  HTMLInputElement,
+  {
+    target: string;
+    onTargetChange: (target: string) => void;
+    disabled: boolean;
+    recents: string[];
+    localNetworks: LocalNetwork[];
+  }
+>(function TargetField({ target, onTargetChange, disabled, recents, localNetworks }, ref) {
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const others = recents.filter((r) => !localNetworks.some((n) => n.cidr === r));
+
+  const choose = (value: string) => {
+    onTargetChange(value);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div className="relative min-w-[15rem] flex-1">
+      <Network
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted"
+        aria-hidden
+      />
+      <Field
+        ref={(node) => {
+          inputRef.current = node;
+          if (typeof ref === "function") ref(node);
+          else if (ref) ref.current = node;
+        }}
+        id="scan-target"
+        scale="lg"
+        mono
+        className="pl-9 pr-10 font-semibold"
+        value={target}
+        onChange={(event) => onTargetChange(event.target.value)}
+        placeholder="192.168.1.0/24  ·  10.0.0.1-50  ·  192.168.1.20"
+        aria-label="Target: a single IP address, a dashed range, or a CIDR block"
+        autoComplete="off"
+        list="arcscan-recent-targets"
+        readOnly={disabled}
+        aria-readonly={disabled || undefined}
+      />
+      {recents.length > 0 ? (
+        <datalist id="arcscan-recent-targets">
+          {recents.map((r) => (
+            <option key={r} value={r} />
+          ))}
+        </datalist>
+      ) : null}
+      <IconButton
+        ref={menuButton}
+        label="Choose a network"
+        size="sm"
+        className="absolute right-1.5 top-1/2 -translate-y-1/2"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled || (localNetworks.length === 0 && recents.length === 0)}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </IconButton>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={menuButton}
+        label="Networks and recent targets"
+        className="w-[22rem] p-1"
+      >
+        {localNetworks.length > 0 ? (
+          <>
+            <p className="menu-heading">This computer</p>
+            <ul>
+              {localNetworks.map((network) => (
+                <li key={network.cidr}>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    aria-selected={network.cidr === target.trim()}
+                    onClick={() => choose(network.cidr)}
+                  >
+                    <span className="mono min-w-0 flex-1 truncate font-medium">{network.cidr}</span>
+                    <span className="shrink-0 text-xs text-text-muted">
+                      {network.interface} · {network.ip}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+        {others.length > 0 ? (
+          <>
+            <p className="menu-heading">Recent</p>
+            <ul>
+              {others.map((recent) => (
+                <li key={recent}>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    aria-selected={recent === target.trim()}
+                    onClick={() => choose(recent)}
+                  >
+                    <History className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden />
+                    <span className="mono truncate">{recent}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+      </Popover>
+    </div>
+  );
+});
+
+const STATUS_ICON: Record<StatusIcon, ReactNode> = {
+  network: <Network className="h-3.5 w-3.5 text-text-muted" aria-hidden />,
+  routed: <Route className="h-3.5 w-3.5 text-text-muted" aria-hidden />,
+  live: <span className="live-dot mx-1" aria-hidden />,
+  stopping: <Spinner className="h-3.5 w-3.5 text-warning" />,
+  complete: <CheckCircle2 className="h-3.5 w-3.5 text-online" aria-hidden />,
+  stopped: <SquareSlash className="h-3.5 w-3.5 text-warning" aria-hidden />,
+  empty: <CircleSlash className="h-3.5 w-3.5 text-text-muted" aria-hidden />,
+  saved: <History className="h-3.5 w-3.5 text-text-muted" aria-hidden />,
+};
+
+/**
+ * The status line. Not a live region: the status bar already announces scan
+ * progress politely, and two regions saying the same thing would talk over each
+ * other.
+ */
+function StatusLineView({
+  line,
+  onShowComparison,
+}: {
+  line: StatusLine;
+  onShowComparison: () => void;
+}) {
+  const headlineTone = line.tone === "warning" ? "text-warning" : "text-text";
+  return (
+    <p
+      className="flex min-w-0 flex-1 flex-wrap items-center gap-y-0.5 text-text-secondary"
+      data-testid="scan-status"
+    >
+      <span className="mr-1.5 flex shrink-0 items-center">{STATUS_ICON[line.icon]}</span>
+      <span className={`shrink-0 font-semibold ${headlineTone}`}>{line.headline}</span>
+      {line.details.map((detail, index) => (
+        <span key={`${index}-${detail}`} className="min-w-0 truncate">
+          <span className="px-1.5 text-text-muted" aria-hidden>
+            ·
+          </span>
+          {detail}
+        </span>
+      ))}
+      {line.comparison ? (
+        <span className="shrink-0">
+          <span className="px-1.5 text-text-muted" aria-hidden>
+            ·
+          </span>
+          <button
+            type="button"
+            onClick={onShowComparison}
+            className={line.comparison.attention ? "link-btn" : "link-btn !text-text-secondary"}
+            title="Open this scan's comparison with the previous one"
+          >
+            {line.comparison.text}
+          </button>
+        </span>
+      ) : null}
+      {line.note ? (
+        <span className={`min-w-0 truncate ${line.note.tone === "warning" ? "text-warning" : "text-text-muted"}`}>
+          <span className="px-1.5 text-text-muted" aria-hidden>
+            ·
+          </span>
+          {line.note.text}
+        </span>
+      ) : null}
+    </p>
+  );
+}
 
 function ProfilePicker({
   value,
@@ -329,10 +545,14 @@ function ProfilePicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        title="Scan profile"
-        className="btn btn-secondary btn-lg w-[9.5rem] justify-between disabled:opacity-45"
+        title={`Scan profile: ${profile.name}. ${profile.summary}.`}
+        aria-label={`Scan profile: ${profile.name}`}
+        className="btn btn-secondary btn-lg w-[11.5rem] justify-between"
       >
-        <span className="truncate">{profile.name}</span>
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="text-xs font-normal text-text-muted">Profile</span>
+          <span className="truncate">{profile.name}</span>
+        </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" aria-hidden />
       </button>
       <Popover
@@ -358,9 +578,7 @@ function ProfilePicker({
                     setOpen(false);
                     button.current?.focus();
                   }}
-                  className={`w-full rounded-md px-2.5 py-2 text-left transition-colors duration-fast hover:bg-surface-hover ${
-                    selected ? "bg-accent-subtle" : ""
-                  }`}
+                  className="menu-item block py-2"
                 >
                   <span className="flex items-baseline gap-2">
                     <span className="text-[13px] font-medium text-text">{item.name}</span>
@@ -430,14 +648,18 @@ function DepthPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        title="How hard the scan works to identify what it finds"
-        className="btn btn-secondary btn-lg w-[8.5rem] justify-between disabled:opacity-45"
+        title={`Discovery depth: ${depth.name}. ${depth.summary}.`}
+        aria-label={`Discovery depth: ${depth.name}`}
+        className="btn btn-secondary btn-lg w-[10.5rem] justify-between"
       >
-        <span className="flex min-w-0 items-center gap-1.5">
-          {depth.needsCredential ? (
-            <KeyRound className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-          ) : null}
-          <span className="truncate">{depth.name}</span>
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="text-xs font-normal text-text-muted">Depth</span>
+          <span className="flex min-w-0 items-center gap-1">
+            {depth.needsCredential ? (
+              <KeyRound className="h-3.5 w-3.5 shrink-0 self-center opacity-70" aria-hidden />
+            ) : null}
+            <span className="truncate">{depth.name}</span>
+          </span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" aria-hidden />
       </button>
@@ -464,9 +686,7 @@ function DepthPicker({
                     setOpen(false);
                     button.current?.focus();
                   }}
-                  className={`w-full rounded-md px-2.5 py-2 text-left transition-colors duration-fast hover:bg-surface-hover ${
-                    selected ? "bg-accent-subtle" : ""
-                  }`}
+                  className="menu-item block py-2"
                 >
                   <span className="flex items-baseline gap-2">
                     <span className="text-[13px] font-medium text-text">{item.name}</span>

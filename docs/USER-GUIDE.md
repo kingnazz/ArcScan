@@ -131,9 +131,14 @@ The full reference, including the reasoning behind each of these decisions, is i
 ## Your first scan
 
 1. Open ArcScan. It detects the subnet this computer is on and fills it into the
-   target field.
-2. Leave the profile on **Quick LAN**.
+   target field. The line under the field says which network that is, which
+   interface it was found on, and how many addresses and ports the scan will
+   check.
+2. Leave **Profile** on **Quick LAN** and **Depth** on **Quick**.
 3. Press **Scan**, or just press Enter.
+
+The arrow at the end of the target field lists this computer's other networks
+and your recent targets.
 
 Devices appear as they answer. A typical `/24` finishes in a few seconds to about
 half a minute, depending on how many devices are on it and how quickly they
@@ -178,7 +183,7 @@ in Settings.
 
 ## Advanced scan settings
 
-Open **Advanced** in the command bar, or Settings for the scan defaults. Installed
+Open **Advanced** in the scan bar, beside Scan, or Settings for the scan defaults. Installed
 ArcScan retains those defaults; Portable keeps them for the current session.
 
 - **TCP ports.** Lists and ranges, in any mix: `22, 80, 443, 8000-8100`. Up to
@@ -204,14 +209,23 @@ Devices appear in the table while the scan is still running, and each row fills
 in as more is learned about it. A row that is still being resolved shows a marker
 rather than a dash, so an incomplete row never reads as an empty one.
 
-The status bar reports devices found, addresses checked, the percentage, the
-current phase and elapsed time. The phases are:
+The line under the target field follows the scan in three steps — **Finding
+hosts**, **Identifying devices**, **Resolving names** — with the addresses checked
+and devices found so far, and a thin bar under it shows progress. When the scan
+ends, the same line says how it ended: complete (with a one-line summary of what
+changed since the previous scan, which opens the comparison), stopped early, or
+nothing answered. While a scan runs, the **Scan** tab carries a small live mark,
+so it is visible from Inventory, Changes and History too.
+
+The status bar at the bottom reports the same counts with the percentage, the
+exact phase and the elapsed time. The phases are:
 
 1. **Probing addresses.** ICMP and TCP probes across the range.
 2. **Confirming quiet devices.** A second ARP pass for local addresses that did
    not answer. This is what makes results consistent between scans, and it is
    skipped entirely for routed targets.
-3. **Resolving names and vendors.** Reverse DNS, the ARP table and the
+3. **Discovering, describing and classifying.** Local discovery, when it runs.
+4. **Resolving names and vendors.** Reverse DNS, the ARP table and the
    manufacturer lookup.
 
 Sorting and filtering keep working during a scan, and your sort is preserved as
@@ -227,8 +241,8 @@ Escape does the same when nothing else is open.
 
 | Column | Meaning |
 | --- | --- |
-| **State** | A dot for online, plus a mark for known, trusted or watched |
-| **Name** | Your name for the device, else its hostname, else manufacturer and address |
+| **State** | A pulsing ring while the device is still being identified, then a dot: green for answered, violet for new, amber for changed, teal for returned since the previous scan |
+| **Name** | Your name for the device, else its hostname, else its manufacturer in a quieter tone, else *Unnamed*. A mark shows Known, Trusted or Watched |
 | **IP address** | |
 | **Open services** | Service name and port, for example `HTTPS · 443`. Remote-access services are highlighted |
 | **Manufacturer** | From the MAC address, using the full IEEE OUI registry |
@@ -424,11 +438,12 @@ MAC, manufacturer, service names, network name and the opening of your notes. It
 is case-insensitive and matches partial words, and every term you type has to
 match, so `printer 443` narrows rather than widens.
 
-**Filters** are All, Present, Missing, Unknown, Trusted, Unreviewed and Ignored.
-What a scan observed and what you decided about a device are kept apart: a device
-you trust can also be missing, and it appears under both.
+**Filters** are All devices; Present, Missing and Unknown (what the latest scan
+found); and Trusted, Not classified and Ignored (what you decided). The menu
+groups them that way because they are kept apart: a device you trust can also be
+missing, and it appears under both.
 
-**Selection** ticks devices for a bulk action: mark trusted, mark unreviewed,
+**Selection** ticks devices for a bulk action: mark trusted, mark not classified,
 ignore, copy the addresses, or export just those devices. Nothing here deletes
 anything. A bulk action over twenty-five devices asks first, and if some of them
 have since disappeared it says how many it could not update rather than reporting
@@ -611,9 +626,13 @@ block stay distinct even when they cover the same addresses.
 ## History and comparison
 
 The **History** tab lists every saved scan with its target, profile, network,
-date, duration, address count, device count and change counts. From each entry
-you can open the scan, compare it with the preceding compatible one, export it,
-or delete it. Deleting asks first.
+date, duration, address count, device count and change counts. Click an entry to
+open the scan; the buttons at its end compare it with the preceding compatible
+one, export it, or delete it. Deleting asks first.
+
+A scan on screen has three views, switched just above its table: **Devices**,
+**Comparison** (this scan against the previous compatible one, with the number
+of differences beside it) and **Topology**.
 
 Comparing is disabled when there is nothing safe to compare against — for a
 partial scan, or when no earlier completed scan checked the same target with the
@@ -694,11 +713,11 @@ event id, which is the only place a script has any use for one.
 ArcScan can report the address your internet connection appears from. It
 **never runs on its own**.
 
-From v1.8.1 it sits on the **Scan** screen, in the row under the view switcher,
-beside the local network:
+It sits on the **Scan** screen, at the right-hand end of the line under the
+target field:
 
 ```text
-Local network  192.168.1.0/24            Public IP  Not checked  [Check]
+Local network · Wi-Fi · this computer is 192.168.1.27 · 254 addresses     Public IP  Not checked  [Check]
 ```
 
 Press **Check**. Once it answers you get the address, how long ago it was
@@ -716,7 +735,7 @@ The answer is held in memory for the current session. It is not written to the
 database, not written to your preferences, and not included in any export. It is
 forgotten when you close ArcScan or press **Forget** in Settings.
 
-**Settings, Network requests** carries the full explanation, shows the session's
+**Settings, Application, Network requests** carries the full explanation, shows the session's
 value, and can forget it. Its switch decides whether the utility is offered at
 all; it is on for new installs, and if you explicitly turned it off in an earlier
 version it stays off.
@@ -725,14 +744,17 @@ v1.6 performed this lookup automatically at startup. No version since v1.7 does.
 
 ## Settings
 
+Settings opens beside the view you are in. A rail on its left jumps between six
+groups:
+
 | Group | Contains |
 | --- | --- |
-| Appearance | Theme (system, light, dark), row density, reduced motion |
-| Scanning | Default profile, ports, timeout, all three concurrency limits |
-| Results | Which columns are visible |
-| History | Scans to keep, change notifications |
-| Network requests | Whether the public IP lookup is offered; Installed update checks |
-| Getting started | Whether the first-run guidance is shown |
+| Scanning | Default profile, ports, timeout, all three concurrency limits, scans to keep, change notifications |
+| Discovery | Local device discovery and device descriptions |
+| Credentials | The Windows credential for credentialed scans |
+| Networks | A name for each network ArcScan has scanned |
+| Appearance | Theme, row density, reduced motion, which columns the tables show, first-run guidance |
+| Application | Edition and data location, network requests (public IP lookup, update checks), the ArcAtlas connection |
 
 ## Keyboard shortcuts
 
