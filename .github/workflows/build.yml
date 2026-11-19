@@ -176,6 +176,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: ${{ matrix.label }}
           path: artifacts/*
           if-no-files-found: error
